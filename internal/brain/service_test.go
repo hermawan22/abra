@@ -1,9 +1,12 @@
 package brain
 
 import (
+	"context"
 	"strings"
 	"testing"
 
+	"github.com/hermawan22/abra/internal/ai"
+	"github.com/hermawan22/abra/internal/config"
 	"github.com/hermawan22/abra/internal/store"
 )
 
@@ -102,6 +105,63 @@ func TestExtractClaimsIgnoresFencedCodeAndReturnsDeterministicClaims(t *testing.
 			t.Fatalf("claims = %#v, want deterministic %#v", claims, want)
 		}
 	}
+}
+
+func TestEmbedTextsBatchesLargeRequests(t *testing.T) {
+	provider := &recordingEmbeddingProvider{}
+	service := Service{
+		cfg:        config.Config{Embedding: config.AIProviderConfig{Dimensions: 3}},
+		embeddings: provider,
+	}
+	inputs := make([]string, 20)
+	for i := range inputs {
+		inputs[i] = strings.Repeat("word ", 900)
+	}
+	response, err := service.embedTexts(context.Background(), inputs)
+	if err != nil {
+		t.Fatalf("embedTexts error = %v", err)
+	}
+	if len(response.Embeddings) != len(inputs) {
+		t.Fatalf("embeddings = %d, want %d", len(response.Embeddings), len(inputs))
+	}
+	if len(provider.callSizes) < 2 {
+		t.Fatalf("expected batched calls, got sizes %#v", provider.callSizes)
+	}
+	for i, embedding := range response.Embeddings {
+		if embedding.Index != i {
+			t.Fatalf("embedding index %d = %d", i, embedding.Index)
+		}
+	}
+}
+
+type recordingEmbeddingProvider struct {
+	callSizes []int
+}
+
+func (p *recordingEmbeddingProvider) Name() string {
+	return "recording"
+}
+
+func (p *recordingEmbeddingProvider) Kind() ai.ProviderKind {
+	return ai.ProviderOpenAICompatible
+}
+
+func (p *recordingEmbeddingProvider) Validate() error {
+	return nil
+}
+
+func (p *recordingEmbeddingProvider) Embed(_ context.Context, request ai.EmbeddingRequest) (ai.EmbeddingResponse, error) {
+	p.callSizes = append(p.callSizes, len(request.Input))
+	embeddings := make([]ai.Embedding, len(request.Input))
+	for i := range request.Input {
+		embeddings[i] = ai.Embedding{Index: i, Vector: []float64{1, 0, 0}, Dimensions: 3}
+	}
+	return ai.EmbeddingResponse{
+		Provider:   p.Name(),
+		Model:      "test-embedding",
+		Embeddings: embeddings,
+		Usage:      &ai.Usage{PromptTokens: len(request.Input), TotalTokens: len(request.Input)},
+	}, nil
 }
 
 func TestRedactSecretContext(t *testing.T) {

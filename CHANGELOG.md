@@ -4,6 +4,14 @@ All notable changes to Abra are documented here.
 
 This project uses semantic versioning for public releases. Until v1.0.0, minor versions may include breaking changes when they are documented in this file and in the release notes.
 
+## 0.3.3 - 2026-06-19
+
+### Fixed
+
+- Batch embedding requests during ingestion so large documents and repositories do not exceed local model context limits.
+- Start the built-in llama.cpp Qwen embedding runner with a 32768-token context and recreate older local model containers that used the previous smaller context.
+- Default local config loading to the Qwen GGUF embedding model with no implicit reranker endpoint.
+
 ## 0.3.2 - 2026-06-19
 
 ### Fixed

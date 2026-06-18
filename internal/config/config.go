@@ -64,10 +64,6 @@ func Load() (Config, error) {
 	if isLocalNeuralProvider(embeddingProvider) {
 		defaultEmbeddingBaseURL = "http://host.docker.internal:8080/v1"
 	}
-	defaultReranker := ""
-	if isLocalNeuralProvider(embeddingProvider) {
-		defaultReranker = "local"
-	}
 
 	cfg := Config{
 		NodeEnv:                          env("NODE_ENV", "development"),
@@ -97,14 +93,14 @@ func Load() (Config, error) {
 			Provider:   embeddingProvider,
 			BaseURL:    env("EMBEDDING_BASE_URL", defaultEmbeddingBaseURL),
 			APIKey:     os.Getenv("EMBEDDING_API_KEY"),
-			Model:      env("EMBEDDING_MODEL", "text-embeddings-inference"),
+			Model:      env("EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0"),
 			Dimensions: intEnv("EMBEDDING_DIMENSIONS", 1024),
 		},
 		Reranker: AIProviderConfig{
-			Provider: env("RERANKER_PROVIDER", defaultReranker),
-			BaseURL:  env("RERANKER_BASE_URL", "http://host.docker.internal:8081"),
+			Provider: os.Getenv("RERANKER_PROVIDER"),
+			BaseURL:  os.Getenv("RERANKER_BASE_URL"),
 			APIKey:   os.Getenv("RERANKER_API_KEY"),
-			Model:    env("RERANKER_MODEL", "text-embeddings-inference"),
+			Model:    os.Getenv("RERANKER_MODEL"),
 		},
 		Extractor: AIProviderConfig{
 			Provider: env("EXTRACTOR_PROVIDER", env("LLM_PROVIDER", "local")),

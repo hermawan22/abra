@@ -282,10 +282,7 @@ func (s *Service) IngestDocument(ctx context.Context, input IngestDocumentInput)
 	}
 
 	chunks := chunkText(content, 1200)
-	chunkEmbeddings, err := s.embeddings.Embed(ctx, ai.EmbeddingRequest{
-		Input:      chunks,
-		Dimensions: s.cfg.Embedding.Dimensions,
-	})
+	chunkEmbeddings, err := s.embedTexts(ctx, chunks)
 	if err != nil {
 		return IngestDocumentResult{}, err
 	}
@@ -348,10 +345,7 @@ func (s *Service) IngestDocument(ctx context.Context, input IngestDocumentInput)
 	claims := extractClaimsForDocument(input, content)
 	var claimEmbeddings ai.EmbeddingResponse
 	if len(claims) > 0 {
-		claimEmbeddings, err = s.embeddings.Embed(ctx, ai.EmbeddingRequest{
-			Input:      claims,
-			Dimensions: s.cfg.Embedding.Dimensions,
-		})
+		claimEmbeddings, err = s.embedTexts(ctx, claims)
 		if err != nil {
 			return IngestDocumentResult{}, err
 		}
@@ -535,6 +529,60 @@ func (s *Service) ChallengeClaim(ctx context.Context, input ChallengeClaimInput)
 	}
 	_ = s.db.InsertAuditEvent(ctx, "claim.challenged", "claim", input.ClaimID, scope, input.SourceURL, map[string]any{"verdict": input.Verdict, "reason": input.Reason, "feedback_id": feedbackID, "conflict_id": conflictID, "conflicting_claim_id": input.ConflictingClaimID})
 	return ChallengeClaimResult{FeedbackID: feedbackID, ConflictID: conflictID}, nil
+}
+
+func (s *Service) embedTexts(ctx context.Context, inputs []string) (ai.EmbeddingResponse, error) {
+	const maxEmbeddingBatchTokens = 6000
+	const maxEmbeddingBatchItems = 16
+	out := ai.EmbeddingResponse{}
+	if len(inputs) == 0 {
+		return out, nil
+	}
+	for start := 0; start < len(inputs); {
+		end := start
+		batchTokens := 0
+		for end < len(inputs) {
+			estimate := max(1, tokenEstimate(inputs[end]))
+			if end > start && (end-start >= maxEmbeddingBatchItems || batchTokens+estimate > maxEmbeddingBatchTokens) {
+				break
+			}
+			batchTokens += estimate
+			end++
+		}
+		response, err := s.embeddings.Embed(ctx, ai.EmbeddingRequest{
+			Input:      inputs[start:end],
+			Dimensions: s.cfg.Embedding.Dimensions,
+		})
+		if err != nil {
+			return ai.EmbeddingResponse{}, err
+		}
+		if out.Provider == "" {
+			out.Provider = response.Provider
+		}
+		if out.Model == "" {
+			out.Model = response.Model
+		}
+		if response.Usage != nil {
+			if out.Usage == nil {
+				out.Usage = &ai.Usage{}
+			}
+			out.Usage.PromptTokens += response.Usage.PromptTokens
+			out.Usage.CompletionTokens += response.Usage.CompletionTokens
+			out.Usage.TotalTokens += response.Usage.TotalTokens
+		}
+		for _, embedding := range response.Embeddings {
+			embedding.Index += start
+			out.Embeddings = append(out.Embeddings, embedding)
+		}
+		start = end
+	}
+	if len(out.Embeddings) != len(inputs) {
+		return ai.EmbeddingResponse{}, fmt.Errorf("embedding count mismatch after batching: got %d, want %d", len(out.Embeddings), len(inputs))
+	}
+	sort.SliceStable(out.Embeddings, func(i, j int) bool {
+		return out.Embeddings[i].Index < out.Embeddings[j].Index
+	})
+	return out, nil
 }
 
 func (s *Service) ForgetClaim(ctx context.Context, input ForgetClaimInput) (ForgetClaimResult, error) {

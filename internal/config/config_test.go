@@ -56,10 +56,13 @@ func TestLoadDefaultsToLocalQwenCompatibleEndpoints(t *testing.T) {
 	if cfg.Embedding.BaseURL != "http://host.docker.internal:8080/v1" {
 		t.Fatalf("Embedding.BaseURL = %q", cfg.Embedding.BaseURL)
 	}
-	if cfg.Reranker.Provider != "local" {
-		t.Fatalf("Reranker.Provider = %q, want local", cfg.Reranker.Provider)
+	if cfg.Embedding.Model != "Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0" {
+		t.Fatalf("Embedding.Model = %q", cfg.Embedding.Model)
 	}
-	if cfg.Reranker.BaseURL != "http://host.docker.internal:8081" {
+	if cfg.Reranker.Provider != "" {
+		t.Fatalf("Reranker.Provider = %q, want empty", cfg.Reranker.Provider)
+	}
+	if cfg.Reranker.BaseURL != "" {
 		t.Fatalf("Reranker.BaseURL = %q", cfg.Reranker.BaseURL)
 	}
 }

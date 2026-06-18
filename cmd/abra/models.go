@@ -77,6 +77,13 @@ func modelsUp(ctx context.Context, args cliArgs) error {
 			}
 			exists = false
 		}
+		if exists && !strings.Contains(dockerContainerCommand(cfg.Container), "--ctx-size 32768") {
+			fmt.Println("Replacing local embedding container config: ctx-size 32768")
+			if _, err := commandOutput("docker", "rm", "-f", cfg.Container); err != nil {
+				return err
+			}
+			exists = false
+		}
 	}
 	if !exists {
 		if err := os.MkdirAll(cfg.CacheDir, 0o755); err != nil {
@@ -96,7 +103,7 @@ func modelsUp(ctx context.Context, args cliArgs) error {
 			"-hf", cfg.ModelID,
 			"--embedding",
 			"--pooling", "last",
-			"--ctx-size", "9600",
+			"--ctx-size", "32768",
 			"--host", "0.0.0.0",
 			"--port", "8080",
 		}
@@ -211,6 +218,14 @@ func dockerContainerImage(name string) string {
 		return ""
 	}
 	return strings.TrimSpace(out)
+}
+
+func dockerContainerCommand(name string) string {
+	out, err := commandOutput("docker", "container", "inspect", "--format", "{{json .Args}}", name)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(strings.ReplaceAll(out, `","`, " "))
 }
 
 func syncLocalRunnerEnv(args cliArgs) error {
