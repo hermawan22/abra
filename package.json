@@ -1,0 +1,37 @@
+{
+  "name": "abra",
+  "version": "0.1.0",
+  "description": "Developer scripts for Abra. The production runtime and CLI are Go.",
+  "type": "module",
+  "private": true,
+  "keywords": [
+    "ai-agents",
+    "agent-memory",
+    "mcp",
+    "rag",
+    "pgvector",
+    "knowledge-graph",
+    "self-hosted"
+  ],
+  "author": "Abra contributors",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "quickstart": "go run ./cmd/abra demo",
+    "quickstart:down": "go run ./cmd/abra down",
+    "check:scripts": "bash -n scripts/*.sh && node --check scripts/abra-tier1-eval.mjs && node --check scripts/abra-tier23-eval.mjs && node --check scripts/abra-golden-eval.mjs && node --check scripts/abra-provider-benchmark.mjs && node --check scripts/abra-perf-eval.mjs && node --check scripts/abra-dogfood-eval.mjs && node --check scripts/abra-release-gate.mjs",
+    "ops:backup": "bash scripts/abra-backup.sh",
+    "ops:restore-drill": "bash scripts/abra-restore-drill.sh",
+    "ops:reindex": "bash scripts/abra-reindex.sh",
+    "smoke:selfhost": "bash scripts/abra-smoke.sh",
+    "eval:tier1": "node scripts/abra-tier1-eval.mjs",
+    "eval:tier23": "node scripts/abra-tier23-eval.mjs",
+    "eval:golden": "node scripts/abra-golden-eval.mjs",
+    "eval:provider": "node scripts/abra-provider-benchmark.mjs",
+    "eval:dogfood": "node scripts/abra-dogfood-eval.mjs",
+    "perf:local": "node scripts/abra-perf-eval.mjs",
+    "release:gate": "node scripts/abra-release-gate.mjs",
+    "test": "npm run check:scripts"
+  }
+}

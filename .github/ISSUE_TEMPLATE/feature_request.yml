@@ -1,0 +1,39 @@
+name: Feature request
+description: Propose a scoped improvement
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What agent-memory, ingestion, policy, or operations problem should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Describe the behavior or API shape.
+    validations:
+      required: true
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Project scope
+      options:
+        - Core OSS runtime
+        - Deployment extension or overlay
+        - Documentation
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: textarea
+    id: risks
+    attributes:
+      label: Security, privacy, and compatibility notes
+      description: Include approval, ACL, source authority, or migration implications.

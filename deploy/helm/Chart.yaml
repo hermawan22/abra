@@ -1,0 +1,6 @@
+apiVersion: v2
+name: abra
+description: Abra source-cited brain service for AI agents
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

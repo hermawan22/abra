@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/abra-brain/abra/security/advisories/new
+    about: Use GitHub private vulnerability reporting or the maintainer contact channel. Do not file public security issues.

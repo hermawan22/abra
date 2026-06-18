@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: abra
+          POSTGRES_PASSWORD: abra
+          POSTGRES_DB: abra
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U abra -d abra"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.11"
+          cache: true
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check ops and eval scripts
+        run: npm test
+
+      - name: Test Go packages
+        run: go test ./...
+
+      - name: Check Go vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+      - name: Check npm vulnerabilities
+        run: npm audit --audit-level=high
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Lint Helm chart
+        run: helm lint ./deploy/helm
+
+      - name: Render Helm chart
+        run: helm template abra ./deploy/helm >/tmp/abra-helm-template.yaml
+
+      - name: Render production Compose config
+        run: |
+          cat > /tmp/abra.env.production.test <<'EOF'
+          ABRA_API_KEYS=test-admin-key
+          ABRA_APPROVAL_MODE=enforce
+          EMBEDDING_PROVIDER=compatible
+          EMBEDDING_BASE_URL=https://embedding-provider.example/v1
+          EMBEDDING_API_KEY=test-embedding-key
+          EMBEDDING_MODEL=embedding-model-1536
+          EMBEDDING_DIMENSIONS=1536
+          ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=false
+          EOF
+          docker compose --env-file /tmp/abra.env.production.test --profile setup config >/tmp/abra-compose-config.yaml
+
+      - name: Check public repo hygiene
+        run: |
+          test ! -e .env
+          test ! -e .tmp
+          ! rg -n -i \
+            -g '!ci.yml' \
+            'BUSINESS_MODEL|Business Model|Commercial Boundary|pricing|GTM|revenue|buyer|moat|procurement|open-core|company/frontend|frontend-platform|Amartha|fetha|customer data export|funds-web|funds-ui|ng-mis' \
+            README.md PROJECT_SCOPE.md CONTRIBUTING.md CODE_OF_CONDUCT.md ARCHITECTURE.md PRODUCTION.md SECURITY.md SUPPORT.md MAINTAINERS.md GOVERNANCE.md CHANGELOG.md RELEASE.md SUPPLY_CHAIN.md docs package.json deploy internal scripts examples .github
+
+      - name: Build Go binaries
+        run: |
+          go build ./cmd/abra-api
+          go build ./cmd/abra-worker
+          go build ./cmd/abra-migrate
+          go build ./cmd/abra
+
+      - name: Build container image
+        run: docker build -t abra:${{ github.sha }} .

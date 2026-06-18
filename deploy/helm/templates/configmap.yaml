@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "abra.fullname" . }}-config
+  labels:
+    {{- include "abra.labels" . | nindent 4 }}
+data:
+  NODE_ENV: {{ .Values.config.nodeEnv | quote }}
+  PORT: {{ .Values.config.port | quote }}
+  EMBEDDING_PROVIDER: {{ .Values.config.embeddingProvider | quote }}
+  EMBEDDING_MODEL: {{ .Values.config.embeddingModel | quote }}
+  EMBEDDING_DIMENSIONS: {{ .Values.config.embeddingDimensions | quote }}
+  ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION: {{ .Values.config.allowLocalEmbeddingsInProduction | quote }}
+  ABRA_APPROVAL_MODE: {{ .Values.config.approvalMode | quote }}
+  ABRA_AUDIT_SINK_URL: {{ .Values.config.auditSinkUrl | quote }}
+  ABRA_AUDIT_SINK_SCOPE: {{ .Values.config.auditSinkScope | quote }}
+  ABRA_AUDIT_SINK_BATCH_SIZE: {{ .Values.config.auditSinkBatchSize | quote }}
+  REDACT_PII: {{ .Values.config.redactPii | quote }}
+  RATE_LIMIT_MAX: {{ .Values.config.rateLimitMax | quote }}
+  RATE_LIMIT_WINDOW: {{ .Values.config.rateLimitWindow | quote }}
+  ABRA_COMPOSE_HEALTH_CACHE_TTL: {{ .Values.config.composeHealthCacheTtl | quote }}
+  OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.config.otelExporterOtlpEndpoint | quote }}
+  ABRA_TRACING_ENABLED: {{ .Values.config.tracingEnabled | quote }}
+  ABRA_TRACING_SAMPLE_RATIO: {{ .Values.config.tracingSampleRatio | quote }}
+  ABRA_TRACING_INSECURE: {{ .Values.config.tracingInsecure | quote }}
+  ABRA_SERVICE_NAME: {{ .Values.config.serviceName | quote }}
+  ABRA_DEPLOYMENT_ENVIRONMENT: {{ .Values.config.deploymentEnvironment | quote }}
+  WORKER_INTERVAL: {{ .Values.worker.interval | quote }}
+  ABRA_GIT_CACHE_DIR: {{ .Values.worker.gitCacheDir | quote }}
+  ABRA_GIT_CLONE_DEPTH: {{ .Values.worker.gitCloneDepth | quote }}

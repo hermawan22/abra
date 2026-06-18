@@ -1,0 +1,227 @@
+package ai
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"testing"
+)
+
+func TestLocalProviderEmbeddingsAreDeterministic(t *testing.T) {
+	provider, err := NewLocalProvider(LocalConfig{Dimensions: 8})
+	if err != nil {
+		t.Fatalf("NewLocalProvider() error = %v", err)
+	}
+
+	first, err := provider.Embed(context.Background(), EmbeddingRequest{Input: []string{"Hello Abra"}})
+	if err != nil {
+		t.Fatalf("Embed() first error = %v", err)
+	}
+	second, err := provider.Embed(context.Background(), EmbeddingRequest{Input: []string{"Hello Abra"}})
+	if err != nil {
+		t.Fatalf("Embed() second error = %v", err)
+	}
+
+	if got := first.Embeddings[0].Dimensions; got != 8 {
+		t.Fatalf("dimensions = %d, want 8", got)
+	}
+	if !reflect.DeepEqual(first.Embeddings[0].Vector, second.Embeddings[0].Vector) {
+		t.Fatalf("local embeddings are not deterministic")
+	}
+}
+
+func TestValidateEmbeddingDimensionsRejectsMismatch(t *testing.T) {
+	err := ValidateEmbeddingDimensions([]float64{0.1, 0.2}, 3)
+	if !errors.Is(err, ErrInvalidResponse) {
+		t.Fatalf("error = %v, want ErrInvalidResponse", err)
+	}
+}
+
+func TestOpenAICompatibleProviderEmbedsAndValidatesDimensions(t *testing.T) {
+	var requestBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/embeddings" {
+			t.Fatalf("path = %s, want /embeddings", r.URL.Path)
+		}
+		if got := r.Header.Get("authorization"); got != "Bearer test-key" {
+			t.Fatalf("authorization = %q", got)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_, _ = w.Write([]byte(`{"model":"embed-model","data":[{"index":0,"embedding":[0.1,0.2,0.3]}],"usage":{"total_tokens":4}}`))
+	}))
+	defer server.Close()
+
+	provider, err := NewOpenAICompatibleProvider(OpenAICompatibleConfig{
+		BaseURL:             server.URL,
+		APIKey:              "test-key",
+		EmbeddingModel:      "embed-model",
+		EmbeddingDimensions: 3,
+	}, server.Client())
+	if err != nil {
+		t.Fatalf("NewOpenAICompatibleProvider() error = %v", err)
+	}
+
+	response, err := provider.Embed(context.Background(), EmbeddingRequest{Input: []string{"hello"}})
+	if err != nil {
+		t.Fatalf("Embed() error = %v", err)
+	}
+
+	if requestBody["model"] != "embed-model" {
+		t.Fatalf("model = %v, want embed-model", requestBody["model"])
+	}
+	if requestBody["dimensions"] != float64(3) {
+		t.Fatalf("dimensions = %v, want 3", requestBody["dimensions"])
+	}
+	if got := response.Embeddings[0].Dimensions; got != 3 {
+		t.Fatalf("dimensions = %d, want 3", got)
+	}
+}
+
+func TestOpenAICompatibleProviderRejectsEmbeddingDimensionMismatch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"embedding":[0.1,0.2]}]}`))
+	}))
+	defer server.Close()
+
+	provider, err := NewOpenAICompatibleProvider(OpenAICompatibleConfig{
+		BaseURL:             server.URL,
+		APIKey:              "test-key",
+		EmbeddingModel:      "embed-model",
+		EmbeddingDimensions: 3,
+	}, server.Client())
+	if err != nil {
+		t.Fatalf("NewOpenAICompatibleProvider() error = %v", err)
+	}
+
+	_, err = provider.Embed(context.Background(), EmbeddingRequest{Input: []string{"hello"}})
+	if !errors.Is(err, ErrInvalidResponse) {
+		t.Fatalf("Embed() error = %v, want ErrInvalidResponse", err)
+	}
+}
+
+func TestOpenAICompatibleProviderExtractsWithJSONSchemaAndRepair(t *testing.T) {
+	var requestBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			t.Fatalf("path = %s, want /chat/completions", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"model": "chat-model",
+			"choices": []any{
+				map[string]any{
+					"message": map[string]any{
+						"content": "```json\n{\"claims\":[\"a\",]}\n```",
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	provider, err := NewOpenAICompatibleProvider(OpenAICompatibleConfig{
+		BaseURL:   server.URL,
+		APIKey:    "test-key",
+		ChatModel: "chat-model",
+	}, server.Client())
+	if err != nil {
+		t.Fatalf("NewOpenAICompatibleProvider() error = %v", err)
+	}
+	schema := JSONSchema{
+		"type": "object",
+		"required": []any{
+			"claims",
+		},
+		"properties": map[string]any{
+			"claims": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"type": "string",
+				},
+			},
+		},
+	}
+
+	response, err := provider.Extract(context.Background(), ExtractionRequest{
+		Input:      "extract claims",
+		Schema:     schema,
+		SchemaName: "claims",
+	})
+	if err != nil {
+		t.Fatalf("Extract() error = %v", err)
+	}
+
+	format, ok := requestBody["response_format"].(map[string]any)
+	if !ok || format["type"] != "json_schema" {
+		t.Fatalf("response_format = %#v, want json_schema", requestBody["response_format"])
+	}
+	if !response.Repaired {
+		t.Fatalf("Repaired = false, want true")
+	}
+	value := response.Value.(map[string]any)
+	claims := value["claims"].([]any)
+	if claims[0] != "a" {
+		t.Fatalf("claim = %v, want a", claims[0])
+	}
+}
+
+func TestCustomHTTPProviderMapsEmbeddingResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("x-api-key"); got != "secret" {
+			t.Fatalf("x-api-key = %q", got)
+		}
+		_, _ = w.Write([]byte(`{"embeddings":[[0.1,0.2],[0.3,0.4]]}`))
+	}))
+	defer server.Close()
+
+	provider, err := NewCustomHTTPProvider(CustomHTTPProviderConfig{
+		Name: "vendor",
+		Embeddings: &CustomHTTPEndpointConfig{
+			URL:               server.URL,
+			ResponseValuePath: "vectors",
+			Dimensions:        2,
+			Auth: &CustomHTTPAuthConfig{
+				Type:       "header",
+				HeaderName: "x-api-key",
+				Token:      "secret",
+			},
+		},
+	}, server.Client())
+	if err != nil {
+		t.Fatalf("NewCustomHTTPProvider() error = %v", err)
+	}
+
+	response, err := provider.Embed(context.Background(), EmbeddingRequest{Input: []string{"a", "b"}})
+	if err != nil {
+		t.Fatalf("Embed() error = %v", err)
+	}
+	if len(response.Embeddings) != 2 {
+		t.Fatalf("embeddings = %d, want 2", len(response.Embeddings))
+	}
+}
+
+func TestValidateJSONValueRejectsMissingRequiredAndAdditionalProperties(t *testing.T) {
+	schema := JSONSchema{
+		"type":                 "object",
+		"required":             []any{"id"},
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"id": map[string]any{"type": "string"},
+		},
+	}
+
+	validationErrors, err := ValidateJSONValue(map[string]any{"extra": "nope"}, schema)
+	if !errors.Is(err, ErrValidationFailed) {
+		t.Fatalf("error = %v, want ErrValidationFailed", err)
+	}
+	if len(validationErrors) != 2 {
+		t.Fatalf("validation errors = %v, want 2 errors", validationErrors)
+	}
+}
