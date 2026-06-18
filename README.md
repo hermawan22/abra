@@ -50,7 +50,7 @@ Then start the local Abra service:
 abra up
 ```
 
-`abra up` creates `.tmp/quickstart.env` if needed, starts Postgres, runs migrations, starts the API and worker, then prints the MCP URL and token. `abra install` is only a compatibility alias for `abra up`; the curl script is what installs the CLI binary.
+`abra up` creates an env file if needed, starts Postgres, runs migrations, starts the API and worker, then prints the MCP URL and token. From a source checkout it uses `.tmp/quickstart.env`; from a global CLI install it stores runtime files under your Abra config directory and can be run from any folder. `abra install` is only a compatibility alias for `abra up`; the curl script is what installs the CLI binary.
 
 Try the governed brain:
 

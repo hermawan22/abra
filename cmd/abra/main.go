@@ -1,7 +1,9 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -21,10 +23,10 @@ import (
 )
 
 const (
-	defaultEnvPath = ".tmp/quickstart.env"
-	defaultBaseURL = "http://127.0.0.1:18080"
-	defaultToken   = "dev-token"
-	installScript  = "https://raw.githubusercontent.com/hermawan22/abra/main/scripts/install.sh"
+	checkoutEnvPath = ".tmp/quickstart.env"
+	defaultBaseURL  = "http://127.0.0.1:18080"
+	defaultToken    = "dev-token"
+	installScript   = "https://raw.githubusercontent.com/hermawan22/abra/main/scripts/install.sh"
 )
 
 var (
@@ -276,14 +278,24 @@ func initEnv(args cliArgs) error {
 }
 
 func up(ctx context.Context, args cliArgs) error {
+	projectDir, err := ensureProjectDir(ctx, args)
+	if err != nil {
+		return err
+	}
 	if err := ensureEnv(args); err != nil {
 		return err
 	}
 	if _, err := exec.LookPath("docker"); err != nil {
 		return errors.New("missing required command: docker")
 	}
-	env := envPath(args)
+	env, err := filepath.Abs(envPath(args))
+	if err != nil {
+		return err
+	}
 	fmt.Println("Using env: " + env)
+	if !hasLocalCompose(".") {
+		fmt.Println("Using runtime: " + projectDir)
+	}
 	steps := [][]string{
 		{"compose", "--env-file", env, "build", "api", "worker", "migrate"},
 		{"compose", "--env-file", env, "up", "-d", "postgres"},
@@ -291,7 +303,7 @@ func up(ctx context.Context, args cliArgs) error {
 		{"compose", "--env-file", env, "up", "-d", "api", "worker"},
 	}
 	for _, step := range steps {
-		if err := runCommand("docker", step...); err != nil {
+		if err := runCommandIn(projectDir, "docker", step...); err != nil {
 			return err
 		}
 	}
@@ -305,14 +317,22 @@ func up(ctx context.Context, args cliArgs) error {
 }
 
 func down(args cliArgs) error {
+	projectDir, err := projectDir(args)
+	if err != nil {
+		return err
+	}
 	if err := ensureEnv(args); err != nil {
 		return err
 	}
-	step := []string{"compose", "--env-file", envPath(args), "down"}
+	env, err := filepath.Abs(envPath(args))
+	if err != nil {
+		return err
+	}
+	step := []string{"compose", "--env-file", env, "down"}
 	if boolFlag(args, "reset") {
 		step = append(step, "--volumes")
 	}
-	return runCommand("docker", step...)
+	return runCommandIn(projectDir, "docker", step...)
 }
 
 func status(ctx context.Context, args cliArgs) error {
@@ -985,7 +1005,14 @@ func printReady(args cliArgs) {
 }
 
 func runCommand(name string, args ...string) error {
+	return runCommandIn("", name, args...)
+}
+
+func runCommandIn(dir, name string, args ...string) error {
 	cmd := exec.Command(name, args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
@@ -1000,8 +1027,177 @@ func ensureEnv(args cliArgs) error {
 }
 
 func envPath(args cliArgs) string {
-	path := flag(args, "env-file", flag(args, "env", defaultEnvPath))
+	path := flag(args, "env-file", flag(args, "env", defaultEnvPath()))
 	return filepath.Clean(path)
+}
+
+func defaultEnvPath() string {
+	if hasLocalCompose(".") {
+		return checkoutEnvPath
+	}
+	return filepath.Join(userConfigDir(), "quickstart.env")
+}
+
+func hasLocalCompose(dir string) bool {
+	for _, name := range []string{"docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"} {
+		if fileExists(filepath.Join(dir, name)) {
+			return true
+		}
+	}
+	return false
+}
+
+func userConfigDir() string {
+	if value := strings.TrimSpace(os.Getenv("ABRA_HOME")); value != "" {
+		return value
+	}
+	if configDir, err := os.UserConfigDir(); err == nil && configDir != "" {
+		return filepath.Join(configDir, "abra")
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return filepath.Join(home, ".abra")
+	}
+	return ".abra"
+}
+
+func projectDir(args cliArgs) (string, error) {
+	if explicit := flag(args, "project-dir", ""); explicit != "" {
+		return filepath.Abs(explicit)
+	}
+	if hasLocalCompose(".") {
+		return filepath.Abs(".")
+	}
+	return filepath.Join(userConfigDir(), "runtime", runtimeVersion(), "source"), nil
+}
+
+func ensureProjectDir(ctx context.Context, args cliArgs) (string, error) {
+	dir, err := projectDir(args)
+	if err != nil {
+		return "", err
+	}
+	if hasLocalCompose(dir) {
+		return dir, nil
+	}
+	if err := downloadRuntimeSource(ctx, dir); err != nil {
+		return "", err
+	}
+	if !hasLocalCompose(dir) {
+		return "", fmt.Errorf("runtime bundle did not include docker-compose.yml: %s", dir)
+	}
+	return dir, nil
+}
+
+func runtimeVersion() string {
+	if strings.TrimSpace(version) != "" && version != "dev" {
+		return strings.TrimSpace(version)
+	}
+	return "main"
+}
+
+func runtimeSourceURL() string {
+	if value := strings.TrimSpace(os.Getenv("ABRA_SOURCE_URL")); value != "" {
+		return value
+	}
+	if runtimeVersion() == "main" {
+		return "https://github.com/hermawan22/abra/archive/refs/heads/main.tar.gz"
+	}
+	return "https://github.com/hermawan22/abra/archive/refs/tags/" + runtimeVersion() + ".tar.gz"
+}
+
+func downloadRuntimeSource(ctx context.Context, targetDir string) error {
+	url := runtimeSourceURL()
+	fmt.Println("Downloading Abra runtime: " + url)
+	tmpDir := targetDir + ".tmp-" + timestamp()
+	if err := os.RemoveAll(tmpDir); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		_ = os.RemoveAll(tmpDir)
+		return fmt.Errorf("download runtime source: http %d", resp.StatusCode)
+	}
+	if err := extractTarGz(resp.Body, tmpDir); err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return err
+	}
+	if err := os.RemoveAll(targetDir); err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(targetDir), 0o755); err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return err
+	}
+	if err := os.Rename(tmpDir, targetDir); err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return err
+	}
+	return nil
+}
+
+func extractTarGz(reader io.Reader, targetDir string) error {
+	gz, err := gzip.NewReader(reader)
+	if err != nil {
+		return err
+	}
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+	for {
+		header, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		name := strings.TrimPrefix(filepath.ToSlash(header.Name), "/")
+		parts := strings.SplitN(name, "/", 2)
+		if len(parts) != 2 || parts[1] == "" {
+			continue
+		}
+		rel := filepath.Clean(filepath.FromSlash(parts[1]))
+		if rel == "." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || rel == ".." {
+			return fmt.Errorf("unsafe archive path: %s", header.Name)
+		}
+		dst := filepath.Join(targetDir, rel)
+		if !strings.HasPrefix(dst, filepath.Clean(targetDir)+string(os.PathSeparator)) && filepath.Clean(dst) != filepath.Clean(targetDir) {
+			return fmt.Errorf("unsafe archive destination: %s", header.Name)
+		}
+		switch header.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(dst, 0o755); err != nil {
+				return err
+			}
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+				return err
+			}
+			file, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode)&0o777)
+			if err != nil {
+				return err
+			}
+			_, copyErr := io.Copy(file, tr)
+			closeErr := file.Close()
+			if copyErr != nil {
+				return copyErr
+			}
+			if closeErr != nil {
+				return closeErr
+			}
+		}
+	}
 }
 
 func cfg(args cliArgs) contextConfig {
@@ -1238,7 +1434,7 @@ func usage() string {
 Usage:
   abra version
   abra up
-  abra upgrade [--version v0.1.2]
+  abra upgrade [--version v0.1.3]
   abra uninstall --yes
   abra demo
   abra quickstart
@@ -1262,7 +1458,7 @@ Usage:
 
 Common flags:
   --base-url http://127.0.0.1:18080
-  --env-file .tmp/quickstart.env
+  --env-file <path>
   --token dev-token
   --json
 

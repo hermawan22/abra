@@ -4,6 +4,13 @@ All notable changes to Abra are documented here.
 
 This project uses semantic versioning for public releases. Until v1.0.0, minor versions may include breaking changes when they are documented in this file and in the release notes.
 
+## 0.1.3 - 2026-06-18
+
+### Fixed
+
+- Allow `abra up` and `abra down` to run from any directory after global CLI installation by downloading and caching the matching runtime source bundle automatically.
+- Store the quickstart env under the Abra config directory for global installs instead of creating `.tmp/quickstart.env` in the caller's current directory.
+
 ## 0.1.2 - 2026-06-18
 
 ### Changed

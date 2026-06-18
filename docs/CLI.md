@@ -18,7 +18,7 @@ After the public GitHub repository exists, the remote installer is:
 curl -fsSL https://raw.githubusercontent.com/hermawan22/abra/main/scripts/install.sh | sh
 ```
 
-The remote URL only works after `hermawan22/abra` is published with a `main` branch. Release downloads are verified against `SHA256SUMS` before the binary is installed. Set `ABRA_VERSION=v0.1.2` to install a specific release.
+The remote URL only works after `hermawan22/abra` is published with a `main` branch. Release downloads are verified against `SHA256SUMS` before the binary is installed. Set `ABRA_VERSION=v0.1.3` to install a specific release.
 
 Start the local stack:
 
@@ -26,7 +26,7 @@ Start the local stack:
 abra up
 ```
 
-`abra up` creates `.tmp/quickstart.env`, starts Postgres, runs migrations, and starts the API and worker. `abra install` is kept as a compatibility alias for `abra up`; the curl script installs the CLI binary.
+`abra up` creates an env file, starts Postgres, runs migrations, and starts the API and worker. From a source checkout it uses `.tmp/quickstart.env`; from a global CLI install it stores runtime files under your Abra config directory and can be run from any folder. `abra install` is kept as a compatibility alias for `abra up`; the curl script installs the CLI binary.
 
 Use these defaults for the remaining commands:
 
@@ -91,7 +91,7 @@ Upgrade or remove the CLI binary:
 
 ```sh
 abra upgrade
-abra upgrade --version v0.1.2
+abra upgrade --version v0.1.3
 abra uninstall --yes
 ```
 

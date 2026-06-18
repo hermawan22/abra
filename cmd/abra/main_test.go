@@ -1,6 +1,9 @@
 package main
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -97,6 +100,66 @@ func TestLocalPathShortcutUsesDefaultScope(t *testing.T) {
 	if request["scope"] != wantScope {
 		t.Fatalf("scope = %v, want %s", request["scope"], wantScope)
 	}
+}
+
+func TestDefaultEnvPathOutsideCheckoutUsesAbraHome(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+
+	got := envPath(cliArgs{Flags: map[string]string{}, Bools: map[string]bool{}})
+	want := filepath.Join(home, "quickstart.env")
+	if got != want {
+		t.Fatalf("envPath = %q, want %q", got, want)
+	}
+}
+
+func TestEnsureProjectDirDownloadsRuntimeOutsideCheckout(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+
+	archive := runtimeArchive(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(archive)
+	}))
+	defer server.Close()
+	t.Setenv("ABRA_SOURCE_URL", server.URL+"/abra.tar.gz")
+
+	dir, err := ensureProjectDir(context.Background(), cliArgs{Flags: map[string]string{}, Bools: map[string]bool{}})
+	if err != nil {
+		t.Fatalf("ensureProjectDir error = %v", err)
+	}
+	if !fileExists(filepath.Join(dir, "docker-compose.yml")) {
+		t.Fatalf("runtime docker-compose.yml was not extracted into %s", dir)
+	}
+}
+
+func runtimeArchive(t *testing.T) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	content := []byte("services: {}\n")
+	if err := tw.WriteHeader(&tar.Header{
+		Name: "abra-test/docker-compose.yml",
+		Mode: 0o644,
+		Size: int64(len(content)),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(content); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
 }
 
 func mustWrite(t *testing.T, path, content string) {
