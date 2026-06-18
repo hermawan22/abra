@@ -37,7 +37,7 @@ jobs:
         run: npm ci
 
       - name: Install Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@v5
 
       - name: Run quick managed release gate
         run: |
