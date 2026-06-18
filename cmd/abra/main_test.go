@@ -43,16 +43,16 @@ func TestSetupYesNoStartDefaultsLocalQwen(t *testing.T) {
 	if values["EMBEDDING_BASE_URL"] != "http://host.docker.internal:8080/v1" {
 		t.Fatalf("base url = %q", values["EMBEDDING_BASE_URL"])
 	}
-	if values["EMBEDDING_MODEL"] != "text-embeddings-inference" {
+	if values["EMBEDDING_MODEL"] != defaultServedModelName {
 		t.Fatalf("model = %q", values["EMBEDDING_MODEL"])
 	}
 	if values["EMBEDDING_DIMENSIONS"] != "1024" {
 		t.Fatalf("dimensions = %q", values["EMBEDDING_DIMENSIONS"])
 	}
-	if values["RERANKER_PROVIDER"] != "local" {
+	if values["RERANKER_PROVIDER"] != "" {
 		t.Fatalf("reranker provider = %q", values["RERANKER_PROVIDER"])
 	}
-	if values["RERANKER_BASE_URL"] != "http://host.docker.internal:8081" {
+	if values["RERANKER_BASE_URL"] != "" {
 		t.Fatalf("reranker base url = %q", values["RERANKER_BASE_URL"])
 	}
 }
@@ -304,7 +304,7 @@ func TestConfigModelLocalRestoresQwenDefaults(t *testing.T) {
 	if values["EMBEDDING_API_KEY"] != "" {
 		t.Fatalf("api key = %q", values["EMBEDDING_API_KEY"])
 	}
-	if values["RERANKER_PROVIDER"] != "local" || values["RERANKER_BASE_URL"] != "http://host.docker.internal:8081" {
+	if values["RERANKER_PROVIDER"] != "" || values["RERANKER_BASE_URL"] != "" {
 		t.Fatalf("reranker fields = provider %q base %q", values["RERANKER_PROVIDER"], values["RERANKER_BASE_URL"])
 	}
 	if values["ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION"] != "false" {
@@ -343,8 +343,9 @@ func TestEmbeddingRunnerUsesLocalQwenDefaults(t *testing.T) {
 	if cfg.Dims != 1024 {
 		t.Fatalf("dims = %d", cfg.Dims)
 	}
-	if !strings.Contains(cfg.Image, "text-embeddings-inference") {
-		t.Fatalf("image = %q", cfg.Image)
+	wantImage := "ghcr.io/ggml-org/llama.cpp:server"
+	if cfg.Image != wantImage {
+		t.Fatalf("image = %q, want %q", cfg.Image, wantImage)
 	}
 }
 

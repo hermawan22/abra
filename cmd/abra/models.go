@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -20,8 +19,9 @@ import (
 
 const (
 	defaultEmbeddingContainer = "abra-embedding"
-	defaultEmbeddingModelID   = "Qwen/Qwen3-Embedding-0.6B"
-	defaultServedModelName    = "text-embeddings-inference"
+	defaultEmbeddingModelID   = "Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0"
+	defaultServedModelName    = defaultEmbeddingModelID
+	defaultEmbeddingBaseURL   = "http://host.docker.internal:8080/v1"
 )
 
 type embeddingRunnerConfig struct {
@@ -57,6 +57,10 @@ func models(ctx context.Context, args cliArgs) error {
 
 func modelsUp(ctx context.Context, args cliArgs) error {
 	cfg := embeddingRunner(args)
+	if err := syncLocalRunnerEnv(args); err != nil {
+		return err
+	}
+	cfg = embeddingRunner(args)
 	if _, err := execLookPath("docker"); err != nil {
 		return errors.New("missing required command: docker")
 	}
@@ -64,6 +68,16 @@ func modelsUp(ctx context.Context, args cliArgs) error {
 		_, _ = commandOutput("docker", "rm", "-f", cfg.Container)
 	}
 	exists := dockerContainerExists(cfg.Container)
+	if exists {
+		image := dockerContainerImage(cfg.Container)
+		if image != "" && image != cfg.Image {
+			fmt.Println("Replacing local embedding container image: " + image + " -> " + cfg.Image)
+			if _, err := commandOutput("docker", "rm", "-f", cfg.Container); err != nil {
+				return err
+			}
+			exists = false
+		}
+	}
 	if !exists {
 		if err := os.MkdirAll(cfg.CacheDir, 0o755); err != nil {
 			return err
@@ -76,11 +90,15 @@ func modelsUp(ctx context.Context, args cliArgs) error {
 			"run", "-d",
 			"--name", cfg.Container,
 			"--pull", "always",
-			"-p", cfg.Port + ":80",
-			"-v", cfg.CacheDir + ":/data",
+			"-p", cfg.Port + ":8080",
+			"-v", cfg.CacheDir + ":/root/.cache/huggingface",
 			cfg.Image,
-			"--model-id", cfg.ModelID,
-			"--served-model-name", cfg.Model,
+			"-hf", cfg.ModelID,
+			"--embedding",
+			"--pooling", "last",
+			"--ctx-size", "9600",
+			"--host", "0.0.0.0",
+			"--port", "8080",
 		}
 		if err := runCommand("docker", step...); err != nil {
 			return err
@@ -158,7 +176,7 @@ func embeddingRunner(args cliArgs) embeddingRunnerConfig {
 	if provider := strings.TrimSpace(values["EMBEDDING_PROVIDER"]); provider != "" && provider != "local" {
 		values = map[string]string{}
 	}
-	baseURL := firstNonEmpty(flag(args, "base-url", ""), values["EMBEDDING_BASE_URL"], "http://host.docker.internal:8080/v1")
+	baseURL := firstNonEmpty(flag(args, "base-url", ""), values["EMBEDDING_BASE_URL"], defaultEmbeddingBaseURL)
 	model := firstNonEmpty(flag(args, "model", ""), values["EMBEDDING_MODEL"], defaultServedModelName)
 	dims := intFromString(firstNonEmpty(flag(args, "dimensions", ""), values["EMBEDDING_DIMENSIONS"]), 1024)
 	port := firstNonEmpty(flag(args, "port", ""), portFromBaseURL(baseURL), "8080")
@@ -173,21 +191,53 @@ func embeddingRunner(args cliArgs) embeddingRunnerConfig {
 		Model:     model,
 		BaseURL:   strings.TrimRight(hostBaseURL, "/"),
 		Port:      port,
-		CacheDir:  firstNonEmpty(flag(args, "cache-dir", ""), filepath.Join(userConfigDir(), "models", "tei")),
+		CacheDir:  firstNonEmpty(flag(args, "cache-dir", ""), filepath.Join(userConfigDir(), "models", "llama.cpp")),
 		Dims:      dims,
 	}
 }
 
 func defaultTEIImage() string {
-	if runtime.GOARCH == "arm64" {
-		return "ghcr.io/huggingface/text-embeddings-inference:cpu-arm64-1.9"
-	}
-	return "ghcr.io/huggingface/text-embeddings-inference:cpu-1.9"
+	return "ghcr.io/ggml-org/llama.cpp:server"
 }
 
 func dockerContainerExists(name string) bool {
 	_, err := commandOutput("docker", "container", "inspect", name)
 	return err == nil
+}
+
+func dockerContainerImage(name string) string {
+	out, err := commandOutput("docker", "container", "inspect", "--format", "{{.Config.Image}}", name)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
+func syncLocalRunnerEnv(args cliArgs) error {
+	if err := ensureEnv(args); err != nil {
+		return err
+	}
+	values, err := readEnvValues(envPath(args))
+	if err != nil {
+		return err
+	}
+	if provider := strings.TrimSpace(values["EMBEDDING_PROVIDER"]); provider != "" && provider != "local" {
+		return nil
+	}
+	model := firstNonEmpty(flag(args, "model", ""), defaultServedModelName)
+	dims := intFromString(flag(args, "dimensions", ""), 1024)
+	return updateEnvValues(args, map[string]string{
+		"EMBEDDING_PROVIDER":                   "local",
+		"EMBEDDING_BASE_URL":                   defaultEmbeddingBaseURL,
+		"EMBEDDING_API_KEY":                    "",
+		"EMBEDDING_MODEL":                      model,
+		"EMBEDDING_DIMENSIONS":                 strconv.Itoa(dims),
+		"RERANKER_PROVIDER":                    "",
+		"RERANKER_BASE_URL":                    "",
+		"RERANKER_API_KEY":                     "",
+		"RERANKER_MODEL":                       "",
+		"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION": "false",
+	})
 }
 
 func waitEmbeddingReady(ctx context.Context, cfg embeddingRunnerConfig, timeout time.Duration) error {

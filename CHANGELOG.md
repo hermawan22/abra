@@ -4,6 +4,14 @@ All notable changes to Abra are documented here.
 
 This project uses semantic versioning for public releases. Until v1.0.0, minor versions may include breaking changes when they are documented in this file and in the release notes.
 
+## 0.3.2 - 2026-06-19
+
+### Fixed
+
+- Switch the built-in local Qwen embedding runner from Hugging Face TEI to llama.cpp GGUF serving, because the TEI ARM64 image path does not serve Qwen/Qwen3-Embedding-0.6B reliably without ONNX artifacts.
+- Reset local embedding defaults to `Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0` and remove the non-started reranker endpoint from default local config.
+- Recreate the local model container automatically when an older runner image is present.
+
 ## 0.3.1 - 2026-06-19
 
 ### Added

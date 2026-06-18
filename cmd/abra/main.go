@@ -375,14 +375,14 @@ func configModelLocalNeural(args cliArgs, label string) error {
 	}
 	if err := updateEnvValues(args, map[string]string{
 		"EMBEDDING_PROVIDER":                   "local",
-		"EMBEDDING_BASE_URL":                   flag(args, "base-url", "http://host.docker.internal:8080/v1"),
+		"EMBEDDING_BASE_URL":                   flag(args, "base-url", defaultEmbeddingBaseURL),
 		"EMBEDDING_API_KEY":                    apiKey,
-		"EMBEDDING_MODEL":                      flag(args, "model", "text-embeddings-inference"),
+		"EMBEDDING_MODEL":                      flag(args, "model", defaultServedModelName),
 		"EMBEDDING_DIMENSIONS":                 flag(args, "dimensions", "1024"),
-		"RERANKER_PROVIDER":                    "local",
-		"RERANKER_BASE_URL":                    flag(args, "reranker-base-url", "http://host.docker.internal:8081"),
+		"RERANKER_PROVIDER":                    flag(args, "reranker-provider", ""),
+		"RERANKER_BASE_URL":                    flag(args, "reranker-base-url", ""),
 		"RERANKER_API_KEY":                     apiKey,
-		"RERANKER_MODEL":                       flag(args, "reranker-model", "text-embeddings-inference"),
+		"RERANKER_MODEL":                       flag(args, "reranker-model", ""),
 		"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION": "false",
 	}); err != nil {
 		return err
@@ -1900,11 +1900,11 @@ ABRA_PORT=18080
 POSTGRES_PORT=5433
 EMBEDDING_PROVIDER=local
 EMBEDDING_BASE_URL=http://host.docker.internal:8080/v1
-EMBEDDING_MODEL=text-embeddings-inference
+EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0
 EMBEDDING_DIMENSIONS=1024
-RERANKER_PROVIDER=local
-RERANKER_BASE_URL=http://host.docker.internal:8081
-RERANKER_MODEL=text-embeddings-inference
+RERANKER_PROVIDER=
+RERANKER_BASE_URL=
+RERANKER_MODEL=
 ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=false
 REDACT_PII=true
 RATE_LIMIT_MAX=1000

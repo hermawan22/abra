@@ -204,11 +204,12 @@ func setupEmbeddingModel(args cliArgs, fallback string) string {
 }
 
 func setupLocalNeuralEmbeddings(args cliArgs, reader *bufio.Reader, interactive bool) error {
-	baseURL := firstNonEmpty(flag(args, "base-url", ""), "http://host.docker.internal:8080/v1")
-	model := setupEmbeddingModel(args, "text-embeddings-inference")
+	baseURL := firstNonEmpty(flag(args, "base-url", ""), defaultEmbeddingBaseURL)
+	model := setupEmbeddingModel(args, defaultServedModelName)
 	dimensions := firstNonEmpty(flag(args, "dimensions", ""), "1024")
-	rerankerBaseURL := firstNonEmpty(flag(args, "reranker-base-url", ""), "http://host.docker.internal:8081")
-	rerankerModel := firstNonEmpty(flag(args, "reranker-model", ""), "text-embeddings-inference")
+	rerankerProvider := firstNonEmpty(flag(args, "reranker-provider", ""), "")
+	rerankerBaseURL := firstNonEmpty(flag(args, "reranker-base-url", ""), "")
+	rerankerModel := firstNonEmpty(flag(args, "reranker-model", ""), "")
 	apiKey := flag(args, "api-key", "")
 	if apiKey == "" && boolFlag(args, "api-key-stdin") {
 		bytes, err := io.ReadAll(os.Stdin)
@@ -231,13 +232,19 @@ func setupLocalNeuralEmbeddings(args cliArgs, reader *bufio.Reader, interactive 
 		if err != nil {
 			return err
 		}
-		rerankerBaseURL, err = promptDefault(reader, "Qwen3 reranker base URL", rerankerBaseURL)
-		if err != nil {
-			return err
-		}
-		rerankerModel, err = promptDefault(reader, "Reranker request model", rerankerModel)
-		if err != nil {
-			return err
+		if strings.TrimSpace(rerankerProvider) != "" || strings.TrimSpace(rerankerBaseURL) != "" {
+			rerankerProvider, err = promptDefault(reader, "Reranker provider", rerankerProvider)
+			if err != nil {
+				return err
+			}
+			rerankerBaseURL, err = promptDefault(reader, "Reranker base URL", rerankerBaseURL)
+			if err != nil {
+				return err
+			}
+			rerankerModel, err = promptDefault(reader, "Reranker request model", rerankerModel)
+			if err != nil {
+				return err
+			}
 		}
 	}
 	if err := updateEnvValues(args, map[string]string{
@@ -246,7 +253,7 @@ func setupLocalNeuralEmbeddings(args cliArgs, reader *bufio.Reader, interactive 
 		"EMBEDDING_API_KEY":                    strings.TrimSpace(apiKey),
 		"EMBEDDING_MODEL":                      strings.TrimSpace(model),
 		"EMBEDDING_DIMENSIONS":                 strings.TrimSpace(dimensions),
-		"RERANKER_PROVIDER":                    "local",
+		"RERANKER_PROVIDER":                    strings.TrimSpace(rerankerProvider),
 		"RERANKER_BASE_URL":                    strings.TrimSpace(rerankerBaseURL),
 		"RERANKER_API_KEY":                     strings.TrimSpace(apiKey),
 		"RERANKER_MODEL":                       strings.TrimSpace(rerankerModel),

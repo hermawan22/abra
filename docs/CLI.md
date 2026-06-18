@@ -2,7 +2,7 @@
 
 Abra is terminal-first: install the `abra` command, start the service from the terminal, and operate it through the CLI, HTTP, or MCP.
 
-The quickstart path defaults to local neural embeddings: Qwen/Qwen3-Embedding-0.6B served from a local OpenAI-compatible endpoint managed by `abra models up`. Qwen/Qwen3-Reranker-0.6B can be configured when a compatible rerank endpoint is available. Custom providers are supported and replace the local defaults when configured.
+The quickstart path defaults to local neural embeddings: Qwen/Qwen3-Embedding-0.6B-GGUF served by a local llama.cpp OpenAI-compatible endpoint managed by `abra models up`. Qwen/Qwen3-Reranker-0.6B can be configured when a compatible rerank endpoint is available. Custom providers are supported and replace the local defaults when configured.
 
 ## 3-Minute Local Flow
 

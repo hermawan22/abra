@@ -570,7 +570,7 @@ Recall responses include `retrieval_mode`, plus `text_score` and `vector_score` 
 4. Run the migration.
 5. Start the API, MCP server, or worker process.
 
-The default embedding provider is `local`, meaning self-hosted Qwen-compatible neural retrieval. `abra models up` starts Qwen/Qwen3-Embedding-0.6B through a local OpenAI-compatible embedding runner. Qwen/Qwen3-Reranker-0.6B remains configurable for deployments that expose a compatible rerank endpoint. Custom providers replace the local defaults by setting `EMBEDDING_PROVIDER=compatible`, `EMBEDDING_BASE_URL`, `EMBEDDING_MODEL`, and `EMBEDDING_DIMENSIONS`; set `RERANKER_PROVIDER` only when the custom provider also exposes a rerank endpoint.
+The default embedding provider is `local`, meaning self-hosted Qwen-compatible neural retrieval. `abra models up` starts Qwen/Qwen3-Embedding-0.6B-GGUF through a local llama.cpp OpenAI-compatible embedding runner. Qwen/Qwen3-Reranker-0.6B remains configurable for deployments that expose a compatible rerank endpoint. Custom providers replace the local defaults by setting `EMBEDDING_PROVIDER=compatible`, `EMBEDDING_BASE_URL`, `EMBEDDING_MODEL`, and `EMBEDDING_DIMENSIONS`; set `RERANKER_PROVIDER` only when the custom provider also exposes a rerank endpoint.
 
 Forgetting a claim marks it `deprecated`. Source re-ingestion will not reactivate a manually forgotten claim; only claims and relations temporarily deprecated by source refresh can be reactivated.
 
@@ -584,11 +584,11 @@ ABRA_API_KEYS=replace-me
 ABRA_WEBHOOK_SECRETS=replace-webhook-secret
 EMBEDDING_PROVIDER=local
 EMBEDDING_BASE_URL=http://host.docker.internal:8080/v1
-EMBEDDING_MODEL=text-embeddings-inference
+EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0
 EMBEDDING_DIMENSIONS=1024
-RERANKER_PROVIDER=local
-RERANKER_BASE_URL=http://host.docker.internal:8081
-RERANKER_MODEL=text-embeddings-inference
+RERANKER_PROVIDER=
+RERANKER_BASE_URL=
+RERANKER_MODEL=
 ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=false
 REDACT_PII=true
 RATE_LIMIT_MAX=120
