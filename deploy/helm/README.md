@@ -38,7 +38,7 @@ Install or upgrade:
 ```sh
 helm upgrade --install abra ./deploy/helm \
   --set image.repository=ghcr.io/your-org/abra \
-  --set image.tag=0.1.1
+  --set image.tag=0.1.2
 ```
 
 ## Values
@@ -48,7 +48,7 @@ Important values:
 ```yaml
 image:
   repository: ghcr.io/your-org/abra
-  tag: 0.1.1
+  tag: 0.1.2
 
 secrets:
   existingSecret: abra-secrets

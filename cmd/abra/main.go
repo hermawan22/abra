@@ -1238,7 +1238,7 @@ func usage() string {
 Usage:
   abra version
   abra up
-  abra upgrade [--version v0.1.1]
+  abra upgrade [--version v0.1.2]
   abra uninstall --yes
   abra demo
   abra quickstart

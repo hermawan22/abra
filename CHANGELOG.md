@@ -4,6 +4,12 @@ All notable changes to Abra are documented here.
 
 This project uses semantic versioning for public releases. Until v1.0.0, minor versions may include breaking changes when they are documented in this file and in the release notes.
 
+## 0.1.2 - 2026-06-18
+
+### Changed
+
+- Update installer next-step output to point users at `abra up`.
+
 ## 0.1.1 - 2026-06-18
 
 ### Changed
