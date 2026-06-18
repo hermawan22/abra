@@ -19,6 +19,15 @@ type Store struct {
 	pool *pgxpool.Pool
 }
 
+type ScopeSummary struct {
+	Scope     string `json:"scope"`
+	Documents int    `json:"documents"`
+	Claims    int    `json:"claims"`
+	Summaries int    `json:"summaries"`
+	Sources   int    `json:"sources"`
+	Jobs      int    `json:"jobs"`
+}
+
 var fullTextTermPattern = regexp.MustCompile(`[A-Za-z0-9_]+`)
 
 func pgInterval(duration time.Duration) string {
@@ -2930,6 +2939,49 @@ func (s *Store) ListSourceConfigs(ctx context.Context, scope string, limit int) 
 		sources = append(sources, source)
 	}
 	return sources, rows.Err()
+}
+
+func (s *Store) ListScopes(ctx context.Context, limit int) ([]ScopeSummary, error) {
+	if limit < 1 || limit > 100 {
+		limit = 50
+	}
+	rows, err := s.pool.Query(ctx, `
+		WITH known_scopes AS (
+		  SELECT scope FROM documents
+		  UNION
+		  SELECT scope FROM claims
+		  UNION
+		  SELECT scope FROM memory_summaries
+		  UNION
+		  SELECT scope FROM source_configs
+		  UNION
+		  SELECT scope FROM ingestion_jobs
+		)
+		SELECT
+		  known_scopes.scope,
+		  (SELECT COUNT(*) FROM documents WHERE documents.scope = known_scopes.scope) AS documents,
+		  (SELECT COUNT(*) FROM claims WHERE claims.scope = known_scopes.scope) AS claims,
+		  (SELECT COUNT(*) FROM memory_summaries WHERE memory_summaries.scope = known_scopes.scope) AS summaries,
+		  (SELECT COUNT(*) FROM source_configs WHERE source_configs.scope = known_scopes.scope) AS sources,
+		  (SELECT COUNT(*) FROM ingestion_jobs WHERE ingestion_jobs.scope = known_scopes.scope) AS jobs
+		FROM known_scopes
+		WHERE TRIM(known_scopes.scope) <> ''
+		ORDER BY documents DESC, claims DESC, summaries DESC, sources DESC, known_scopes.scope ASC
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	scopes := []ScopeSummary{}
+	for rows.Next() {
+		var scope ScopeSummary
+		if err := rows.Scan(&scope.Scope, &scope.Documents, &scope.Claims, &scope.Summaries, &scope.Sources, &scope.Jobs); err != nil {
+			return nil, err
+		}
+		scopes = append(scopes, scope)
+	}
+	return scopes, rows.Err()
 }
 
 func (s *Store) GetSourceConfig(ctx context.Context, id string) (SourceConfigRecord, error) {

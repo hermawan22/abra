@@ -218,7 +218,7 @@ func thinkGaps(packet ComposeResult) []ThinkGap {
 	add := func(code, severity, message, action string) {
 		gaps = append(gaps, ThinkGap{Code: code, Severity: severity, Message: message, SuggestedAction: action})
 	}
-	if len(packet.Facts) == 0 {
+	if !hasUsableEvidence(packet) || (packet.Verification.RetrievalCoverage.Targets.Facts > 0 && len(packet.Facts) == 0) {
 		add("no_source_backed_facts", "high", "No source-backed claims were retrieved for the question.", "ingest relevant sources or narrow the question")
 	}
 	for _, missing := range packet.Verification.RetrievalCoverage.Missing {

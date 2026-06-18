@@ -36,13 +36,13 @@ func decideAgentAction(input ComposeInput, result ComposeResult) AgentDecision {
 		AllowedNextActions: []string{"cite_evidence", "inspect_relevant_files", "run_validation"},
 	}
 
-	if len(result.Facts) == 0 {
+	if !hasUsableEvidence(result) || (result.Verification.RetrievalCoverage.Targets.Facts > 0 && len(result.Facts) == 0) {
 		return applyMemoryHealthGate(AgentDecision{
 			Decision:           "blocked",
 			AutonomousAllowed:  false,
 			ReviewRequired:     true,
 			Confidence:         0,
-			Reasons:            []string{"No source-backed facts were retrieved for this task and scope."},
+			Reasons:            []string{"No usable source-backed evidence was retrieved for this task and scope."},
 			RequiredActions:    []string{"ingest_relevant_sources", "narrow_scope_or_task", "rerun_working_memory_compose"},
 			AllowedNextActions: []string{"ask_for_sources", "propose_ingestion"},
 		}, result.MemoryHealth)
@@ -99,6 +99,10 @@ func decideAgentAction(input ComposeInput, result ComposeResult) AgentDecision {
 	decision = applyActiveConflictGate(decision, result.Verification.ActiveConflicts)
 	decision = applyMemoryHealthGate(decision, result.MemoryHealth)
 	return decision
+}
+
+func hasUsableEvidence(result ComposeResult) bool {
+	return len(result.Facts)+len(result.SupportingDocuments)+len(result.Summaries)+len(result.GraphContext)+len(result.Evidence) > 0
 }
 
 func applyMemoryHealthGate(decision AgentDecision, health store.MemoryHealthResult) AgentDecision {

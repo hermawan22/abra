@@ -2,9 +2,7 @@
   "mcpServers": {
     "abra": {
       "url": "http://localhost:18080/mcp",
-      "headers": {
-        "Authorization": "Bearer dev-token"
-      }
+      "bearer_token_env_var": "ABRA_API_TOKEN"
     }
   }
 }

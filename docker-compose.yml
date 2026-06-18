@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: abra
       POSTGRES_DB: abra
     ports:
-      - "${POSTGRES_PORT:-5433}:5432"
+      - "${POSTGRES_BIND_ADDR:-127.0.0.1}:${POSTGRES_PORT:-5433}:5432"
     volumes:
       - abra-postgres:/var/lib/postgresql/data
     healthcheck:
@@ -21,7 +21,7 @@ services:
     command: ["/app/abra-migrate"]
     environment:
       DATABASE_URL: ${ABRA_DATABASE_URL:-postgres://abra:abra@postgres:5432/abra}
-      NODE_ENV: production
+      NODE_ENV: ${NODE_ENV:-production}
       ABRA_API_KEYS: ${ABRA_API_KEYS:?set ABRA_API_KEYS}
       ABRA_WEBHOOK_SECRETS: ${ABRA_WEBHOOK_SECRETS:-}
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-local}
@@ -50,7 +50,7 @@ services:
     environment:
       DATABASE_URL: ${ABRA_DATABASE_URL:-postgres://abra:abra@postgres:5432/abra}
       PORT: ${PORT:-8080}
-      NODE_ENV: production
+      NODE_ENV: ${NODE_ENV:-production}
       ABRA_API_KEYS: ${ABRA_API_KEYS:?set ABRA_API_KEYS}
       ABRA_APPROVAL_MODE: ${ABRA_APPROVAL_MODE:-enforce}
       ABRA_WEBHOOK_SECRETS: ${ABRA_WEBHOOK_SECRETS:-}
@@ -91,7 +91,7 @@ services:
     command: ["/app/abra-worker"]
     environment:
       DATABASE_URL: ${ABRA_DATABASE_URL:-postgres://abra:abra@postgres:5432/abra}
-      NODE_ENV: production
+      NODE_ENV: ${NODE_ENV:-production}
       ABRA_API_KEYS: ${ABRA_API_KEYS:?set ABRA_API_KEYS}
       ABRA_APPROVAL_MODE: ${ABRA_APPROVAL_MODE:-enforce}
       ABRA_WEBHOOK_SECRETS: ${ABRA_WEBHOOK_SECRETS:-}

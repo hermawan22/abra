@@ -85,7 +85,8 @@ abra think "What should agents use before autonomous code changes?" --scope repo
 Ingest local docs or repo files immediately from the CLI:
 
 ```sh
-abra ingest . --code
+abra scope
+abra ingest . --code --scope repo:my-app
 ```
 
 Queue a remote Git repo through the worker:
@@ -106,8 +107,10 @@ Install Abra into Codex as a streamable HTTP MCP server:
 abra mcp install-codex
 ```
 
-Restart Codex or open a new thread after installing MCP servers. To avoid scope
-mismatches, run this in each project and pass the printed scope to the agent:
+Fully quit and reopen Codex Desktop after installing or changing the token env.
+Opening a new thread is enough only when the env var was already available to
+the Codex process. To avoid scope mismatches, run this in each project and pass
+the printed scope to the agent:
 
 ```sh
 abra scope
@@ -116,7 +119,7 @@ abra scope
 Prompt pattern:
 
 ```text
-Use Abra MCP first. Scope: repo:<project>. Call working_memory_compose before answering or changing code.
+Use Abra MCP first. Scope: repo:<project>. If unsure, call discover_scopes, then call working_memory_compose before answering or changing code.
 ```
 
 Stop the stack:
@@ -189,7 +192,8 @@ go run ./cmd/abra ingest --scope repo:demo \
 Ingest local repo docs and code intelligence immediately from the CLI:
 
 ```sh
-go run ./cmd/abra ingest . --code
+go run ./cmd/abra scope
+go run ./cmd/abra ingest . --code --scope repo:abra
 ```
 
 Think with governed memory:
@@ -395,8 +399,9 @@ MCP tools:
 - `brain_summaries(scope, query?, limit?)`
 - `brain_think(question, scope, agent?, limit?, max_queries?, token_budget?, include_unverified?)`
 - `memory_health(scope)`
+- `discover_scopes(limit?)`
 - `rebuild_summaries(scope, limit?, approval_id?)`
-- `policy_plan(hook, task, scope?, files?, changed_files?, language?, agent?, limit?, max_queries?)`
+- `policy_plan(hook, task, scope, files?, changed_files?, language?, agent?, limit?, max_queries?)`
 - `working_memory_compose(task, scope, hook?, agent?, files?, changed_files?, language?, limit?, max_queries?, token_budget?, include_unverified?)`
 - `list_conflicts(scope, status?, severity?, claim_id?, relation_id?, limit?)`
 - `resolve_conflict(conflict_id, status, resolved_by?, resolution?, metadata?)`
@@ -617,7 +622,7 @@ RATE_LIMIT_WINDOW=1 minute
 # ABRA_TRACING_SAMPLE_RATIO=0.25
 ```
 
-`ABRA_API_KEYS` is required when `NODE_ENV=production`. Clients can pass either `Authorization: Bearer <key>` or `x-api-key: <key>`.
+`ABRA_API_KEYS` is required unless `ABRA_UNAUTHENTICATED_DEV=1` is explicitly set for isolated local development. The unauthenticated mode is rejected in production and must not be exposed on a network. Clients can pass either `Authorization: Bearer <key>` or `x-api-key: <key>`.
 Every HTTP response includes `x-request-id` for request correlation.
 Keep `RATE_LIMIT_MAX` and `RATE_LIMIT_WINDOW` configured in production. Abra records rate-limit buckets in Postgres when the API is running normally, so limits apply across replicated API pods. A gateway or ingress rate limit is still recommended as defense in depth for public or agent-facing traffic.
 Tracing is disabled by default and enabled automatically when an OTLP endpoint is configured. `ABRA_TRACING_SAMPLE_RATIO` must be between `0` and `1`; use `ABRA_TRACING_ENABLED=true` only when you want startup to fail if the endpoint is missing.
@@ -647,16 +652,16 @@ Gateways can call `POST /acl/decision` or MCP `acl_decision` with `principal_typ
 Simple keys stay backwards compatible and act as admin keys:
 
 ```text
-ABRA_API_KEYS=replace-me
+ABRA_API_KEYS=abra_admin_generated_32_chars
 ```
 
 Scoped keys can limit roles and scopes:
 
 ```text
-ABRA_API_KEYS=reader-token|roles=reader;scopes=team:example,ops-token|roles=ops;scopes=*
+ABRA_API_KEYS=abra_reader_generated_32_chars|roles=reader;scopes=team:example,abra_ops_generated_32_chars|roles=ops;scopes=*
 ```
 
-Supported roles are `admin`, `writer`, `reader`, and `ops`. Scoped keys must provide a `scope` query or payload field on list/read endpoints to avoid cross-scope enumeration.
+Supported roles are `admin`, `writer`, `reader`, and `ops`. Production tokens must be unique, non-placeholder values of at least 16 characters. Scoped keys must provide a `scope` query or payload field on list/read endpoints to avoid cross-scope enumeration.
 
 Audit export is an ops endpoint:
 

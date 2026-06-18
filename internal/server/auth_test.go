@@ -77,6 +77,37 @@ func TestAuthMiddlewareRejectsInvalidToken(t *testing.T) {
 	}
 }
 
+func TestAuthMiddlewareRejectsMissingKeysWithoutDevBypass(t *testing.T) {
+	h := handler{cfg: config.Config{}}
+	request := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	recorder := httptest.NewRecorder()
+
+	h.auth(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})(recorder, request)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestAuthMiddlewareAllowsExplicitUnauthenticatedDev(t *testing.T) {
+	h := handler{cfg: config.Config{AllowUnauthenticatedDev: true}}
+	request := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	recorder := httptest.NewRecorder()
+
+	h.auth(func(w http.ResponseWriter, r *http.Request) {
+		if !h.requireAccess(w, r, authActionOps, "team:a") {
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})(recorder, request)
+
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNoContent)
+	}
+}
+
 func TestAuthMiddlewareAllowsXAPIKeyHeader(t *testing.T) {
 	h := handler{cfg: config.Config{APIKeys: []string{"good-token"}}}
 	request := httptest.NewRequest(http.MethodGet, "/protected", nil)

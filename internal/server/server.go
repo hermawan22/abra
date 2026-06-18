@@ -16,6 +16,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
+const mcpServerVersion = "0.3.7"
+
 func New(cfg config.Config, db *store.Store) (http.Handler, error) {
 	brainService, err := brain.New(cfg, db)
 	if err != nil {
@@ -748,7 +750,7 @@ func (h *handler) mcp(w http.ResponseWriter, r *http.Request) {
 			"id":      rpc.ID,
 			"result": map[string]any{
 				"protocolVersion": "2025-06-18",
-				"serverInfo":      map[string]any{"name": "abra", "version": "0.1.0-go"},
+				"serverInfo":      map[string]any{"name": "abra", "version": mcpServerVersion},
 				"capabilities":    mcpCapabilities(),
 			},
 		})
@@ -964,6 +966,27 @@ func (h *handler) mcpToolCall(w http.ResponseWriter, r *http.Request, id any, pa
 			return
 		}
 		result, err = h.db.MemoryHealth(r.Context(), scope)
+	case "discover_scopes":
+		principal := principalFromContext(r.Context())
+		if principal == nil || !principal.allowsAction(authActionRead) {
+			err = fmt.Errorf("forbidden: read role required")
+			break
+		}
+		scopes, listErr := h.db.ListScopes(r.Context(), intArg(args, "limit", 50))
+		if listErr != nil {
+			err = listErr
+			break
+		}
+		visible := make([]store.ScopeSummary, 0, len(scopes))
+		for _, scope := range scopes {
+			if principal.allows(authActionRead, scope.Scope) {
+				visible = append(visible, scope)
+			}
+		}
+		result = map[string]any{
+			"scopes": visible,
+			"hint":   "Use one of these exact scope values with brain_think, recall, policy_plan, and working_memory_compose. If the expected project is missing, run `abra scope` and `abra ingest . --code --scope <scope>` from that project.",
+		}
 	case "rebuild_summaries":
 		scope := stringArg(args, "scope")
 		if !h.requireAccess(w, r, authActionWrite, scope) {
@@ -1518,6 +1541,13 @@ func mcpTools() []map[string]any {
 			"inputSchema": objectSchema([]string{"scope"}, map[string]any{"scope": stringSchema()}),
 		},
 		{
+			"name":        "discover_scopes",
+			"description": "List memory scopes visible to the current API token with counts, so AI agents can choose the right scope before recall or working-memory composition.",
+			"inputSchema": objectSchema(nil, map[string]any{
+				"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100},
+			}),
+		},
+		{
 			"name":        "rebuild_summaries",
 			"description": "Rebuild hierarchical memory summaries for existing documents in a scope. Requires a backfill approval when approval enforcement is enabled.",
 			"inputSchema": objectSchema([]string{"scope"}, map[string]any{"scope": stringSchema(), "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 10000}, "approval_id": stringSchema()}),
@@ -1525,7 +1555,7 @@ func mcpTools() []map[string]any {
 		{
 			"name":        "policy_plan",
 			"description": "Plan which Abra recall queries an agent should run for a task hook.",
-			"inputSchema": objectSchema([]string{"hook", "task"}, map[string]any{
+			"inputSchema": objectSchema([]string{"hook", "task", "scope"}, map[string]any{
 				"hook":          map[string]any{"type": "string", "enum": []string{"before_task", "before_code", "after_task"}},
 				"task":          stringSchema(),
 				"scope":         stringSchema(),
@@ -1809,7 +1839,7 @@ func mcpTools() []map[string]any {
 
 func mcpToolTraceName(name string) string {
 	switch name {
-	case "recall", "ingest_document", "ingest_documents", "remember_claim", "challenge", "forget", "brain_sources", "brain_summaries", "brain_think", "memory_health", "rebuild_summaries", "policy_plan", "working_memory_compose", "list_conflicts", "resolve_conflict", "upsert_acl_policy", "list_acl_policies", "acl_decision", "upsert_agent_policy", "list_agent_policies", "agent_policy_decision", "upsert_agent_profile", "list_agent_profiles", "upsert_source_config", "list_source_configs", "enqueue_ingestion_job", "list_ingestion_jobs", "retry_ingestion_job", "cancel_ingestion_job", "propose_learning", "list_learning_proposals", "decide_learning_proposal", "request_approval":
+	case "recall", "ingest_document", "ingest_documents", "remember_claim", "challenge", "forget", "brain_sources", "brain_summaries", "brain_think", "memory_health", "discover_scopes", "rebuild_summaries", "policy_plan", "working_memory_compose", "list_conflicts", "resolve_conflict", "upsert_acl_policy", "list_acl_policies", "acl_decision", "upsert_agent_policy", "list_agent_policies", "agent_policy_decision", "upsert_agent_profile", "list_agent_profiles", "upsert_source_config", "list_source_configs", "enqueue_ingestion_job", "list_ingestion_jobs", "retry_ingestion_job", "cancel_ingestion_job", "propose_learning", "list_learning_proposals", "decide_learning_proposal", "request_approval":
 		return name
 	default:
 		return "unknown"

@@ -121,9 +121,26 @@ build_with_go() {
     log "Install Go once, then rerun this installer, or download an Abra release binary."
     exit 1
   fi
-  mkdir -p "$tmp/gobin"
-  log "Building Abra CLI with go install..."
-  GOBIN="$tmp/gobin" go install "github.com/$REPO/cmd/abra@$VERSION"
+  resolved="$VERSION"
+  if [ "$resolved" = "latest" ]; then
+    resolved="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+    if [ -z "$resolved" ]; then
+      log "could not resolve latest release tag"
+      exit 1
+    fi
+  fi
+  mkdir -p "$tmp/source" "$tmp/gobin"
+  source_url="https://github.com/$REPO/archive/refs/tags/$resolved.tar.gz"
+  log "Building Abra CLI from source tag: $source_url"
+  curl -fsSL "$source_url" -o "$tmp/source.tar.gz"
+  tar -xzf "$tmp/source.tar.gz" -C "$tmp/source"
+  src_dir="$(find "$tmp/source" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+  if [ -z "$src_dir" ]; then
+    log "source archive did not contain a directory"
+    exit 1
+  fi
+  build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  (cd "$src_dir" && go build -ldflags "-X main.version=$resolved -X main.commit=source -X main.date=$build_date" -o "$tmp/gobin/abra" ./cmd/abra)
   printf '%s\n' "$tmp/gobin/abra"
 }
 

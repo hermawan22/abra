@@ -470,6 +470,29 @@ func TestEmbeddingRunnerIgnoresCompatibleProviderConfig(t *testing.T) {
 	}
 }
 
+func TestSyncLocalRunnerEnvUsesSelectedPort(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+
+	if err := run(context.Background(), []string{"init"}); err != nil {
+		t.Fatalf("init error = %v", err)
+	}
+	args := parseArgs([]string{"models", "up", "--port", "9090"})
+	args.Rest = []string{}
+	if err := syncLocalRunnerEnv(args); err != nil {
+		t.Fatalf("sync local env error = %v", err)
+	}
+	values, err := readEnvValues(envPath(args))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if values["EMBEDDING_BASE_URL"] != "http://host.docker.internal:9090/v1" {
+		t.Fatalf("EMBEDDING_BASE_URL = %q", values["EMBEDDING_BASE_URL"])
+	}
+}
+
 func TestFriendlyProviderErrorAddsModelsHint(t *testing.T) {
 	err := friendlyProviderError(&httpStatusError{
 		Code: 400,

@@ -76,7 +76,7 @@ func (l *rateLimiter) allow(key string) (bool, time.Time) {
 }
 
 func rateLimitKey(r *http.Request, apiKeys []string) string {
-	if principal, ok := authenticate(r, apiKeys); ok && principal != nil && principal.token != "" {
+	if principal, ok := authenticate(r, apiKeys, false); ok && principal != nil && principal.token != "" {
 		return hashedRateLimitKey("api-key", principal.token)
 	}
 	return rateLimitIPKey(r)

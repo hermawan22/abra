@@ -6,6 +6,7 @@ import (
 )
 
 func TestLoadAcceptsApprovalModeEnforce(t *testing.T) {
+	allowUnauthenticatedDev(t)
 	t.Setenv("ABRA_APPROVAL_MODE", "enforce")
 
 	cfg, err := Load()
@@ -18,6 +19,7 @@ func TestLoadAcceptsApprovalModeEnforce(t *testing.T) {
 }
 
 func TestLoadRejectsInvalidApprovalMode(t *testing.T) {
+	allowUnauthenticatedDev(t)
 	t.Setenv("ABRA_APPROVAL_MODE", "strict")
 
 	if _, err := Load(); err == nil {
@@ -27,7 +29,7 @@ func TestLoadRejectsInvalidApprovalMode(t *testing.T) {
 
 func TestLoadAllowsLocalNeuralEmbeddingsInProductionByDefault(t *testing.T) {
 	t.Setenv("NODE_ENV", "production")
-	t.Setenv("ABRA_API_KEYS", "test-key")
+	t.Setenv("ABRA_API_KEYS", "test-key-for-production-123")
 	t.Setenv("EMBEDDING_PROVIDER", "local")
 
 	cfg, err := Load()
@@ -44,7 +46,7 @@ func TestLoadAllowsLocalNeuralEmbeddingsInProductionByDefault(t *testing.T) {
 
 func TestLoadDefaultsToLocalQwenCompatibleEndpoints(t *testing.T) {
 	t.Setenv("NODE_ENV", "production")
-	t.Setenv("ABRA_API_KEYS", "test-key")
+	t.Setenv("ABRA_API_KEYS", "test-key-for-production-123")
 
 	cfg, err := Load()
 	if err != nil {
@@ -68,9 +70,16 @@ func TestLoadDefaultsToLocalQwenCompatibleEndpoints(t *testing.T) {
 	if cfg.Reranker.BaseURL != "" {
 		t.Fatalf("Reranker.BaseURL = %q", cfg.Reranker.BaseURL)
 	}
+	if cfg.WorkerSourceTimeout != 30*time.Minute {
+		t.Fatalf("WorkerSourceTimeout = %s, want 30m", cfg.WorkerSourceTimeout)
+	}
+	if cfg.WorkerLeaseTimeout != 35*time.Minute {
+		t.Fatalf("WorkerLeaseTimeout = %s, want 35m", cfg.WorkerLeaseTimeout)
+	}
 }
 
 func TestLoadAllowsLocalEmbeddingsOutsideProductionByDefault(t *testing.T) {
+	allowUnauthenticatedDev(t)
 	t.Setenv("NODE_ENV", "development")
 	t.Setenv("EMBEDDING_PROVIDER", "local")
 
@@ -91,7 +100,7 @@ func TestLoadAllowsLocalEmbeddingsOutsideProductionByDefault(t *testing.T) {
 
 func TestLoadAllowsExternalEmbeddingsInProductionWithoutOverride(t *testing.T) {
 	t.Setenv("NODE_ENV", "production")
-	t.Setenv("ABRA_API_KEYS", "test-key")
+	t.Setenv("ABRA_API_KEYS", "test-key-for-production-123")
 	t.Setenv("EMBEDDING_PROVIDER", "compatible")
 	t.Setenv("EMBEDDING_BASE_URL", "https://embedding.example/v1")
 
@@ -108,6 +117,7 @@ func TestLoadAllowsExternalEmbeddingsInProductionWithoutOverride(t *testing.T) {
 }
 
 func TestLoadEmbeddingTimeoutOverride(t *testing.T) {
+	allowUnauthenticatedDev(t)
 	t.Setenv("EMBEDDING_TIMEOUT", "3m")
 
 	cfg, err := Load()
@@ -120,6 +130,7 @@ func TestLoadEmbeddingTimeoutOverride(t *testing.T) {
 }
 
 func TestLoadRejectsInvalidEmbeddingTimeout(t *testing.T) {
+	allowUnauthenticatedDev(t)
 	t.Setenv("EMBEDDING_TIMEOUT", "45m")
 
 	if _, err := Load(); err == nil {
@@ -129,7 +140,7 @@ func TestLoadRejectsInvalidEmbeddingTimeout(t *testing.T) {
 
 func TestLoadRejectsIncompleteExternalEmbeddingsInProduction(t *testing.T) {
 	t.Setenv("NODE_ENV", "production")
-	t.Setenv("ABRA_API_KEYS", "test-key")
+	t.Setenv("ABRA_API_KEYS", "test-key-for-production-123")
 	t.Setenv("EMBEDDING_PROVIDER", "compatible")
 
 	if _, err := Load(); err == nil {
@@ -138,6 +149,7 @@ func TestLoadRejectsIncompleteExternalEmbeddingsInProduction(t *testing.T) {
 }
 
 func TestLoadComposeHealthCacheTTL(t *testing.T) {
+	allowUnauthenticatedDev(t)
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -166,6 +178,7 @@ func TestLoadComposeHealthCacheTTL(t *testing.T) {
 }
 
 func TestLoadRejectsInvalidComposeHealthCacheTTL(t *testing.T) {
+	allowUnauthenticatedDev(t)
 	t.Setenv("ABRA_COMPOSE_HEALTH_CACHE_TTL", "2m")
 
 	if _, err := Load(); err == nil {
@@ -174,6 +187,7 @@ func TestLoadRejectsInvalidComposeHealthCacheTTL(t *testing.T) {
 }
 
 func TestLoadGitSourceConfig(t *testing.T) {
+	allowUnauthenticatedDev(t)
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -197,6 +211,7 @@ func TestLoadGitSourceConfig(t *testing.T) {
 }
 
 func TestLoadRejectsInvalidGitCloneDepth(t *testing.T) {
+	allowUnauthenticatedDev(t)
 	t.Setenv("ABRA_GIT_CLONE_DEPTH", "0")
 
 	if _, err := Load(); err == nil {
@@ -204,7 +219,18 @@ func TestLoadRejectsInvalidGitCloneDepth(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsLeaseTimeoutNotGreaterThanSourceTimeout(t *testing.T) {
+	allowUnauthenticatedDev(t)
+	t.Setenv("WORKER_SOURCE_TIMEOUT", "10m")
+	t.Setenv("WORKER_LEASE_TIMEOUT", "10m")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected invalid worker lease timeout error")
+	}
+}
+
 func TestLoadTracingDefaultsDisabled(t *testing.T) {
+	allowUnauthenticatedDev(t)
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -218,6 +244,7 @@ func TestLoadTracingDefaultsDisabled(t *testing.T) {
 }
 
 func TestLoadTracingFromEndpoint(t *testing.T) {
+	allowUnauthenticatedDev(t)
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
 	t.Setenv("ABRA_SERVICE_NAME", "abra-test")
 	t.Setenv("ABRA_TRACING_SAMPLE_RATIO", "0.25")
@@ -241,6 +268,7 @@ func TestLoadTracingFromEndpoint(t *testing.T) {
 }
 
 func TestLoadRejectsInvalidTracingSampleRatio(t *testing.T) {
+	allowUnauthenticatedDev(t)
 	t.Setenv("ABRA_TRACING_ENABLED", "true")
 	t.Setenv("ABRA_OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
 	t.Setenv("ABRA_TRACING_SAMPLE_RATIO", "2")
@@ -248,4 +276,46 @@ func TestLoadRejectsInvalidTracingSampleRatio(t *testing.T) {
 	if _, err := Load(); err == nil {
 		t.Fatal("expected invalid tracing sample ratio error")
 	}
+}
+
+func TestLoadRejectsMissingAPIKeysWithoutExplicitDevBypass(t *testing.T) {
+	if _, err := Load(); err == nil {
+		t.Fatal("expected missing API keys to be rejected")
+	}
+}
+
+func TestLoadRejectsPlaceholderProductionAPIKeys(t *testing.T) {
+	t.Setenv("NODE_ENV", "production")
+	t.Setenv("ABRA_API_KEYS", "replace-with-generated-token")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected placeholder production API key to be rejected")
+	}
+}
+
+func TestLoadDefaultBindAddressDependsOnEnvironment(t *testing.T) {
+	allowUnauthenticatedDev(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.BindAddress != "127.0.0.1" {
+		t.Fatalf("development BindAddress = %q", cfg.BindAddress)
+	}
+
+	t.Setenv("NODE_ENV", "production")
+	t.Setenv("ABRA_UNAUTHENTICATED_DEV", "")
+	t.Setenv("ABRA_API_KEYS", "test-key-for-production-123")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.BindAddress != "0.0.0.0" {
+		t.Fatalf("production BindAddress = %q", cfg.BindAddress)
+	}
+}
+
+func allowUnauthenticatedDev(t *testing.T) {
+	t.Helper()
+	t.Setenv("ABRA_UNAUTHENTICATED_DEV", "1")
 }

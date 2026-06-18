@@ -116,9 +116,10 @@ func modelsUp(ctx context.Context, args cliArgs) error {
 			return err
 		}
 	}
+	fmt.Println("First run may download model weights; this can take several minutes.")
 	fmt.Println("Waiting for embeddings endpoint: " + cfg.BaseURL + "/embeddings")
-	if err := waitEmbeddingReady(ctx, cfg, 180*time.Second); err != nil {
-		return fmt.Errorf("%w\nRun: abra models logs", err)
+	if err := waitEmbeddingReady(ctx, cfg, 10*time.Minute); err != nil {
+		return fmt.Errorf("%w\nRun: abra models logs\nRun: abra models status", err)
 	}
 	fmt.Println("Local embeddings ready")
 	fmt.Println("Next: abra up")
@@ -239,11 +240,18 @@ func syncLocalRunnerEnv(args cliArgs) error {
 	if provider := strings.TrimSpace(values["EMBEDDING_PROVIDER"]); provider != "" && provider != "local" {
 		return nil
 	}
-	model := firstNonEmpty(flag(args, "model", ""), defaultServedModelName)
-	dims := intFromString(flag(args, "dimensions", ""), 1024)
+	cfg := embeddingRunner(args)
+	model := firstNonEmpty(flag(args, "model", ""), values["EMBEDDING_MODEL"], defaultServedModelName)
+	dims := intFromString(firstNonEmpty(flag(args, "dimensions", ""), values["EMBEDDING_DIMENSIONS"]), 1024)
+	baseURL := firstNonEmpty(flag(args, "base-url", ""), values["EMBEDDING_BASE_URL"], defaultEmbeddingBaseURL)
+	if flag(args, "port", "") != "" {
+		baseURL = replaceURLHostPort(baseURL, "host.docker.internal", cfg.Port)
+	} else {
+		baseURL = containerReachableBaseURL(baseURL)
+	}
 	return updateEnvValues(args, map[string]string{
 		"EMBEDDING_PROVIDER":                   "local",
-		"EMBEDDING_BASE_URL":                   defaultEmbeddingBaseURL,
+		"EMBEDDING_BASE_URL":                   strings.TrimRight(baseURL, "/"),
 		"EMBEDDING_API_KEY":                    "",
 		"EMBEDDING_MODEL":                      model,
 		"EMBEDDING_DIMENSIONS":                 strconv.Itoa(dims),
@@ -333,6 +341,18 @@ func hostReachableBaseURL(value string) string {
 	host := parsed.Hostname()
 	if host == "host.docker.internal" || host == "localhost" || host == "::1" {
 		return replaceURLHostPort(value, "127.0.0.1", parsed.Port())
+	}
+	return strings.TrimRight(value, "/")
+}
+
+func containerReachableBaseURL(value string) string {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Host == "" {
+		return strings.TrimRight(value, "/")
+	}
+	host := parsed.Hostname()
+	if host == "127.0.0.1" || host == "localhost" || host == "::1" {
+		return replaceURLHostPort(value, "host.docker.internal", parsed.Port())
 	}
 	return strings.TrimRight(value, "/")
 }

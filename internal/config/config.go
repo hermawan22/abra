@@ -37,25 +37,30 @@ type TracingConfig struct {
 }
 
 type Config struct {
-	NodeEnv                          string
-	DatabaseURL                      string
-	Port                             string
-	APIKeys                          []string
-	WebhookSecrets                   []string
-	AllowLocalEmbeddingsInProduction bool
-	RedactPII                        bool
-	ApprovalMode                     string
-	AuditSink                        AuditSinkConfig
-	Tracing                          TracingConfig
-	Embedding                        AIProviderConfig
-	Reranker                         AIProviderConfig
-	Extractor                        AIProviderConfig
-	RateLimitMax                     int
-	RateLimitWindow                  time.Duration
-	WorkerInterval                   time.Duration
-	ComposeHealthCacheTTL            time.Duration
-	GitCacheDir                      string
-	GitCloneDepth                    int
+	NodeEnv                            string
+	BindAddress                        string
+	DatabaseURL                        string
+	Port                               string
+	APIKeys                            []string
+	AllowUnauthenticatedDev            bool
+	WebhookSecrets                     []string
+	AllowLocalEmbeddingsInProduction   bool
+	RedactPII                          bool
+	ApprovalMode                       string
+	AuditSink                          AuditSinkConfig
+	Tracing                            TracingConfig
+	Embedding                          AIProviderConfig
+	Reranker                           AIProviderConfig
+	Extractor                          AIProviderConfig
+	RateLimitMax                       int
+	RateLimitWindow                    time.Duration
+	WorkerInterval                     time.Duration
+	WorkerSourceTimeout                time.Duration
+	WorkerLeaseTimeout                 time.Duration
+	WorkerMaxChangedDocumentsPerSource int
+	ComposeHealthCacheTTL              time.Duration
+	GitCacheDir                        string
+	GitCloneDepth                      int
 }
 
 func Load() (Config, error) {
@@ -63,16 +68,27 @@ func Load() (Config, error) {
 	embeddingProvider := env("EMBEDDING_PROVIDER", "local")
 	defaultEmbeddingBaseURL := ""
 	defaultEmbeddingTimeout := 30 * time.Second
+	defaultWorkerSourceTimeout := 2 * time.Minute
+	defaultWorkerLeaseTimeout := 5 * time.Minute
 	if isLocalNeuralProvider(embeddingProvider) {
 		defaultEmbeddingBaseURL = "http://host.docker.internal:8080/v1"
 		defaultEmbeddingTimeout = 10 * time.Minute
+		defaultWorkerSourceTimeout = 30 * time.Minute
+		defaultWorkerLeaseTimeout = 35 * time.Minute
 	}
 
+	nodeEnv := env("NODE_ENV", "development")
+	defaultBindAddress := "127.0.0.1"
+	if nodeEnv == "production" {
+		defaultBindAddress = "0.0.0.0"
+	}
 	cfg := Config{
-		NodeEnv:                          env("NODE_ENV", "development"),
+		NodeEnv:                          nodeEnv,
+		BindAddress:                      env("ABRA_BIND_ADDR", defaultBindAddress),
 		DatabaseURL:                      env("DATABASE_URL", "postgres://abra:abra@localhost:5433/abra"),
 		Port:                             env("PORT", "18080"),
 		APIKeys:                          csvEnv("ABRA_API_KEYS"),
+		AllowUnauthenticatedDev:          boolEnv("ABRA_UNAUTHENTICATED_DEV", false),
 		WebhookSecrets:                   csvEnv("ABRA_WEBHOOK_SECRETS"),
 		AllowLocalEmbeddingsInProduction: boolEnv("ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION", false),
 		RedactPII:                        env("REDACT_PII", "true") != "false",
@@ -114,16 +130,27 @@ func Load() (Config, error) {
 			Model:    env("EXTRACTOR_MODEL", env("LLM_MODEL", "local-extractor")),
 			Timeout:  durationEnv("EXTRACTOR_TIMEOUT", durationEnv("LLM_TIMEOUT", 30*time.Second)),
 		},
-		RateLimitMax:          intEnv("RATE_LIMIT_MAX", 120),
-		RateLimitWindow:       durationEnv("RATE_LIMIT_WINDOW", time.Minute),
-		WorkerInterval:        durationEnv("WORKER_INTERVAL", 5*time.Minute),
-		ComposeHealthCacheTTL: durationEnv("ABRA_COMPOSE_HEALTH_CACHE_TTL", 2*time.Second),
-		GitCacheDir:           env("ABRA_GIT_CACHE_DIR", "/tmp/abra-git-cache"),
-		GitCloneDepth:         intEnv("ABRA_GIT_CLONE_DEPTH", 1),
+		RateLimitMax:                       intEnv("RATE_LIMIT_MAX", 120),
+		RateLimitWindow:                    durationEnv("RATE_LIMIT_WINDOW", time.Minute),
+		WorkerInterval:                     durationEnv("WORKER_INTERVAL", 5*time.Minute),
+		WorkerSourceTimeout:                durationEnv("WORKER_SOURCE_TIMEOUT", defaultWorkerSourceTimeout),
+		WorkerLeaseTimeout:                 durationEnv("WORKER_LEASE_TIMEOUT", defaultWorkerLeaseTimeout),
+		WorkerMaxChangedDocumentsPerSource: intEnv("WORKER_MAX_CHANGED_DOCUMENTS_PER_SOURCE", 100),
+		ComposeHealthCacheTTL:              durationEnv("ABRA_COMPOSE_HEALTH_CACHE_TTL", 2*time.Second),
+		GitCacheDir:                        env("ABRA_GIT_CACHE_DIR", "/tmp/abra-git-cache"),
+		GitCloneDepth:                      intEnv("ABRA_GIT_CLONE_DEPTH", 1),
 	}
 
-	if cfg.NodeEnv == "production" && len(cfg.APIKeys) == 0 {
-		return Config{}, errors.New("ABRA_API_KEYS is required when NODE_ENV=production")
+	if len(cfg.APIKeys) == 0 && !cfg.AllowUnauthenticatedDev {
+		return Config{}, errors.New("ABRA_API_KEYS is required; set ABRA_UNAUTHENTICATED_DEV=1 only for isolated local development")
+	}
+	if cfg.AllowUnauthenticatedDev && cfg.NodeEnv == "production" {
+		return Config{}, errors.New("ABRA_UNAUTHENTICATED_DEV is not allowed when NODE_ENV=production")
+	}
+	if cfg.NodeEnv == "production" {
+		if err := validateProductionAPIKeys(cfg.APIKeys); err != nil {
+			return Config{}, err
+		}
 	}
 	if cfg.NodeEnv == "production" && isRemoteCompatibleProvider(cfg.Embedding.Provider) {
 		if strings.TrimSpace(cfg.Embedding.BaseURL) == "" {
@@ -135,6 +162,12 @@ func Load() (Config, error) {
 	}
 	if cfg.Embedding.Dimensions < 1 {
 		return Config{}, errors.New("EMBEDDING_DIMENSIONS must be positive")
+	}
+	if cfg.WorkerLeaseTimeout <= cfg.WorkerSourceTimeout {
+		return Config{}, errors.New("WORKER_LEASE_TIMEOUT must be greater than WORKER_SOURCE_TIMEOUT")
+	}
+	if cfg.WorkerMaxChangedDocumentsPerSource < 1 {
+		return Config{}, errors.New("WORKER_MAX_CHANGED_DOCUMENTS_PER_SOURCE must be positive")
 	}
 	if cfg.Embedding.Timeout <= 0 || cfg.Embedding.Timeout > 30*time.Minute {
 		return Config{}, errors.New("EMBEDDING_TIMEOUT must be between 1ns and 30m")
@@ -170,6 +203,24 @@ func Load() (Config, error) {
 		return Config{}, errors.New("ABRA_GIT_CLONE_DEPTH must be between 1 and 1000")
 	}
 	return cfg, nil
+}
+
+func validateProductionAPIKeys(keys []string) error {
+	for _, spec := range keys {
+		token, _, _ := strings.Cut(strings.TrimSpace(spec), "|")
+		token = strings.TrimSpace(token)
+		if token == "" {
+			return errors.New("ABRA_API_KEYS contains an empty token")
+		}
+		lower := strings.ToLower(token)
+		if strings.Contains(lower, "replace") || strings.Contains(lower, "example") || strings.Contains(lower, "changeme") || strings.Contains(lower, "dev-token") || lower == "test-key" {
+			return errors.New("ABRA_API_KEYS contains a placeholder token; generate a unique production token")
+		}
+		if len(token) < 16 {
+			return errors.New("ABRA_API_KEYS production tokens must be at least 16 characters")
+		}
+	}
+	return nil
 }
 
 func isLocalNeuralProvider(provider string) bool {

@@ -120,10 +120,10 @@ For Docker Compose, set `ABRA_DATABASE_URL` in the Compose env file when overrid
 `ABRA_API_KEYS` accepts simple admin tokens for compatibility, or scoped role tokens for production:
 
 ```text
-ABRA_API_KEYS=admin-token,reader-token|roles=reader;scopes=team:example,ops-token|roles=ops;scopes=*
+ABRA_API_KEYS=abra_admin_generated_32_chars,abra_reader_generated_32_chars|roles=reader;scopes=team:example,abra_ops_generated_32_chars|roles=ops;scopes=*
 ```
 
-Use scoped keys for agents and automation. Reserve all-scope `admin` keys for operators and automation that needs write access across scopes.
+Production tokens must be unique, non-placeholder values of at least 16 characters. Use scoped keys for agents and automation. Reserve all-scope `admin` keys for operators and automation that needs write access across scopes.
 
 `EMBEDDING_PROVIDER=local` is the default self-hosted neural path. It does not need an external API key, but it does require local model endpoints reachable from the Abra containers. With Docker Compose, the default URLs use `host.docker.internal` so models running on the host can be reached from the API and worker containers. Set `EMBEDDING_PROVIDER=compatible` to replace the local defaults with a custom provider.
 

@@ -70,19 +70,20 @@ abra ingest --scope repo:demo \
 Ingest local docs or repo files immediately from the CLI:
 
 ```sh
-abra ingest . --code
+abra scope
+abra ingest . --code --scope repo:my-app
 ```
 
 Queue a remote Git repo through the worker:
 
 ```sh
-abra ingest --git https://github.com/owner/repo.git --ref main --code --wait
+abra ingest --git https://github.com/owner/repo.git --ref main --code --scope repo:owner-repo --wait
 ```
 
 Ask Abra to think with governed memory:
 
 ```sh
-abra think "What should agents use before autonomous code changes?"
+abra think "What should agents use before autonomous code changes?" --scope repo:my-app
 ```
 
 Check runtime status:
@@ -104,15 +105,18 @@ Connect Codex directly:
 abra mcp install-codex
 ```
 
-Restart Codex or open a new thread after installing MCP servers. In each
-project, ask Abra for the exact scope before prompting an AI agent:
+Fully quit and reopen Codex Desktop after installing or changing the token env.
+Opening a new thread is enough only when the env var was already available to
+the Codex process. In each project, ask Abra for the exact scope before
+prompting an AI agent:
 
 ```sh
 abra scope
 ```
 
-Then tell the agent: `Use Abra MCP first. Scope: repo:<project>. Call
-working_memory_compose before answering or changing code.`
+Then tell the agent: `Use Abra MCP first. Scope: repo:<project>. If unsure,
+call discover_scopes, then call working_memory_compose before answering or
+changing code.`
 
 Stop the local stack:
 
@@ -153,8 +157,10 @@ The generated config uses:
 
 ```text
 url: http://127.0.0.1:18080/mcp
-x-api-key: dev-token
+Authorization: Bearer <token>
 ```
+
+Raw HTTP endpoints also accept `x-api-key: <token>`.
 
 Stop the local stack:
 
@@ -183,11 +189,11 @@ From a source checkout, run the CLI as `go run ./cmd/abra <command>`. In a relea
 | init env only | `abra init` |
 | compatibility setup alias | `abra install` |
 | ingest one document | `abra ingest --text "source-backed content"` |
-| ingest local repo | `abra ingest . --code` |
-| ingest remote git | `abra ingest --git https://github.com/owner/repo.git --ref main --code --wait` |
+| ingest local repo | `abra ingest . --code --scope repo:my-app` |
+| ingest remote git | `abra ingest --git https://github.com/owner/repo.git --ref main --code --scope repo:owner-repo --wait` |
 | list sources | `abra sources` |
 | list jobs | `abra jobs` |
-| think | `abra think "question"` |
+| think | `abra think "question" --scope repo:my-app` |
 | print project scope for agents | `abra scope` |
 | status | `abra status` |
 | doctor | `abra doctor` |

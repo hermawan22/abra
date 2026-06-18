@@ -65,12 +65,13 @@ func (h *handler) mcpReadResource(r *http.Request, uri string) (map[string]any, 
 		return mcpTextResource(uri, "text/markdown", strings.TrimSpace(`
 # Abra Agent Workflow
 
-1. Use `+"`policy_plan`"+` before task, before code, or after task to get scoped recall queries.
-2. Use `+"`working_memory_compose`"+` before implementation to get source-backed facts, summaries, graph context, risks, validation steps, memory health, and the agent decision gate.
-3. Obey `+"`agent_decision`"+`. If it returns `+"`blocked`"+` or `+"`needs_review`"+`, use the allowed next actions instead of bypassing the gate.
-4. Treat `+"`conflicts`"+` and `+"`graph_warnings`"+` as review work, not approval work.
-5. Use `+"`propose_learning`"+` for candidate improvements. Do not promote memory without review.
-6. Use ACL and agent-action policies for durable runtime controls rather than embedding permissions in prompt text.
+1. If the task scope is missing or uncertain, call `+"`discover_scopes`"+` first and use an exact returned scope.
+2. Use `+"`policy_plan`"+` before task, before code, or after task to get scoped recall queries.
+3. Use `+"`working_memory_compose`"+` before implementation to get source-backed facts, summaries, graph context, risks, validation steps, memory health, and the agent decision gate.
+4. Obey `+"`agent_decision`"+`. If it returns `+"`blocked`"+` or `+"`needs_review`"+`, use the allowed next actions instead of bypassing the gate.
+5. Treat `+"`conflicts`"+` and `+"`graph_warnings`"+` as review work, not approval work.
+6. Use `+"`propose_learning`"+` for candidate improvements. Do not promote memory without review.
+7. Use ACL and agent-action policies for durable runtime controls rather than embedding permissions in prompt text.
 `)), nil
 	case strings.HasPrefix(uri, "abra://memory/health/"):
 		scope, err := decodeResourceTail(uri, "abra://memory/health/")

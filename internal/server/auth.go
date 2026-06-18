@@ -28,7 +28,7 @@ type apiPrincipal struct {
 
 func (h *handler) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		principal, ok := authenticate(r, h.cfg.APIKeys)
+		principal, ok := authenticate(r, h.cfg.APIKeys, h.cfg.AllowUnauthenticatedDev)
 		if !ok {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 			return
@@ -90,9 +90,12 @@ func authGate(cfg config.Config, next http.Handler) http.Handler {
 	})
 }
 
-func authenticate(r *http.Request, keys []string) (*apiPrincipal, bool) {
+func authenticate(r *http.Request, keys []string, allowUnauthenticatedDev bool) (*apiPrincipal, bool) {
 	if len(keys) == 0 {
-		return anonymousAdmin(), true
+		if allowUnauthenticatedDev {
+			return anonymousAdmin(), true
+		}
+		return nil, false
 	}
 	token := requestToken(r)
 	if token == "" {

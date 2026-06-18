@@ -1255,8 +1255,11 @@ func installCodexMCP(args cliArgs) error {
 	if token == "" {
 		return errors.New("missing Abra token")
 	}
+	launchctlWarning := ""
 	if runtime.GOOS == "darwin" {
-		_ = runQuiet("launchctl", "setenv", tokenEnv, token)
+		if err := runQuiet("launchctl", "setenv", tokenEnv, token); err != nil {
+			launchctlWarning = err.Error()
+		}
 	}
 	os.Setenv(tokenEnv, token)
 	_ = runQuiet(codex, "mcp", "remove", "abra")
@@ -1266,10 +1269,15 @@ func installCodexMCP(args cliArgs) error {
 	fmt.Println("Installed Abra MCP for Codex:")
 	fmt.Println("  url:       " + strings.TrimRight(cfg(args).BaseURL, "/") + "/mcp")
 	fmt.Println("  token env: " + tokenEnv)
+	if launchctlWarning != "" {
+		fmt.Println("Warning: could not set macOS launch environment: " + launchctlWarning)
+		fmt.Println("Set this before starting Codex: export " + tokenEnv + "=" + shellQuote(token))
+	}
 	if runtime.GOOS != "darwin" {
 		fmt.Println("Set this before starting Codex: export " + tokenEnv + "=" + shellQuote(token))
 	}
-	fmt.Println("Restart Codex or open a new thread so MCP tools are reloaded.")
+	fmt.Println("Fully quit and reopen Codex Desktop after installing or changing the token env.")
+	fmt.Println("Opening a new thread is enough only when the env var was already available to the Codex process.")
 	fmt.Println("Scope hint: run `abra scope` in each project and pass that scope to working_memory_compose.")
 	return nil
 }
@@ -2077,8 +2085,8 @@ the usual cause is a scope mismatch between ingest and working_memory_compose.
 ` + "`abra mcp`" + ` prints generic remote HTTP MCP client JSON.
 ` + "`abra mcp install-codex`" + ` installs Abra into Codex as a streamable HTTP MCP
 server using the Codex CLI, stores the bearer-token env var name, and sets the
-token for the current macOS launch environment when available. Restart Codex or
-open a new thread after installing MCP servers.
+token for the current macOS launch environment when available. Fully quit and
+reopen Codex Desktop after installing or changing the token env.
 `
 	case "setup":
 		return `Usage:
@@ -2142,6 +2150,7 @@ volumes, env files, runtime bundles, or memory data.
 
 const demoEnv = `ABRA_API_KEYS=dev-token
 ABRA_API_TOKEN=dev-token
+NODE_ENV=development
 ABRA_APPROVAL_MODE=advisory
 ABRA_PORT=18080
 POSTGRES_PORT=5433
@@ -2161,7 +2170,8 @@ WORKER_INTERVAL=1s
 ABRA_DEPLOYMENT_ENVIRONMENT=development
 `
 
-const productionEnvExample = `ABRA_API_KEYS=replace-with-generated-token
+const productionEnvExample = `NODE_ENV=production
+ABRA_API_KEYS=replace-with-generated-token
 ABRA_APPROVAL_MODE=enforce
 EMBEDDING_PROVIDER=compatible
 EMBEDDING_BASE_URL=https://embedding-provider.example/v1

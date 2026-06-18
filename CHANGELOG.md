@@ -4,6 +4,30 @@ All notable changes to Abra are documented here.
 
 This project uses semantic versioning for public releases. Until v1.0.0, minor versions may include breaking changes when they are documented in this file and in the release notes.
 
+## 0.3.7 - 2026-06-19
+
+### Added
+
+- Add MCP `discover_scopes` so AI clients can list visible memory scopes before choosing `brain_think`, `policy_plan`, or `working_memory_compose` scope values.
+- Add configurable worker source and lease timeouts for slower local Qwen ingestion paths.
+
+### Changed
+
+- Require `scope` for MCP `policy_plan` to prevent agents from planning against a broad default scope.
+- Treat code-backed packets with source documents, summaries, or graph context as usable evidence even when no claim facts are present.
+- Make `abra mcp install-codex` warn when macOS launch environment setup fails and instruct users to fully reopen Codex Desktop after token-env changes.
+- Bind development API servers to loopback by default and bind Compose Postgres to `127.0.0.1` by default.
+
+### Fixed
+
+- Make `abra models up --port <port>` update the runtime embedding base URL used by `abra up`.
+- Remove a static demo bearer token from the MCP example config.
+
+### Security
+
+- Require explicit `ABRA_UNAUTHENTICATED_DEV=1` before allowing unauthenticated local development mode.
+- Reject placeholder or too-short API tokens when `NODE_ENV=production`.
+
 ## 0.3.6 - 2026-06-19
 
 ### Added

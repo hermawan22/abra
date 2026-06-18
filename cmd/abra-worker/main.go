@@ -83,9 +83,12 @@ func main() {
 		os.Exit(1)
 	}
 	runner := jobs.NewRunner(repo, brainIngestor{service: brainService}, jobs.Options{
-		GitCacheDir:   cfg.GitCacheDir,
-		GitCloneDepth: cfg.GitCloneDepth,
-		Logger:        slog.Default(),
+		MaxChangedDocumentsPerSource: cfg.WorkerMaxChangedDocumentsPerSource,
+		SourceTimeout:                cfg.WorkerSourceTimeout,
+		LeaseTimeout:                 cfg.WorkerLeaseTimeout,
+		GitCacheDir:                  cfg.GitCacheDir,
+		GitCloneDepth:                cfg.GitCloneDepth,
+		Logger:                       slog.Default(),
 	})
 
 	ticker := time.NewTicker(cfg.WorkerInterval)
