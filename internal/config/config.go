@@ -47,6 +47,7 @@ type Config struct {
 	AuditSink                        AuditSinkConfig
 	Tracing                          TracingConfig
 	Embedding                        AIProviderConfig
+	Reranker                         AIProviderConfig
 	Extractor                        AIProviderConfig
 	RateLimitMax                     int
 	RateLimitWindow                  time.Duration
@@ -58,6 +59,15 @@ type Config struct {
 
 func Load() (Config, error) {
 	_ = loadDotEnv(".env")
+	embeddingProvider := env("EMBEDDING_PROVIDER", "local")
+	defaultEmbeddingBaseURL := ""
+	if isLocalNeuralProvider(embeddingProvider) {
+		defaultEmbeddingBaseURL = "http://host.docker.internal:8080/v1"
+	}
+	defaultReranker := ""
+	if isLocalNeuralProvider(embeddingProvider) {
+		defaultReranker = "local"
+	}
 
 	cfg := Config{
 		NodeEnv:                          env("NODE_ENV", "development"),
@@ -84,11 +94,17 @@ func Load() (Config, error) {
 			Environment: env("ABRA_DEPLOYMENT_ENVIRONMENT", env("NODE_ENV", "development")),
 		},
 		Embedding: AIProviderConfig{
-			Provider:   env("EMBEDDING_PROVIDER", "local"),
-			BaseURL:    os.Getenv("EMBEDDING_BASE_URL"),
+			Provider:   embeddingProvider,
+			BaseURL:    env("EMBEDDING_BASE_URL", defaultEmbeddingBaseURL),
 			APIKey:     os.Getenv("EMBEDDING_API_KEY"),
-			Model:      env("EMBEDDING_MODEL", "embedding-model-1536"),
-			Dimensions: intEnv("EMBEDDING_DIMENSIONS", 1536),
+			Model:      env("EMBEDDING_MODEL", "text-embeddings-inference"),
+			Dimensions: intEnv("EMBEDDING_DIMENSIONS", 1024),
+		},
+		Reranker: AIProviderConfig{
+			Provider: env("RERANKER_PROVIDER", defaultReranker),
+			BaseURL:  env("RERANKER_BASE_URL", "http://host.docker.internal:8081"),
+			APIKey:   os.Getenv("RERANKER_API_KEY"),
+			Model:    env("RERANKER_MODEL", "text-embeddings-inference"),
 		},
 		Extractor: AIProviderConfig{
 			Provider: env("EXTRACTOR_PROVIDER", env("LLM_PROVIDER", "local")),
@@ -107,19 +123,16 @@ func Load() (Config, error) {
 	if cfg.NodeEnv == "production" && len(cfg.APIKeys) == 0 {
 		return Config{}, errors.New("ABRA_API_KEYS is required when NODE_ENV=production")
 	}
-	if cfg.NodeEnv == "production" && strings.EqualFold(cfg.Embedding.Provider, "local") && !cfg.AllowLocalEmbeddingsInProduction {
-		return Config{}, errors.New("EMBEDDING_PROVIDER=local is not allowed when NODE_ENV=production unless ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=true")
-	}
-	if cfg.NodeEnv == "production" && (strings.EqualFold(cfg.Embedding.Provider, "compatible") || strings.EqualFold(cfg.Embedding.Provider, "openai-compatible")) {
+	if cfg.NodeEnv == "production" && isRemoteCompatibleProvider(cfg.Embedding.Provider) {
 		if strings.TrimSpace(cfg.Embedding.BaseURL) == "" {
 			return Config{}, errors.New("EMBEDDING_BASE_URL is required when NODE_ENV=production and EMBEDDING_PROVIDER=compatible")
 		}
-		if strings.TrimSpace(cfg.Embedding.APIKey) == "" {
-			return Config{}, errors.New("EMBEDDING_API_KEY is required when NODE_ENV=production and EMBEDDING_PROVIDER=compatible")
-		}
 	}
-	if cfg.Embedding.Dimensions != 1536 {
-		return Config{}, errors.New("Abra v1 default migrations use vector(1536); set EMBEDDING_DIMENSIONS=1536")
+	if strings.TrimSpace(cfg.Reranker.Provider) != "" && isRemoteCompatibleProvider(cfg.Reranker.Provider) && strings.TrimSpace(cfg.Reranker.BaseURL) == "" {
+		return Config{}, errors.New("RERANKER_BASE_URL is required when RERANKER_PROVIDER is configured")
+	}
+	if cfg.Embedding.Dimensions < 1 {
+		return Config{}, errors.New("EMBEDDING_DIMENSIONS must be positive")
 	}
 	if cfg.RateLimitMax < 1 {
 		return Config{}, errors.New("RATE_LIMIT_MAX must be at least 1")
@@ -146,6 +159,24 @@ func Load() (Config, error) {
 		return Config{}, errors.New("ABRA_GIT_CLONE_DEPTH must be between 1 and 1000")
 	}
 	return cfg, nil
+}
+
+func isLocalNeuralProvider(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "local", "qwen3", "local-smart":
+		return true
+	default:
+		return false
+	}
+}
+
+func isRemoteCompatibleProvider(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "local", "qwen3", "local-smart", "tei", "compatible", "openai-compatible", "openai", "embeddinggemma", "bge-m3", "voyage", "zeroentropy":
+		return true
+	default:
+		return false
+	}
 }
 
 func env(name, fallback string) string {

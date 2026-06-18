@@ -24,7 +24,7 @@ func TestCommandHelpDoesNotRequireFlags(t *testing.T) {
 	}
 }
 
-func TestSetupYesNoStartDefaultsLocal(t *testing.T) {
+func TestSetupYesNoStartDefaultsLocalQwen(t *testing.T) {
 	root := t.TempDir()
 	home := t.TempDir()
 	t.Setenv("ABRA_HOME", home)
@@ -39,6 +39,21 @@ func TestSetupYesNoStartDefaultsLocal(t *testing.T) {
 	}
 	if values["EMBEDDING_PROVIDER"] != "local" {
 		t.Fatalf("provider = %q", values["EMBEDDING_PROVIDER"])
+	}
+	if values["EMBEDDING_BASE_URL"] != "http://host.docker.internal:8080/v1" {
+		t.Fatalf("base url = %q", values["EMBEDDING_BASE_URL"])
+	}
+	if values["EMBEDDING_MODEL"] != "text-embeddings-inference" {
+		t.Fatalf("model = %q", values["EMBEDDING_MODEL"])
+	}
+	if values["EMBEDDING_DIMENSIONS"] != "1024" {
+		t.Fatalf("dimensions = %q", values["EMBEDDING_DIMENSIONS"])
+	}
+	if values["RERANKER_PROVIDER"] != "local" {
+		t.Fatalf("reranker provider = %q", values["RERANKER_PROVIDER"])
+	}
+	if values["RERANKER_BASE_URL"] != "http://host.docker.internal:8081" {
+		t.Fatalf("reranker base url = %q", values["RERANKER_BASE_URL"])
 	}
 }
 
@@ -184,6 +199,35 @@ func TestConfigModelCompatibleUpdatesEnv(t *testing.T) {
 	}
 }
 
+func TestConfigModelCompatibleAllowsNoAPIKey(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+
+	err := run(context.Background(), []string{
+		"config",
+		"model",
+		"compatible",
+		"--base-url", "http://localhost:9999/v1",
+		"--model", "custom-embed",
+		"--dimensions", "768",
+	})
+	if err != nil {
+		t.Fatalf("config model compatible error = %v", err)
+	}
+	values, err := readEnvValues(filepath.Join(home, "quickstart.env"))
+	if err != nil {
+		t.Fatalf("read env: %v", err)
+	}
+	if values["EMBEDDING_API_KEY"] != "" {
+		t.Fatalf("api key = %q", values["EMBEDDING_API_KEY"])
+	}
+	if values["EMBEDDING_DIMENSIONS"] != "768" {
+		t.Fatalf("dimensions = %q", values["EMBEDDING_DIMENSIONS"])
+	}
+}
+
 func TestConfigModelOpenAIDefaults(t *testing.T) {
 	root := t.TempDir()
 	home := t.TempDir()
@@ -230,7 +274,7 @@ func TestConfigModelOpenAIDefaults(t *testing.T) {
 	}
 }
 
-func TestConfigModelLocalClearsRemoteFields(t *testing.T) {
+func TestConfigModelLocalRestoresQwenDefaults(t *testing.T) {
 	root := t.TempDir()
 	home := t.TempDir()
 	t.Setenv("ABRA_HOME", home)
@@ -254,10 +298,16 @@ func TestConfigModelLocalClearsRemoteFields(t *testing.T) {
 	if values["EMBEDDING_PROVIDER"] != "local" {
 		t.Fatalf("provider = %q", values["EMBEDDING_PROVIDER"])
 	}
-	if values["EMBEDDING_BASE_URL"] != "" || values["EMBEDDING_API_KEY"] != "" {
-		t.Fatalf("remote fields not cleared: base=%q key=%q", values["EMBEDDING_BASE_URL"], values["EMBEDDING_API_KEY"])
+	if values["EMBEDDING_BASE_URL"] != "http://host.docker.internal:8080/v1" {
+		t.Fatalf("base url = %q", values["EMBEDDING_BASE_URL"])
 	}
-	if values["ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION"] != "true" {
+	if values["EMBEDDING_API_KEY"] != "" {
+		t.Fatalf("api key = %q", values["EMBEDDING_API_KEY"])
+	}
+	if values["RERANKER_PROVIDER"] != "local" || values["RERANKER_BASE_URL"] != "http://host.docker.internal:8081" {
+		t.Fatalf("reranker fields = provider %q base %q", values["RERANKER_PROVIDER"], values["RERANKER_BASE_URL"])
+	}
+	if values["ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION"] != "false" {
 		t.Fatalf("local production guard = %q", values["ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION"])
 	}
 }

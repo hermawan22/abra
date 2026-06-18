@@ -8,7 +8,7 @@ Apply order:
 
 1. Provision Postgres with `pgvector`; managed Postgres is recommended.
 2. Build and push the Abra image, then replace `abra:local` in the manifests.
-3. Create `abra-secrets` with database URL, API keys, and embedding provider credentials.
+3. Create `abra-secrets` with database URL, API keys, and optional embedding/reranker provider credentials.
 4. Apply `configmap.yaml`.
 5. Delete any previous `abra-migrate` Job, run `job-migrate.yaml`, and confirm it completes.
 6. Deploy `deployment-api.yaml`.
@@ -34,9 +34,11 @@ ABRA_AUDIT_SINK_TOKEN
 ABRA_AUDIT_SINK_SECRET
 EMBEDDING_BASE_URL
 EMBEDDING_API_KEY
+RERANKER_BASE_URL
+RERANKER_API_KEY
 ```
 
-The default config uses `EMBEDDING_PROVIDER=compatible`, `EMBEDDING_MODEL=embedding-model-1536`, `EMBEDDING_DIMENSIONS=1536`, `ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=false`, `ABRA_APPROVAL_MODE=enforce`, `RATE_LIMIT_MAX=120`, `RATE_LIMIT_WINDOW=1 minute`, `ABRA_COMPOSE_HEALTH_CACHE_TTL=2s`, `ABRA_GIT_CACHE_DIR=/tmp/abra-git-cache`, `ABRA_GIT_CLONE_DEPTH=1`, and tracing disabled. Keep `ABRA_APPROVAL_MODE=enforce` before exposing write-capable credentials to autonomous agents. Keep the built-in Postgres-backed rate limit enabled; after migrations are applied it is shared across replicated API pods. Add ingress or gateway rate limits for defense in depth, and tune limits for expected agent concurrency and ingestion traffic. Set `ABRA_COMPOSE_HEALTH_CACHE_TTL=0s` only when every working-memory compose call must run a fresh scoped health aggregate. Set `OTEL_EXPORTER_OTLP_ENDPOINT` and `ABRA_TRACING_SAMPLE_RATIO` to enable optional OpenTelemetry tracing. Set `ABRA_WEBHOOK_SECRETS` when connector overlays use `POST /ingest/webhooks`. Set `ABRA_AUDIT_SINK_URL`, `ABRA_AUDIT_SINK_TOKEN`, and `ABRA_AUDIT_SINK_SECRET` when the worker should push signed audit NDJSON to a SIEM endpoint. Use any compatible embedding provider if it returns vectors with the configured dimensions; production mode blocks `EMBEDDING_PROVIDER=local` unless `ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=true`, which should be limited to isolated offline smoke tests. For `git_repo` source configs, mount Git credentials through the platform layer and keep repository tokens out of config maps and prompts.
+The default config uses `EMBEDDING_PROVIDER=compatible`, `EMBEDDING_MODEL=embedding-model`, `EMBEDDING_DIMENSIONS=1024`, `RERANKER_PROVIDER=""`, `ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=false`, `ABRA_APPROVAL_MODE=enforce`, `RATE_LIMIT_MAX=120`, `RATE_LIMIT_WINDOW=1 minute`, `ABRA_COMPOSE_HEALTH_CACHE_TTL=2s`, `ABRA_GIT_CACHE_DIR=/tmp/abra-git-cache`, `ABRA_GIT_CLONE_DEPTH=1`, and tracing disabled. Keep `ABRA_APPROVAL_MODE=enforce` before exposing write-capable credentials to autonomous agents. Keep the built-in Postgres-backed rate limit enabled; after migrations are applied it is shared across replicated API pods. Add ingress or gateway rate limits for defense in depth, and tune limits for expected agent concurrency and ingestion traffic. Set `ABRA_COMPOSE_HEALTH_CACHE_TTL=0s` only when every working-memory compose call must run a fresh scoped health aggregate. Set `OTEL_EXPORTER_OTLP_ENDPOINT` and `ABRA_TRACING_SAMPLE_RATIO` to enable optional OpenTelemetry tracing. Set `ABRA_WEBHOOK_SECRETS` when connector overlays use `POST /ingest/webhooks`. Set `ABRA_AUDIT_SINK_URL`, `ABRA_AUDIT_SINK_TOKEN`, and `ABRA_AUDIT_SINK_SECRET` when the worker should push signed audit NDJSON to a SIEM endpoint. Use any compatible embedding provider if it returns vectors with the configured dimensions. Use `EMBEDDING_PROVIDER=local` only when your cluster can reach self-hosted Qwen-compatible local embedding and reranker endpoints. For `git_repo` source configs, mount Git credentials through the platform layer and keep repository tokens out of config maps and prompts.
 
 Operational notes:
 

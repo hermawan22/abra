@@ -225,7 +225,7 @@ CREATE TABLE IF NOT EXISTS entities (
   valid_from TIMESTAMPTZ,
   expires_at TIMESTAMPTZ,
   last_verified_at TIMESTAMPTZ,
-  embedding vector(1536),
+  embedding vector,
   embedding_provider TEXT,
   embedding_model TEXT,
   embedding_dimensions INTEGER NOT NULL DEFAULT 1536,
@@ -422,7 +422,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS entities_scope_type_name_active_idx
 CREATE INDEX IF NOT EXISTS entities_scope_type_status_idx ON entities (scope, entity_type, status);
 CREATE INDEX IF NOT EXISTS entities_name_trgm_idx ON entities USING gin (canonical_name gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS entities_search_idx ON entities USING gin (search_vector);
-CREATE INDEX IF NOT EXISTS entities_embedding_idx ON entities USING hnsw (embedding vector_cosine_ops) WHERE embedding IS NOT NULL;
+CREATE INDEX IF NOT EXISTS entities_embedding_1536_idx
+  ON entities USING hnsw ((embedding::vector(1536)) vector_cosine_ops)
+  WHERE embedding IS NOT NULL AND embedding_dimensions = 1536;
 CREATE INDEX IF NOT EXISTS entities_metadata_gin_idx ON entities USING gin (metadata);
 CREATE INDEX IF NOT EXISTS entities_freshness_idx ON entities (scope, freshness_status, last_verified_at DESC NULLS LAST);
 

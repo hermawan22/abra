@@ -12,7 +12,7 @@ Prerequisites:
 
 - Docker Engine with Compose.
 - A generated `ABRA_API_KEYS` value.
-- A compatible embedding endpoint with a 1536-dimensional model for production-quality recall. The local deterministic provider is acceptable only for offline smoke tests.
+- Local Qwen-compatible embedding and reranker endpoints, or a custom compatible embedding provider. The default local path expects Qwen/Qwen3-Embedding-0.6B and Qwen/Qwen3-Reranker-0.6B served outside the Abra containers.
 - Enough disk for Postgres source snippets, claims, audit events, and vectors.
 
 Create `.env.production`:
@@ -23,8 +23,12 @@ ABRA_APPROVAL_MODE=enforce
 EMBEDDING_PROVIDER=compatible
 EMBEDDING_BASE_URL=https://embedding-provider.example/v1
 EMBEDDING_API_KEY=replace-with-embedding-key
-EMBEDDING_MODEL=embedding-model-1536
-EMBEDDING_DIMENSIONS=1536
+EMBEDDING_MODEL=embedding-model
+EMBEDDING_DIMENSIONS=1024
+RERANKER_PROVIDER=
+RERANKER_BASE_URL=
+RERANKER_API_KEY=
+RERANKER_MODEL=
 ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=false
 REDACT_PII=true
 RATE_LIMIT_MAX=120
@@ -96,8 +100,12 @@ ABRA_APPROVAL_MODE=enforce
 EMBEDDING_PROVIDER=compatible
 EMBEDDING_BASE_URL=https://...
 EMBEDDING_API_KEY=...
-EMBEDDING_MODEL=<1536-dimensional embedding model>
-EMBEDDING_DIMENSIONS=1536
+EMBEDDING_MODEL=<embedding model>
+EMBEDDING_DIMENSIONS=1024
+RERANKER_PROVIDER=
+RERANKER_BASE_URL=
+RERANKER_API_KEY=
+RERANKER_MODEL=
 ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=false
 REDACT_PII=true
 RATE_LIMIT_MAX=120
@@ -117,9 +125,9 @@ ABRA_API_KEYS=admin-token,reader-token|roles=reader;scopes=team:example,ops-toke
 
 Use scoped keys for agents and automation. Reserve all-scope `admin` keys for operators and automation that needs write access across scopes.
 
-`EMBEDDING_PROVIDER=local` does not need an external API key, but it is deterministic and intended for development or isolated smoke tests. When `NODE_ENV=production`, Abra blocks local embeddings by default unless `ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=true`. Keep that override false for shared, internet-reachable, or agent-facing production; use an external compatible provider for production-quality semantic recall.
+`EMBEDDING_PROVIDER=local` is the default self-hosted neural path. It does not need an external API key, but it does require local model endpoints reachable from the Abra containers. With Docker Compose, the default URLs use `host.docker.internal` so models running on the host can be reached from the API and worker containers. Set `EMBEDDING_PROVIDER=compatible` to replace the local defaults with a custom provider.
 
-The external provider contract is intentionally provider-neutral. The provider must expose the configured embeddings request/response shape and must return vectors with the configured `EMBEDDING_DIMENSIONS`. Abra stores embeddings and source-derived snippets; it does not send prompts for generation.
+The provider contract is intentionally provider-neutral. The provider must expose the configured embeddings request/response shape and must return vectors with the configured `EMBEDDING_DIMENSIONS`. API keys may be empty for self-hosted endpoints. The optional reranker is controlled separately with `RERANKER_PROVIDER`, `RERANKER_BASE_URL`, `RERANKER_API_KEY`, and `RERANKER_MODEL`; when unset, custom embedding providers do not keep the local Qwen reranker enabled. Abra stores embeddings and source-derived snippets; it does not send prompts for generation.
 
 `ABRA_COMPOSE_HEALTH_CACHE_TTL` controls the short-lived per-scope health snapshot cache used by `POST /memory/compose`; set it to `0s` to disable caching. Direct `GET /memory/health` remains uncached for operator checks. Track `abra_working_memory_health_lookup_total` to see whether compose traffic is using fresh lookups, cache hits, coalesced waits, disabled cache mode, or unknown/error paths.
 
@@ -157,7 +165,7 @@ Recommended deployment:
 - Back up the database; it contains memory and source-derived snippets.
 - Restore into a non-production database at least once per release cycle or before risky upgrades.
 - Monitor connection usage, storage growth, and slow queries.
-- Keep `EMBEDDING_DIMENSIONS=1536` unless a migration changes vector dimensions.
+- Keep `EMBEDDING_DIMENSIONS` aligned with the provider output. Abra stores returned dimensions per row and includes partial vector indexes for common dimensions such as 768, 1024, 1280, and 1536.
 - Keep graph relationships in Postgres for v1. Do not add Neo4j unless production evidence shows Postgres cannot handle required traversal workloads.
 - Keep policy indexes healthy. Working-memory composition evaluates stored agent-action policies on the hot path, so include `policies_agent_action_*` indexes in reindex maintenance.
 - Tune `token_budget` per agent class. Small local models can request tighter `context_window` prompts, while large hosted models can request larger budgets without changing the retrieval, verification, policy, or evidence contract.

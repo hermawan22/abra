@@ -2,7 +2,7 @@
 
 Abra is terminal-first: install the `abra` command, start the service from the terminal, and operate it through the CLI, HTTP, or MCP.
 
-The quickstart path uses local deterministic embeddings for evaluation. Production deployments should use compatible external embeddings, scoped credentials, and approval enforcement.
+The quickstart path defaults to local neural embeddings: Qwen/Qwen3-Embedding-0.6B plus Qwen/Qwen3-Reranker-0.6B served from local OpenAI-compatible endpoints. Custom providers are supported and replace the local defaults when configured.
 
 ## 3-Minute Local Flow
 
@@ -35,10 +35,10 @@ abra config show
 abra config path
 abra config model local
 abra config model openai --api-key-stdin
-abra config model compatible --base-url https://api.example.com/v1 --api-key-stdin --model embedding-model-1536
+abra config model compatible --base-url https://api.example.com/v1 --model embedding-model --dimensions 1024
 ```
 
-For non-interactive local setup, use `abra setup --yes`. For OpenAI-compatible embeddings during onboarding, use `printf '%s' "$OPENAI_API_KEY" | abra setup --openai --api-key-stdin`.
+For non-interactive local setup, use `abra setup --yes`. For authenticated compatible providers during onboarding, use `printf '%s' "$PROVIDER_API_KEY" | abra setup --compatible --base-url https://api.example.com/v1 --embedding-model embedding-model --api-key-stdin`.
 
 After changing model config, restart the stack:
 

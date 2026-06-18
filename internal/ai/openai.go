@@ -50,10 +50,7 @@ func (p *OpenAICompatibleProvider) Validate() error {
 	if strings.TrimSpace(p.config.BaseURL) == "" {
 		return fmt.Errorf("%w: base url is required", ErrInvalidConfig)
 	}
-	if strings.TrimSpace(p.config.APIKey) == "" {
-		return fmt.Errorf("%w: api key is required", ErrInvalidConfig)
-	}
-	if p.config.EmbeddingModel == "" && p.config.ChatModel == "" {
+	if p.config.EmbeddingModel == "" && p.config.RerankerModel == "" && p.config.ChatModel == "" {
 		return fmt.Errorf("%w: at least one model is required", ErrInvalidConfig)
 	}
 	if p.config.EmbeddingDimensions < 0 {
@@ -131,6 +128,45 @@ func (p *OpenAICompatibleProvider) Embed(ctx context.Context, request EmbeddingR
 		Embeddings: embeddings,
 		Usage:      payload.Usage,
 		Raw:        raw,
+	}, nil
+}
+
+func (p *OpenAICompatibleProvider) Rerank(ctx context.Context, request RerankRequest) (RerankResponse, error) {
+	if err := validateRerankRequest(request); err != nil {
+		return RerankResponse{}, err
+	}
+	model := request.Model
+	if model == "" {
+		model = p.config.RerankerModel
+	}
+	body := map[string]any{
+		"query": request.Query,
+		"texts": request.Documents,
+	}
+	if model != "" {
+		body["model"] = model
+	}
+	if request.TopN > 0 {
+		body["top_n"] = request.TopN
+	}
+
+	raw, err := p.postJSON(ctx, "/rerank", body)
+	if err != nil {
+		return RerankResponse{}, err
+	}
+	results, responseModel, usage, err := decodeRerankResponse(raw)
+	if err != nil {
+		return RerankResponse{}, err
+	}
+	if responseModel == "" {
+		responseModel = model
+	}
+	return RerankResponse{
+		Provider: p.name,
+		Model:    responseModel,
+		Results:  results,
+		Usage:    usage,
+		Raw:      raw,
 	}, nil
 }
 
@@ -223,6 +259,61 @@ func (p *OpenAICompatibleProvider) Extract(ctx context.Context, request Extracti
 	}, nil
 }
 
+func decodeRerankResponse(raw []byte) ([]RerankResult, string, *Usage, error) {
+	var asArray []rerankPayloadResult
+	if err := json.Unmarshal(raw, &asArray); err == nil && asArray != nil {
+		return normalizeRerankResults(asArray), "", nil, nil
+	}
+
+	var payload struct {
+		Results []rerankPayloadResult `json:"results"`
+		Data    []rerankPayloadResult `json:"data"`
+		Model   string                `json:"model"`
+		Usage   *Usage                `json:"usage"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, "", nil, fmt.Errorf("%w: decode rerank response: %v", ErrInvalidResponse, err)
+	}
+	results := payload.Results
+	if len(results) == 0 {
+		results = payload.Data
+	}
+	if len(results) == 0 {
+		return nil, payload.Model, payload.Usage, fmt.Errorf("%w: rerank response did not include results", ErrInvalidResponse)
+	}
+	return normalizeRerankResults(results), payload.Model, payload.Usage, nil
+}
+
+type rerankPayloadResult struct {
+	Index          int     `json:"index"`
+	Score          float64 `json:"score"`
+	RelevanceScore float64 `json:"relevance_score"`
+	Text           string  `json:"text"`
+	Document       any     `json:"document"`
+}
+
+func normalizeRerankResults(items []rerankPayloadResult) []RerankResult {
+	results := make([]RerankResult, 0, len(items))
+	for responseIndex, item := range items {
+		index := item.Index
+		if index == 0 && responseIndex > 0 {
+			index = responseIndex
+		}
+		score := item.Score
+		if score == 0 && item.RelevanceScore != 0 {
+			score = item.RelevanceScore
+		}
+		text := item.Text
+		if text == "" {
+			if value, ok := item.Document.(string); ok {
+				text = value
+			}
+		}
+		results = append(results, RerankResult{Index: index, Score: score, Text: text})
+	}
+	return results
+}
+
 func (p *OpenAICompatibleProvider) postJSON(ctx context.Context, path string, body any) ([]byte, error) {
 	payload, err := json.Marshal(body)
 	if err != nil {
@@ -234,7 +325,9 @@ func (p *OpenAICompatibleProvider) postJSON(ctx context.Context, path string, bo
 		return nil, fmt.Errorf("%w: create request: %v", ErrInvalidRequest, err)
 	}
 	request.Header.Set("content-type", "application/json")
-	request.Header.Set("authorization", "Bearer "+p.config.APIKey)
+	if strings.TrimSpace(p.config.APIKey) != "" {
+		request.Header.Set("authorization", "Bearer "+p.config.APIKey)
+	}
 	if p.config.Organization != "" {
 		request.Header.Set("OpenAI-Organization", p.config.Organization)
 	}

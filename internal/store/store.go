@@ -2633,7 +2633,8 @@ func (s *Store) RecallHybrid(ctx context.Context, query, scope string, limit int
 	}
 	vector := vectorLiteral(queryEmbedding)
 
-	claimsRows, err := s.pool.Query(ctx, hybridRecallClaimsSQL(statusFilter), query, scope, limit, anyQuery, vector)
+	dimensions := len(queryEmbedding)
+	claimsRows, err := s.pool.Query(ctx, hybridRecallClaimsSQL(statusFilter, dimensions), query, scope, limit, anyQuery, vector, dimensions)
 	if err != nil {
 		return RecallResult{}, err
 	}
@@ -2656,7 +2657,7 @@ func (s *Store) RecallHybrid(ctx context.Context, query, scope string, limit int
 		return RecallResult{}, err
 	}
 
-	docRows, err := s.pool.Query(ctx, hybridRecallDocumentsSQL(), query, scope, min(limit, 5), anyQuery, vector)
+	docRows, err := s.pool.Query(ctx, hybridRecallDocumentsSQL(dimensions), query, scope, min(limit, 5), anyQuery, vector, dimensions)
 	if err != nil {
 		return RecallResult{}, err
 	}
@@ -2679,7 +2680,8 @@ func (s *Store) RecallHybrid(ctx context.Context, query, scope string, limit int
 	return result, nil
 }
 
-func hybridRecallClaimsSQL(statusFilter string) string {
+func hybridRecallClaimsSQL(statusFilter string, dimensions int) string {
+	embeddingExpr, queryExpr := vectorComparisonExpr("embedding", "$5", dimensions)
 	return fmt.Sprintf(`
 		WITH text_matches AS (
 		  SELECT
@@ -2704,11 +2706,12 @@ func hybridRecallClaimsSQL(statusFilter string) string {
 		vector_matches AS (
 		  SELECT
 		    id,
-		    GREATEST(0, 1 - (embedding <=> $5::vector)) AS vector_score
+		    GREATEST(0, 1 - (%s <=> %s)) AS vector_score
 		  FROM claims
 		  WHERE scope = $2
 		    AND %s
-		  ORDER BY embedding <=> $5::vector
+		    AND embedding_dimensions = $6
+		  ORDER BY %s <=> %s
 		  LIMIT GREATEST($3 * 3, 12)
 		),
 		candidates AS (
@@ -2746,11 +2749,12 @@ func hybridRecallClaimsSQL(statusFilter string) string {
 		LEFT JOIN vector_matches vm ON vm.id = c.id
 		ORDER BY rank_score DESC, c.updated_at DESC
 		LIMIT $3
-	`, statusFilter, statusFilter)
+	`, statusFilter, embeddingExpr, queryExpr, statusFilter, embeddingExpr, queryExpr)
 }
 
-func hybridRecallDocumentsSQL() string {
-	return `
+func hybridRecallDocumentsSQL(dimensions int) string {
+	embeddingExpr, queryExpr := vectorComparisonExpr("ch.embedding", "$5", dimensions)
+	return fmt.Sprintf(`
 		WITH text_matches AS (
 		  SELECT
 		    ch.id,
@@ -2776,13 +2780,14 @@ func hybridRecallDocumentsSQL() string {
 		vector_matches AS (
 		  SELECT
 		    ch.id,
-		    GREATEST(0, 1 - (ch.embedding <=> $5::vector)) AS vector_score
+		    GREATEST(0, 1 - (%s <=> %s)) AS vector_score
 		  FROM chunks ch
 		  JOIN documents d ON d.id = ch.document_id
 		  WHERE ch.scope = $2
 		    AND d.scope = $2
 		    AND d.status NOT IN ('deprecated', 'deleted')
-		  ORDER BY ch.embedding <=> $5::vector
+		    AND ch.embedding_dimensions = $6
+		  ORDER BY %s <=> %s
 		  LIMIT GREATEST($3 * 3, 12)
 		),
 		candidates AS (
@@ -2802,7 +2807,17 @@ func hybridRecallDocumentsSQL() string {
 		LEFT JOIN vector_matches vm ON vm.id = ch.id
 		ORDER BY rank_score DESC, d.ingested_at DESC, ch.chunk_index ASC
 		LIMIT $3
-	`
+	`, embeddingExpr, queryExpr, embeddingExpr, queryExpr)
+}
+
+func vectorComparisonExpr(column, parameter string, dimensions int) (string, string) {
+	switch dimensions {
+	case 768, 1024, 1280, 1536:
+		cast := fmt.Sprintf("vector(%d)", dimensions)
+		return fmt.Sprintf("%s::%s", column, cast), fmt.Sprintf("%s::%s", parameter, cast)
+	default:
+		return column, parameter + "::vector"
+	}
 }
 
 func (s *Store) Sources(ctx context.Context, query, scope string, limit int) ([]DocumentResult, error) {

@@ -58,10 +58,10 @@ For non-interactive local setup:
 abra setup --yes
 ```
 
-Connect OpenAI-compatible embeddings during setup without editing env files:
+Connect a custom compatible embedding provider during setup without editing env files:
 
 ```sh
-printf '%s' "$OPENAI_API_KEY" | abra setup --openai --api-key-stdin
+printf '%s' "$PROVIDER_API_KEY" | abra setup --compatible --base-url https://api.example.com/v1 --embedding-model embedding-model --api-key-stdin
 ```
 
 Try the governed brain:
@@ -199,7 +199,7 @@ Reset demo data:
 go run ./cmd/abra down --reset
 ```
 
-The demo uses deterministic local embeddings and is meant for evaluation only. For production, use external compatible embeddings and approval enforcement.
+The demo uses the default local neural embedding path. Run Qwen/Qwen3-Embedding-0.6B and Qwen/Qwen3-Reranker-0.6B on the configured local endpoints before ingesting documents. For production, keep approval enforcement on and either self-host those local models or configure a compatible custom embedding provider.
 
 For command-by-command local and self-host usage, read [docs/CLI.md](./docs/CLI.md).
 
@@ -275,7 +275,7 @@ ABRA_BASE_URL=http://localhost:18080 ABRA_API_TOKEN=replace-with-token npm run r
 
 `perf:local` seeds a scoped fixture workload, then checks p95/p99 recall and working-memory latency, failure rate, and a higher-concurrency working-memory capacity probe with memory-health cache-status accounting. Set `ABRA_PERF_SOAK_SECONDS` for an opt-in sustained working-memory soak profile that reports throughput, p95/p99, failure rate, and health-cache distribution. Tune release thresholds with `ABRA_PERF_RECALL_P95_MS`, `ABRA_PERF_MEMORY_P95_MS`, `ABRA_PERF_MEMORY_CAPACITY_P95_MS`, `ABRA_PERF_MEMORY_SOAK_P95_MS`, and `ABRA_PERF_MAX_FAILURE_RATE`.
 
-`release:gate` emits one JSON report that combines script checks, Go tests, Compose/Helm render checks, smoke, deterministic quality evals, provider-quality benchmark, Tier 2/3 agent workflow traces, enforced approval-mode probes, dogfood, and performance/capacity gates. Use `ABRA_RELEASE_PROFILE=quick` for a short developer gate that skips provider/Tier 2/3, enforced approval-mode probes, dogfood, and golden evals and reduces the perf fixture; use the default `full` profile before a release. The full gate gives dogfood an isolated release scope by default so old local ingestion failures do not contaminate release evidence; set `ABRA_DOGFOOD_SCOPE` only when you intentionally want to validate a specific existing scope. Set `ABRA_RELEASE_MANAGE_STACK=1` when the runner should build the local Docker Compose image, start Postgres, run migrations, and start the API and worker itself; managed mode explicitly enables local embeddings for deterministic offline evals, raises the local rate limit, uses a short worker interval for eval responsiveness, and runs a second Tier 2/3 pass under `ABRA_APPROVAL_MODE=enforce`. For containerized dogfood, set `ABRA_RELEASE_PREPARE_DOGFOOD_SOURCE=1` to copy the checkout into the worker container before running `eval:dogfood`; this is enabled automatically when `ABRA_RELEASE_MANAGE_STACK=1`. Set `ABRA_RELEASE_APPROVAL_ENFORCEMENT_GATE=1` only when the target stack is already running in enforced mode or the runner may recreate it.
+`release:gate` emits one JSON report that combines script checks, Go tests, Compose/Helm render checks, smoke, quality evals, provider-quality benchmark, Tier 2/3 agent workflow traces, enforced approval-mode probes, dogfood, and performance/capacity gates. Use `ABRA_RELEASE_PROFILE=quick` for a short developer gate that skips provider/Tier 2/3, enforced approval-mode probes, dogfood, and golden evals and reduces the perf fixture; use the default `full` profile before a release. The full gate gives dogfood an isolated release scope by default so old local ingestion failures do not contaminate release evidence; set `ABRA_DOGFOOD_SCOPE` only when you intentionally want to validate a specific existing scope. Set `ABRA_RELEASE_MANAGE_STACK=1` when the runner should build the local Docker Compose image, start Postgres, run migrations, and start the API and worker itself; managed mode raises the local rate limit, uses a short worker interval for eval responsiveness, and runs a second Tier 2/3 pass under `ABRA_APPROVAL_MODE=enforce`. For containerized dogfood, set `ABRA_RELEASE_PREPARE_DOGFOOD_SOURCE=1` to copy the checkout into the worker container before running `eval:dogfood`; this is enabled automatically when `ABRA_RELEASE_MANAGE_STACK=1`. Set `ABRA_RELEASE_APPROVAL_ENFORCEMENT_GATE=1` only when the target stack is already running in enforced mode or the runner may recreate it.
 
 ### Kubernetes
 
@@ -563,7 +563,7 @@ Recall responses include `retrieval_mode`, plus `text_score` and `vector_score` 
 4. Run the migration.
 5. Start the API, MCP server, or worker process.
 
-The default embedding provider is `local`, a deterministic development provider. Production deployments should configure a compatible embedding endpoint with the required vector dimensions. When `NODE_ENV=production`, local embeddings are blocked by default unless `ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=true`; keep that override off except for isolated offline smoke tests.
+The default embedding provider is `local`, meaning self-hosted Qwen-compatible neural retrieval: Qwen/Qwen3-Embedding-0.6B for first-stage vectors and Qwen/Qwen3-Reranker-0.6B for optional reranking. Custom providers replace the local defaults by setting `EMBEDDING_PROVIDER=compatible`, `EMBEDDING_BASE_URL`, `EMBEDDING_MODEL`, and `EMBEDDING_DIMENSIONS`; set `RERANKER_PROVIDER` only when the custom provider also exposes a rerank endpoint.
 
 Forgetting a claim marks it `deprecated`. Source re-ingestion will not reactivate a manually forgotten claim; only claims and relations temporarily deprecated by source refresh can be reactivated.
 
@@ -576,7 +576,12 @@ NODE_ENV=development
 ABRA_API_KEYS=replace-me
 ABRA_WEBHOOK_SECRETS=replace-webhook-secret
 EMBEDDING_PROVIDER=local
-EMBEDDING_DIMENSIONS=1536
+EMBEDDING_BASE_URL=http://host.docker.internal:8080/v1
+EMBEDDING_MODEL=text-embeddings-inference
+EMBEDDING_DIMENSIONS=1024
+RERANKER_PROVIDER=local
+RERANKER_BASE_URL=http://host.docker.internal:8081
+RERANKER_MODEL=text-embeddings-inference
 ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=false
 REDACT_PII=true
 RATE_LIMIT_MAX=120
@@ -648,7 +653,7 @@ ABRA_AUDIT_SINK_BATCH_SIZE=100
 
 Leave `ABRA_AUDIT_SINK_URL` empty to disable push delivery.
 
-Abra v0.1 uses `vector(1536)` in its migrations. Use a 1536-dimensional embedding model unless you also introduce a new migration.
+Abra stores variable-dimension pgvector embeddings and records the provider, model, and returned dimensions with each chunk and claim. Built-in partial vector indexes cover common dimensions including 768, 1024, 1280, and 1536.
 
 Optional external embeddings:
 
@@ -656,10 +661,12 @@ Optional external embeddings:
 EMBEDDING_PROVIDER=compatible
 EMBEDDING_BASE_URL=https://embedding-provider.example/v1
 EMBEDDING_API_KEY=...
-EMBEDDING_MODEL=embedding-model-1536
+EMBEDDING_MODEL=embedding-model
+EMBEDDING_DIMENSIONS=1024
+RERANKER_PROVIDER=
 ```
 
-The provider contract is generic: any embedding endpoint that implements the configured embeddings API shape can be used by setting `EMBEDDING_BASE_URL`, `EMBEDDING_API_KEY`, `EMBEDDING_MODEL`, and `EMBEDDING_DIMENSIONS`. Abra does not use an LLM for answer generation; the provider is used to embed chunks, claims, and recall queries for hybrid retrieval. `EMBEDDING_PROVIDER=local` is deterministic and useful for development or offline smoke tests, but production-quality recall should use a real embedding model. Production mode blocks local embeddings unless `ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=true`; do not enable that override for shared or agent-facing production.
+The provider contract is generic: any embedding endpoint that implements the configured embeddings API shape can be used by setting `EMBEDDING_BASE_URL`, `EMBEDDING_API_KEY`, `EMBEDDING_MODEL`, and `EMBEDDING_DIMENSIONS`. Empty API keys are allowed for self-hosted endpoints. Abra does not use an LLM for answer generation; the provider is used to embed chunks, claims, and recall queries for hybrid retrieval. The optional reranker uses `RERANKER_PROVIDER`, `RERANKER_BASE_URL`, `RERANKER_API_KEY`, and `RERANKER_MODEL`. If reranking fails, recall keeps the hybrid retrieval result instead of failing the user query.
 
 ## V1 Direction
 

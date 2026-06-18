@@ -21,7 +21,7 @@ func setup(ctx context.Context, args cliArgs) error {
 		}
 		fmt.Println("Production env created.")
 		fmt.Println("Configure embeddings with:")
-		fmt.Println("  abra config model openai --env-file " + envPath(args) + " --api-key-stdin")
+		fmt.Println("  abra config model local --env-file " + envPath(args))
 		fmt.Println("Then start with:")
 		fmt.Println("  abra up --env-file " + envPath(args))
 		return nil
@@ -88,6 +88,8 @@ func setupEmbeddingConfig(args cliArgs, reader *bufio.Reader, interactive bool) 
 	switch {
 	case boolFlag(args, "local"):
 		mode = "local"
+	case boolFlag(args, "qwen3"):
+		mode = "qwen3"
 	case boolFlag(args, "openai"):
 		mode = "openai"
 	case boolFlag(args, "compatible"):
@@ -96,18 +98,18 @@ func setupEmbeddingConfig(args cliArgs, reader *bufio.Reader, interactive bool) 
 	if mode == "" {
 		if interactive && !boolFlag(args, "yes") {
 			fmt.Println("Embedding model:")
-			fmt.Println("  1. local  - no external API key, good for local evaluation")
-			fmt.Println("  2. openai - OpenAI text-embedding-3-small, 1536 dimensions")
-			fmt.Println("  3. compatible - custom OpenAI-compatible embedding endpoint")
+			fmt.Println("  1. local - default Qwen3 local neural embeddings via an OpenAI-compatible local server")
+			fmt.Println("  2. compatible - custom OpenAI-compatible embedding endpoint")
+			fmt.Println("  3. openai - OpenAI text-embedding-3-small convenience alias")
 			choice, err := promptDefault(reader, "Choose embedding model [1/2/3]", "1")
 			if err != nil {
 				return err
 			}
 			switch strings.TrimSpace(strings.ToLower(choice)) {
-			case "2", "openai":
-				mode = "openai"
-			case "3", "compatible":
+			case "2", "compatible":
 				mode = "compatible"
+			case "3", "openai":
+				mode = "openai"
 			default:
 				mode = "local"
 			}
@@ -118,19 +120,21 @@ func setupEmbeddingConfig(args cliArgs, reader *bufio.Reader, interactive bool) 
 
 	switch mode {
 	case "local":
-		return setupLocalEmbeddings(args)
+		return setupLocalNeuralEmbeddings(args, reader, interactive)
+	case "qwen3", "local-smart":
+		return setupLocalNeuralEmbeddings(args, reader, interactive)
 	case "openai":
 		return setupOpenAIEmbeddings(args, reader, interactive)
 	case "compatible", "openai-compatible":
 		return setupCompatibleEmbeddings(args, reader, interactive)
 	default:
-		return fmt.Errorf("unknown setup model %q; use local, openai, or compatible", mode)
+		return fmt.Errorf("unknown setup model %q; use local, compatible, or openai", mode)
 	}
 }
 
 func setupProvider(args cliArgs) (string, error) {
 	selectors := []string{}
-	for _, name := range []string{"local", "openai", "compatible"} {
+	for _, name := range []string{"local", "qwen3", "openai", "compatible"} {
 		if boolFlag(args, name) {
 			selectors = append(selectors, "--"+name)
 		}
@@ -140,7 +144,7 @@ func setupProvider(args cliArgs) (string, error) {
 			selectors = append(selectors, "--"+name)
 		}
 	}
-	if legacyModel := strings.ToLower(strings.TrimSpace(flag(args, "model", ""))); legacyModel == "local" || legacyModel == "openai" || legacyModel == "compatible" || legacyModel == "openai-compatible" {
+	if legacyModel := strings.ToLower(strings.TrimSpace(flag(args, "model", ""))); legacyModel == "local" || legacyModel == "qwen3" || legacyModel == "local-smart" || legacyModel == "openai" || legacyModel == "compatible" || legacyModel == "openai-compatible" {
 		selectors = append(selectors, "--model")
 	}
 	if len(selectors) > 1 {
@@ -153,7 +157,7 @@ func setupProvider(args cliArgs) (string, error) {
 	}
 	legacyModel := strings.ToLower(strings.TrimSpace(flag(args, "model", "")))
 	switch legacyModel {
-	case "local", "openai", "compatible", "openai-compatible":
+	case "local", "qwen3", "local-smart", "openai", "compatible", "openai-compatible":
 		return legacyModel, nil
 	default:
 		return "", nil
@@ -166,25 +170,69 @@ func setupEmbeddingModel(args cliArgs, fallback string) string {
 	}
 	legacyModel := strings.TrimSpace(flag(args, "model", ""))
 	switch strings.ToLower(legacyModel) {
-	case "", "local", "openai", "compatible", "openai-compatible":
+	case "", "local", "qwen3", "local-smart", "openai", "compatible", "openai-compatible":
 		return fallback
 	default:
 		return legacyModel
 	}
 }
 
-func setupLocalEmbeddings(args cliArgs) error {
+func setupLocalNeuralEmbeddings(args cliArgs, reader *bufio.Reader, interactive bool) error {
+	baseURL := firstNonEmpty(flag(args, "base-url", ""), "http://host.docker.internal:8080/v1")
+	model := setupEmbeddingModel(args, "text-embeddings-inference")
+	dimensions := firstNonEmpty(flag(args, "dimensions", ""), "1024")
+	rerankerBaseURL := firstNonEmpty(flag(args, "reranker-base-url", ""), "http://host.docker.internal:8081")
+	rerankerModel := firstNonEmpty(flag(args, "reranker-model", ""), "text-embeddings-inference")
+	apiKey := flag(args, "api-key", "")
+	if apiKey == "" && boolFlag(args, "api-key-stdin") {
+		bytes, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return err
+		}
+		apiKey = strings.TrimSpace(string(bytes))
+	}
+	if interactive && !boolFlag(args, "yes") {
+		var err error
+		baseURL, err = promptDefault(reader, "Qwen3 OpenAI-compatible base URL", baseURL)
+		if err != nil {
+			return err
+		}
+		model, err = promptDefault(reader, "Embedding request model", model)
+		if err != nil {
+			return err
+		}
+		dimensions, err = promptDefault(reader, "Embedding dimensions", dimensions)
+		if err != nil {
+			return err
+		}
+		rerankerBaseURL, err = promptDefault(reader, "Qwen3 reranker base URL", rerankerBaseURL)
+		if err != nil {
+			return err
+		}
+		rerankerModel, err = promptDefault(reader, "Reranker request model", rerankerModel)
+		if err != nil {
+			return err
+		}
+	}
 	if err := updateEnvValues(args, map[string]string{
 		"EMBEDDING_PROVIDER":                   "local",
-		"EMBEDDING_BASE_URL":                   "",
-		"EMBEDDING_API_KEY":                    "",
-		"EMBEDDING_MODEL":                      setupEmbeddingModel(args, "embedding-model-1536"),
-		"EMBEDDING_DIMENSIONS":                 flag(args, "dimensions", "1536"),
-		"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION": "true",
+		"EMBEDDING_BASE_URL":                   strings.TrimSpace(baseURL),
+		"EMBEDDING_API_KEY":                    strings.TrimSpace(apiKey),
+		"EMBEDDING_MODEL":                      strings.TrimSpace(model),
+		"EMBEDDING_DIMENSIONS":                 strings.TrimSpace(dimensions),
+		"RERANKER_PROVIDER":                    "local",
+		"RERANKER_BASE_URL":                    strings.TrimSpace(rerankerBaseURL),
+		"RERANKER_API_KEY":                     strings.TrimSpace(apiKey),
+		"RERANKER_MODEL":                       strings.TrimSpace(rerankerModel),
+		"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION": "false",
 	}); err != nil {
 		return err
 	}
-	fmt.Println("Embedding: local deterministic provider")
+	fmt.Println("Embedding: local neural default (Qwen3-compatible)")
+	fmt.Println("Prerequisite: run local OpenAI-compatible servers for Qwen/Qwen3-Embedding-0.6B and Qwen/Qwen3-Reranker-0.6B before neural recall.")
+	fmt.Println("Host endpoints: embedding http://127.0.0.1:8080/v1, reranker http://127.0.0.1:8081")
+	fmt.Println("Compose endpoints are written as host.docker.internal so Abra containers can reach those host services.")
+	fmt.Println("After changing embedding providers, re-ingest important sources so vector recall uses the new embedding space.")
 	return nil
 }
 
@@ -228,15 +276,16 @@ func setupCompatibleEmbeddings(args cliArgs, reader *bufio.Reader, interactive b
 			}
 		}
 	}
-	if strings.TrimSpace(apiKey) == "" {
-		return errors.New("embedding API key is required for openai/compatible setup; pass --api-key-stdin or choose --local")
-	}
 	if err := updateEnvValues(args, map[string]string{
 		"EMBEDDING_PROVIDER":                   "compatible",
 		"EMBEDDING_BASE_URL":                   strings.TrimSpace(baseURL),
 		"EMBEDDING_API_KEY":                    strings.TrimSpace(apiKey),
 		"EMBEDDING_MODEL":                      strings.TrimSpace(model),
 		"EMBEDDING_DIMENSIONS":                 strings.TrimSpace(dimensions),
+		"RERANKER_PROVIDER":                    "",
+		"RERANKER_BASE_URL":                    "",
+		"RERANKER_API_KEY":                     "",
+		"RERANKER_MODEL":                       "",
 		"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION": "false",
 	}); err != nil {
 		return err

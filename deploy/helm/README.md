@@ -24,7 +24,9 @@ kubectl create secret generic abra-secrets \
   --from-literal=ABRA_AUDIT_SINK_TOKEN='replace-with-siem-bearer-token' \
   --from-literal=ABRA_AUDIT_SINK_SECRET='replace-with-siem-signing-secret' \
   --from-literal=EMBEDDING_BASE_URL='https://embedding-provider.example/v1' \
-  --from-literal=EMBEDDING_API_KEY='replace-with-embedding-key'
+  --from-literal=EMBEDDING_API_KEY='' \
+  --from-literal=RERANKER_BASE_URL='' \
+  --from-literal=RERANKER_API_KEY=''
 ```
 
 Render and inspect:
@@ -38,7 +40,7 @@ Install or upgrade:
 ```sh
 helm upgrade --install abra ./deploy/helm \
   --set image.repository=ghcr.io/your-org/abra \
-  --set image.tag=0.2.0
+  --set image.tag=0.3.0
 ```
 
 ## Values
@@ -48,7 +50,7 @@ Important values:
 ```yaml
 image:
   repository: ghcr.io/your-org/abra
-  tag: 0.2.0
+  tag: 0.3.0
 
 secrets:
   existingSecret: abra-secrets
@@ -59,8 +61,10 @@ secrets:
 
 config:
   embeddingProvider: compatible
-  embeddingModel: embedding-model-1536
-  embeddingDimensions: "1536"
+  embeddingModel: embedding-model
+  embeddingDimensions: "1024"
+  rerankerProvider: ""
+  rerankerModel: ""
   allowLocalEmbeddingsInProduction: "false"
   approvalMode: enforce
   auditSinkUrl: ""
@@ -95,7 +99,7 @@ migrate:
 - Run migrations as Helm pre-install/pre-upgrade hooks with a delete policy or unique job names so migrations run once on every release.
 - Keep Abra internal-only by default.
 - Keep `config.approvalMode=enforce` before exposing write-capable credentials to autonomous agents.
-- Keep `config.allowLocalEmbeddingsInProduction=false` for production. `EMBEDDING_PROVIDER=local` is blocked in production unless that override is explicitly enabled for isolated offline smoke tests.
+- `config.embeddingProvider=local` means self-hosted Qwen-compatible neural retrieval. Set `config.embeddingProvider=compatible` plus the embedding secret values to replace it with any custom provider. Set `config.rerankerProvider` only when a reranker endpoint is available.
 - Keep Abra's built-in Postgres-backed rate limit enabled with `config.rateLimitMax` and `config.rateLimitWindow`; it applies across replicated API pods after migrations are applied. Add ingress or gateway rate limits for defense in depth on exposed deployments.
 - Set `config.composeHealthCacheTtl=0s` only when every working-memory compose call must run a fresh scoped health aggregate.
 - Set `config.otelExporterOtlpEndpoint` to enable optional OpenTelemetry tracing. Keep `config.tracingSampleRatio` below `1` in high-throughput deployments unless you are debugging a short window.

@@ -19,9 +19,13 @@ CREATE TABLE IF NOT EXISTS chunks (
   document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
   chunk_index INTEGER NOT NULL,
   content TEXT NOT NULL,
-  embedding vector(1536) NOT NULL,
+  embedding vector NOT NULL,
+  embedding_provider TEXT,
+  embedding_model TEXT,
+  embedding_dimensions INTEGER NOT NULL DEFAULT 1536,
   search_vector tsvector GENERATED ALWAYS AS (to_tsvector('simple', content)) STORED,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (embedding_dimensions > 0),
   UNIQUE (document_id, chunk_index)
 );
 
@@ -34,7 +38,10 @@ CREATE TABLE IF NOT EXISTS claims (
   authority TEXT NOT NULL DEFAULT 'manual-unverified',
   status TEXT NOT NULL DEFAULT 'unverified',
   confidence DOUBLE PRECISION NOT NULL DEFAULT 0.35,
-  embedding vector(1536) NOT NULL,
+  embedding vector NOT NULL,
+  embedding_provider TEXT,
+  embedding_model TEXT,
+  embedding_dimensions INTEGER NOT NULL DEFAULT 1536,
   valid_from TIMESTAMPTZ,
   expires_at TIMESTAMPTZ,
   last_verified_at TIMESTAMPTZ,
@@ -43,6 +50,7 @@ CREATE TABLE IF NOT EXISTS claims (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
   search_vector tsvector GENERATED ALWAYS AS (to_tsvector('simple', claim_text)) STORED,
+  CHECK (embedding_dimensions > 0),
   CHECK (status IN ('verified', 'unverified', 'inferred', 'challenged', 'deprecated', 'expired'))
 );
 
@@ -80,8 +88,8 @@ CREATE TABLE IF NOT EXISTS audit_events (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS chunks_embedding_idx ON chunks USING hnsw (embedding vector_cosine_ops);
-CREATE INDEX IF NOT EXISTS claims_embedding_idx ON claims USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX IF NOT EXISTS chunks_embedding_idx ON chunks USING hnsw ((embedding::vector(1536)) vector_cosine_ops) WHERE embedding_dimensions = 1536;
+CREATE INDEX IF NOT EXISTS claims_embedding_idx ON claims USING hnsw ((embedding::vector(1536)) vector_cosine_ops) WHERE embedding_dimensions = 1536;
 CREATE INDEX IF NOT EXISTS chunks_search_idx ON chunks USING gin (search_vector);
 CREATE INDEX IF NOT EXISTS claims_search_idx ON claims USING gin (search_vector);
 CREATE INDEX IF NOT EXISTS claims_scope_status_idx ON claims (scope, status);

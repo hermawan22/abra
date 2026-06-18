@@ -38,8 +38,10 @@ config:
   nodeEnv: production
   port: "8080"
   embeddingProvider: compatible
-  embeddingModel: embedding-model-1536
-  embeddingDimensions: "1536"
+  embeddingModel: embedding-model
+  embeddingDimensions: "1024"
+  rerankerProvider: ""
+  rerankerModel: ""
   allowLocalEmbeddingsInProduction: "false"
   approvalMode: enforce
   auditSinkUrl: ""
@@ -66,6 +68,8 @@ secrets:
     auditSinkSecret: ABRA_AUDIT_SINK_SECRET
     embeddingBaseUrl: EMBEDDING_BASE_URL
     embeddingApiKey: EMBEDDING_API_KEY
+    rerankerBaseUrl: RERANKER_BASE_URL
+    rerankerApiKey: RERANKER_API_KEY
 
 service:
   type: ClusterIP

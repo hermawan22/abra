@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -19,7 +20,6 @@ var (
 type ProviderKind string
 
 const (
-	ProviderLocal            ProviderKind = "local"
 	ProviderOpenAICompatible ProviderKind = "openai-compatible"
 	ProviderCustomHTTP       ProviderKind = "custom-http"
 )
@@ -33,6 +33,11 @@ type Provider interface {
 type EmbeddingProvider interface {
 	Provider
 	Embed(ctx context.Context, request EmbeddingRequest) (EmbeddingResponse, error)
+}
+
+type RerankerProvider interface {
+	Provider
+	Rerank(ctx context.Context, request RerankRequest) (RerankResponse, error)
 }
 
 type ExtractorProvider interface {
@@ -60,6 +65,28 @@ type Embedding struct {
 	Index      int
 	Vector     []float64
 	Dimensions int
+}
+
+type RerankRequest struct {
+	Query     string
+	Documents []string
+	Model     string
+	TopN      int
+	Metadata  map[string]any
+}
+
+type RerankResponse struct {
+	Provider string
+	Model    string
+	Results  []RerankResult
+	Usage    *Usage
+	Raw      []byte
+}
+
+type RerankResult struct {
+	Index int
+	Score float64
+	Text  string
 }
 
 type ExtractionRequest struct {
@@ -94,14 +121,8 @@ type JSONSchema map[string]any
 type ProviderConfig struct {
 	Name               string
 	Kind               ProviderKind
-	Local              *LocalConfig
 	OpenAICompatible   *OpenAICompatibleConfig
 	CustomHTTPProvider *CustomHTTPProviderConfig
-}
-
-type LocalConfig struct {
-	Name       string
-	Dimensions int
 }
 
 type OpenAICompatibleConfig struct {
@@ -109,6 +130,7 @@ type OpenAICompatibleConfig struct {
 	BaseURL             string
 	APIKey              string
 	EmbeddingModel      string
+	RerankerModel       string
 	ChatModel           string
 	EmbeddingDimensions int
 	Organization        string
@@ -151,11 +173,6 @@ type CustomHTTPAuthConfig struct {
 
 func NewProvider(config ProviderConfig, client *http.Client) (Provider, error) {
 	switch config.Kind {
-	case ProviderLocal:
-		if config.Local == nil {
-			return nil, fmt.Errorf("%w: local config is required", ErrInvalidConfig)
-		}
-		return NewLocalProvider(*config.Local)
 	case ProviderOpenAICompatible:
 		if config.OpenAICompatible == nil {
 			return nil, fmt.Errorf("%w: openai-compatible config is required", ErrInvalidConfig)
@@ -183,6 +200,18 @@ func NewEmbeddingProvider(config ProviderConfig, client *http.Client) (Embedding
 	return embeddingProvider, nil
 }
 
+func NewRerankerProvider(config ProviderConfig, client *http.Client) (RerankerProvider, error) {
+	provider, err := NewProvider(config, client)
+	if err != nil {
+		return nil, err
+	}
+	rerankerProvider, ok := provider.(RerankerProvider)
+	if !ok {
+		return nil, fmt.Errorf("%w: provider %q does not support reranking", ErrInvalidConfig, provider.Name())
+	}
+	return rerankerProvider, nil
+}
+
 func NewExtractorProvider(config ProviderConfig, client *http.Client) (ExtractorProvider, error) {
 	provider, err := NewProvider(config, client)
 	if err != nil {
@@ -193,6 +222,24 @@ func NewExtractorProvider(config ProviderConfig, client *http.Client) (Extractor
 		return nil, fmt.Errorf("%w: provider %q does not support extraction", ErrInvalidConfig, provider.Name())
 	}
 	return extractorProvider, nil
+}
+
+func validateRerankRequest(request RerankRequest) error {
+	if strings.TrimSpace(request.Query) == "" {
+		return fmt.Errorf("%w: query is required", ErrInvalidRequest)
+	}
+	if len(request.Documents) == 0 {
+		return fmt.Errorf("%w: documents are required", ErrInvalidRequest)
+	}
+	for index, document := range request.Documents {
+		if strings.TrimSpace(document) == "" {
+			return fmt.Errorf("%w: documents[%d] is empty", ErrInvalidRequest, index)
+		}
+	}
+	if request.TopN < 0 {
+		return fmt.Errorf("%w: top_n must be non-negative", ErrInvalidRequest)
+	}
+	return nil
 }
 
 func ValidateEmbeddingDimensions(vector []float64, expected int) error {

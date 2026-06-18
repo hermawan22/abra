@@ -8,7 +8,7 @@ Security fixes are applied to the latest `0.1.x` release and the current `main` 
 
 - API key authentication for every non-health endpoint.
 - Production startup fails without `ABRA_API_KEYS`.
-- Production startup rejects local deterministic embeddings by default.
+- Local mode uses self-hosted Qwen-compatible embedding and reranker endpoints by default; custom providers replace those endpoints through env/CLI config.
 - PII redaction is enabled by default.
 - Claims retain source, scope, status, confidence, and freshness metadata.
 - `forget` deprecates claims instead of deleting audit history.

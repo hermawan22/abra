@@ -63,6 +63,19 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.secrets.existingSecret }}
                   key: {{ .Values.secrets.keys.embeddingApiKey }}
+                  optional: true
+            - name: RERANKER_BASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: {{ .Values.secrets.keys.rerankerBaseUrl }}
+                  optional: true
+            - name: RERANKER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: {{ .Values.secrets.keys.rerankerApiKey }}
+                  optional: true
           readinessProbe:
             httpGet:
               path: /readyz

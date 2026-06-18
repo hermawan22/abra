@@ -184,7 +184,7 @@ await runCheck("runtime_ready_with_local_embeddings", async () => {
   assert(ready.ok === true, "readyz did not report ok=true");
   assert(
     ready.embedding_provider === "local" || allowNonLocal,
-    `Tier 2/3 eval must run with EMBEDDING_PROVIDER=local for deterministic fixtures, got ${ready.embedding_provider}`
+    `Tier 2/3 eval must run with EMBEDDING_PROVIDER=local for the default local neural recall profile, got ${ready.embedding_provider}`
   );
   approvalEnforcementExpected =
     approvalEnforcementExpected ||

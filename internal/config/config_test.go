@@ -1,7 +1,6 @@
 package config
 
 import (
-	"strings"
 	"testing"
 	"time"
 )
@@ -26,32 +25,42 @@ func TestLoadRejectsInvalidApprovalMode(t *testing.T) {
 	}
 }
 
-func TestLoadRejectsLocalEmbeddingsInProductionByDefault(t *testing.T) {
+func TestLoadAllowsLocalNeuralEmbeddingsInProductionByDefault(t *testing.T) {
 	t.Setenv("NODE_ENV", "production")
 	t.Setenv("ABRA_API_KEYS", "test-key")
 	t.Setenv("EMBEDDING_PROVIDER", "local")
-
-	_, err := Load()
-	if err == nil {
-		t.Fatal("expected local embeddings to be rejected in production")
-	}
-	if !strings.Contains(err.Error(), "ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=true") {
-		t.Fatalf("error = %q, want local embeddings production guard", err)
-	}
-}
-
-func TestLoadAllowsLocalEmbeddingsInProductionWhenExplicit(t *testing.T) {
-	t.Setenv("NODE_ENV", "production")
-	t.Setenv("ABRA_API_KEYS", "test-key")
-	t.Setenv("EMBEDDING_PROVIDER", "local")
-	t.Setenv("ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION", "true")
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.AllowLocalEmbeddingsInProduction {
-		t.Fatal("AllowLocalEmbeddingsInProduction = false, want true")
+	if cfg.Embedding.Provider != "local" {
+		t.Fatalf("Embedding.Provider = %q, want local", cfg.Embedding.Provider)
+	}
+	if cfg.Embedding.Dimensions != 1024 {
+		t.Fatalf("Embedding.Dimensions = %d, want 1024", cfg.Embedding.Dimensions)
+	}
+}
+
+func TestLoadDefaultsToLocalQwenCompatibleEndpoints(t *testing.T) {
+	t.Setenv("NODE_ENV", "production")
+	t.Setenv("ABRA_API_KEYS", "test-key")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Embedding.Provider != "local" {
+		t.Fatalf("Embedding.Provider = %q, want local", cfg.Embedding.Provider)
+	}
+	if cfg.Embedding.BaseURL != "http://host.docker.internal:8080/v1" {
+		t.Fatalf("Embedding.BaseURL = %q", cfg.Embedding.BaseURL)
+	}
+	if cfg.Reranker.Provider != "local" {
+		t.Fatalf("Reranker.Provider = %q, want local", cfg.Reranker.Provider)
+	}
+	if cfg.Reranker.BaseURL != "http://host.docker.internal:8081" {
+		t.Fatalf("Reranker.BaseURL = %q", cfg.Reranker.BaseURL)
 	}
 }
 
@@ -79,10 +88,13 @@ func TestLoadAllowsExternalEmbeddingsInProductionWithoutOverride(t *testing.T) {
 	t.Setenv("ABRA_API_KEYS", "test-key")
 	t.Setenv("EMBEDDING_PROVIDER", "compatible")
 	t.Setenv("EMBEDDING_BASE_URL", "https://embedding.example/v1")
-	t.Setenv("EMBEDDING_API_KEY", "embedding-key")
 
-	if _, err := Load(); err != nil {
+	cfg, err := Load()
+	if err != nil {
 		t.Fatal(err)
+	}
+	if cfg.Reranker.Provider != "" {
+		t.Fatalf("Reranker.Provider = %q, want empty for custom embedding provider", cfg.Reranker.Provider)
 	}
 }
 

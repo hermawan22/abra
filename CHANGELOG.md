@@ -4,6 +4,20 @@ All notable changes to Abra are documented here.
 
 This project uses semantic versioning for public releases. Until v1.0.0, minor versions may include breaking changes when they are documented in this file and in the release notes.
 
+## 0.3.0 - 2026-06-18
+
+### Added
+
+- Make `local` the default self-hosted neural provider path for Qwen/Qwen3-Embedding-0.6B and Qwen/Qwen3-Reranker-0.6B served through local compatible endpoints.
+- Add optional reranker provider support with `RERANKER_PROVIDER`, `RERANKER_BASE_URL`, `RERANKER_API_KEY`, and `RERANKER_MODEL`.
+- Add variable-dimension vector storage and partial pgvector indexes for common embedding dimensions.
+
+### Changed
+
+- Remove the deterministic local hash embedding provider from the product surface and internal provider registry.
+- Allow self-hosted compatible embedding endpoints without an API key.
+- Make custom embedding providers replace the local Qwen defaults, including disabling the local reranker unless explicitly configured.
+
 ## 0.2.0 - 2026-06-18
 
 ### Changed
@@ -91,6 +105,6 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 ### Security
 
 - Production startup requires API keys.
-- Production startup blocks local deterministic embeddings unless explicitly overridden for isolated smoke tests.
+- Production startup requires explicit model endpoint configuration before ingestion can use neural recall.
 - Risky memory operations can require approval enforcement.
 - API rate limiting is shared through Postgres for replicated API deployments.

@@ -20,6 +20,7 @@ type Service struct {
 	cfg        config.Config
 	db         *store.Store
 	embeddings ai.EmbeddingProvider
+	reranker   ai.RerankerProvider
 }
 
 type IngestDocumentInput struct {
@@ -109,15 +110,19 @@ func New(cfg config.Config, db *store.Store) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Service{cfg: cfg, db: db, embeddings: embeddingProvider}, nil
+	rerankerProvider, err := newRerankerProvider(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &Service{cfg: cfg, db: db, embeddings: embeddingProvider, reranker: rerankerProvider}, nil
 }
 
 func newEmbeddingProvider(cfg config.Config) (ai.EmbeddingProvider, error) {
-	switch cfg.Embedding.Provider {
-	case "local":
-		return ai.NewLocalProvider(ai.LocalConfig{Name: "local", Dimensions: cfg.Embedding.Dimensions})
-	case "compatible", "openai-compatible":
+	provider := strings.ToLower(strings.TrimSpace(cfg.Embedding.Provider))
+	switch provider {
+	case "local", "compatible", "openai-compatible", "openai", "qwen3", "local-smart", "tei", "embeddinggemma", "bge-m3", "voyage", "zeroentropy":
 		return ai.NewOpenAICompatibleProvider(ai.OpenAICompatibleConfig{
+			Name:                provider,
 			BaseURL:             cfg.Embedding.BaseURL,
 			APIKey:              cfg.Embedding.APIKey,
 			EmbeddingModel:      cfg.Embedding.Model,
@@ -125,6 +130,24 @@ func newEmbeddingProvider(cfg config.Config) (ai.EmbeddingProvider, error) {
 		}, nil)
 	default:
 		return nil, fmt.Errorf("unsupported embedding provider %q", cfg.Embedding.Provider)
+	}
+}
+
+func newRerankerProvider(cfg config.Config) (ai.RerankerProvider, error) {
+	provider := strings.ToLower(strings.TrimSpace(cfg.Reranker.Provider))
+	if provider == "" || provider == "none" || provider == "off" || provider == "disabled" {
+		return nil, nil
+	}
+	switch provider {
+	case "local", "compatible", "openai-compatible", "qwen3", "local-smart", "tei", "voyage", "zeroentropy":
+		return ai.NewOpenAICompatibleProvider(ai.OpenAICompatibleConfig{
+			Name:          provider,
+			BaseURL:       cfg.Reranker.BaseURL,
+			APIKey:        cfg.Reranker.APIKey,
+			RerankerModel: cfg.Reranker.Model,
+		}, nil)
+	default:
+		return nil, fmt.Errorf("unsupported reranker provider %q", cfg.Reranker.Provider)
 	}
 }
 
@@ -154,7 +177,66 @@ func (s *Service) Recall(ctx context.Context, query, scope string, limit int, in
 		result.RetrievalMode = "full_text_empty_embedding"
 		return result, nil
 	}
-	return s.db.RecallHybrid(ctx, query, scope, limit, includeUnverified, embedding.Embeddings[0].Vector)
+	result, err := s.db.RecallHybrid(ctx, query, scope, limit, includeUnverified, embedding.Embeddings[0].Vector)
+	if err != nil {
+		return store.RecallResult{}, err
+	}
+	return s.rerankRecall(ctx, query, result), nil
+}
+
+func (s *Service) rerankRecall(ctx context.Context, query string, result store.RecallResult) store.RecallResult {
+	if s.reranker == nil || strings.TrimSpace(query) == "" {
+		return result
+	}
+	claimTexts := make([]string, 0, len(result.Claims))
+	for _, claim := range result.Claims {
+		claimTexts = append(claimTexts, claim.Claim)
+	}
+	if len(claimTexts) > 0 {
+		if response, err := s.reranker.Rerank(ctx, ai.RerankRequest{Query: query, Documents: claimTexts, Model: s.cfg.Reranker.Model, TopN: len(claimTexts)}); err == nil {
+			applyClaimRerank(result.Claims, response.Results)
+			if !strings.Contains(result.RetrievalMode, "reranked") {
+				result.RetrievalMode += "_reranked"
+			}
+		}
+	}
+	docTexts := make([]string, 0, len(result.SupportingDocuments))
+	for _, doc := range result.SupportingDocuments {
+		docTexts = append(docTexts, doc.Title+"\n"+doc.Content)
+	}
+	if len(docTexts) > 0 {
+		if response, err := s.reranker.Rerank(ctx, ai.RerankRequest{Query: query, Documents: docTexts, Model: s.cfg.Reranker.Model, TopN: len(docTexts)}); err == nil {
+			applyDocumentRerank(result.SupportingDocuments, response.Results)
+			if !strings.Contains(result.RetrievalMode, "reranked") {
+				result.RetrievalMode += "_reranked"
+			}
+		}
+	}
+	return result
+}
+
+func applyClaimRerank(claims []store.ClaimResult, results []ai.RerankResult) {
+	for _, reranked := range results {
+		if reranked.Index < 0 || reranked.Index >= len(claims) {
+			continue
+		}
+		claims[reranked.Index].Rank += reranked.Score
+	}
+	sort.SliceStable(claims, func(i, j int) bool {
+		return claims[i].Rank > claims[j].Rank
+	})
+}
+
+func applyDocumentRerank(documents []store.DocumentResult, results []ai.RerankResult) {
+	for _, reranked := range results {
+		if reranked.Index < 0 || reranked.Index >= len(documents) {
+			continue
+		}
+		documents[reranked.Index].Rank += reranked.Score
+	}
+	sort.SliceStable(documents, func(i, j int) bool {
+		return documents[i].Rank > documents[j].Rank
+	})
 }
 
 func (s *Service) IngestDocument(ctx context.Context, input IngestDocumentInput) (IngestDocumentResult, error) {
@@ -214,7 +296,7 @@ func (s *Service) IngestDocument(ctx context.Context, input IngestDocumentInput)
 			Embedding:           chunkEmbeddings.Embeddings[i].Vector,
 			EmbeddingProvider:   s.cfg.Embedding.Provider,
 			EmbeddingModel:      chunkEmbeddings.Model,
-			EmbeddingDimensions: s.cfg.Embedding.Dimensions,
+			EmbeddingDimensions: chunkEmbeddings.Embeddings[i].Dimensions,
 			SourceConfigID:      sourceConfigID,
 			IngestionJobID:      ingestionJobID,
 			Metadata:            lineageMetadata(sourceConfigID, ingestionJobID),
@@ -291,7 +373,7 @@ func (s *Service) IngestDocument(ctx context.Context, input IngestDocumentInput)
 			Embedding:           claimEmbeddings.Embeddings[i].Vector,
 			EmbeddingProvider:   s.cfg.Embedding.Provider,
 			EmbeddingModel:      claimEmbeddings.Model,
-			EmbeddingDimensions: s.cfg.Embedding.Dimensions,
+			EmbeddingDimensions: claimEmbeddings.Embeddings[i].Dimensions,
 			SourceConfigID:      sourceConfigID,
 			IngestionJobID:      ingestionJobID,
 			AuthorityScore:      authorityScore,
@@ -390,7 +472,7 @@ func (s *Service) RememberClaim(ctx context.Context, input RememberClaimInput) (
 		Embedding:           embedding.Embeddings[0].Vector,
 		EmbeddingProvider:   s.cfg.Embedding.Provider,
 		EmbeddingModel:      embedding.Model,
-		EmbeddingDimensions: s.cfg.Embedding.Dimensions,
+		EmbeddingDimensions: embedding.Embeddings[0].Dimensions,
 		Metadata:            input.Metadata,
 	})
 	if err != nil {

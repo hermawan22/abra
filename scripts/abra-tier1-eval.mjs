@@ -112,7 +112,7 @@ await runCheck("runtime_ready_with_local_embeddings", async () => {
   assert(ready.ok === true, "readyz did not report ok=true");
   assert(
     ready.embedding_provider === "local" || process.env.ABRA_TIER1_ALLOW_NONLOCAL === "1",
-    `Tier 1 must run with EMBEDDING_PROVIDER=local for deterministic recall, got ${ready.embedding_provider}`
+    `Tier 1 must run with EMBEDDING_PROVIDER=local for the default local neural recall profile, got ${ready.embedding_provider}`
   );
   artifacts.embedding_provider = ready.embedding_provider;
   return { embedding_provider: ready.embedding_provider, auth_required: ready.auth_required };

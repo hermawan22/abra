@@ -6,32 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"testing"
 )
-
-func TestLocalProviderEmbeddingsAreDeterministic(t *testing.T) {
-	provider, err := NewLocalProvider(LocalConfig{Dimensions: 8})
-	if err != nil {
-		t.Fatalf("NewLocalProvider() error = %v", err)
-	}
-
-	first, err := provider.Embed(context.Background(), EmbeddingRequest{Input: []string{"Hello Abra"}})
-	if err != nil {
-		t.Fatalf("Embed() first error = %v", err)
-	}
-	second, err := provider.Embed(context.Background(), EmbeddingRequest{Input: []string{"Hello Abra"}})
-	if err != nil {
-		t.Fatalf("Embed() second error = %v", err)
-	}
-
-	if got := first.Embeddings[0].Dimensions; got != 8 {
-		t.Fatalf("dimensions = %d, want 8", got)
-	}
-	if !reflect.DeepEqual(first.Embeddings[0].Vector, second.Embeddings[0].Vector) {
-		t.Fatalf("local embeddings are not deterministic")
-	}
-}
 
 func TestValidateEmbeddingDimensionsRejectsMismatch(t *testing.T) {
 	err := ValidateEmbeddingDimensions([]float64{0.1, 0.2}, 3)
@@ -101,6 +77,49 @@ func TestOpenAICompatibleProviderRejectsEmbeddingDimensionMismatch(t *testing.T)
 	_, err = provider.Embed(context.Background(), EmbeddingRequest{Input: []string{"hello"}})
 	if !errors.Is(err, ErrInvalidResponse) {
 		t.Fatalf("Embed() error = %v, want ErrInvalidResponse", err)
+	}
+}
+
+func TestOpenAICompatibleProviderReranks(t *testing.T) {
+	var requestBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/rerank" {
+			t.Fatalf("path = %s, want /rerank", r.URL.Path)
+		}
+		if got := r.Header.Get("authorization"); got != "" {
+			t.Fatalf("authorization = %q, want empty for local provider", got)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_, _ = w.Write([]byte(`{"model":"rerank-model","results":[{"index":1,"score":0.91},{"index":0,"score":0.42}]}`))
+	}))
+	defer server.Close()
+
+	provider, err := NewOpenAICompatibleProvider(OpenAICompatibleConfig{
+		BaseURL:       server.URL,
+		RerankerModel: "rerank-model",
+	}, server.Client())
+	if err != nil {
+		t.Fatalf("NewOpenAICompatibleProvider() error = %v", err)
+	}
+
+	response, err := provider.Rerank(context.Background(), RerankRequest{
+		Query:     "abra memory",
+		Documents: []string{"doc one", "doc two"},
+		TopN:      2,
+	})
+	if err != nil {
+		t.Fatalf("Rerank() error = %v", err)
+	}
+	if requestBody["query"] != "abra memory" {
+		t.Fatalf("query = %v", requestBody["query"])
+	}
+	if requestBody["model"] != "rerank-model" {
+		t.Fatalf("model = %v", requestBody["model"])
+	}
+	if len(response.Results) != 2 || response.Results[0].Index != 1 {
+		t.Fatalf("results = %#v", response.Results)
 	}
 }
 

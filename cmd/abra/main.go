@@ -302,6 +302,10 @@ func configShow(args cliArgs) error {
 		"embedding_api_key":    maskSecret(values["EMBEDDING_API_KEY"]),
 		"embedding_model":      values["EMBEDDING_MODEL"],
 		"embedding_dimensions": values["EMBEDDING_DIMENSIONS"],
+		"reranker_provider":    values["RERANKER_PROVIDER"],
+		"reranker_base_url":    values["RERANKER_BASE_URL"],
+		"reranker_api_key":     maskSecret(values["RERANKER_API_KEY"]),
+		"reranker_model":       values["RERANKER_MODEL"],
 		"redaction_enabled":    firstNonEmpty(values["REDACT_PII"], "true"),
 	}
 	if boolFlag(args, "json") {
@@ -318,6 +322,12 @@ func configShow(args cliArgs) error {
 	fmt.Println("model:     " + stringValue(view["embedding_model"], ""))
 	fmt.Println("dims:      " + stringValue(view["embedding_dimensions"], ""))
 	fmt.Println("api_key:   " + stringValue(view["embedding_api_key"], ""))
+	if rerankerProvider := stringValue(view["reranker_provider"], ""); rerankerProvider != "" {
+		fmt.Println("reranker:  " + rerankerProvider)
+		fmt.Println("rerank_url: " + stringValue(view["reranker_base_url"], ""))
+		fmt.Println("rerank_model: " + stringValue(view["reranker_model"], ""))
+		fmt.Println("rerank_key:   " + stringValue(view["reranker_api_key"], ""))
+	}
 	return nil
 }
 
@@ -331,19 +341,9 @@ func configModel(args cliArgs) error {
 	case "", "show":
 		return configShow(args)
 	case "local":
-		if err := updateEnvValues(args, map[string]string{
-			"EMBEDDING_PROVIDER":                   "local",
-			"EMBEDDING_BASE_URL":                   "",
-			"EMBEDDING_API_KEY":                    "",
-			"EMBEDDING_MODEL":                      flag(args, "model", "embedding-model-1536"),
-			"EMBEDDING_DIMENSIONS":                 flag(args, "dimensions", "1536"),
-			"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION": "true",
-		}); err != nil {
-			return err
-		}
-		fmt.Println("Model config updated: local embeddings")
-		printRestartHint(args)
-		return nil
+		return configModelLocalNeural(args, "local neural embeddings + reranker")
+	case "qwen3", "local-smart":
+		return configModelLocalNeural(args, "local neural embeddings + reranker")
 	case "openai":
 		if flag(args, "base-url", "") == "" {
 			args.Flags["base-url"] = "https://api.openai.com/v1"
@@ -362,6 +362,35 @@ func configModel(args cliArgs) error {
 	}
 }
 
+func configModelLocalNeural(args cliArgs, label string) error {
+	apiKey := flag(args, "api-key", "")
+	if apiKey == "" && boolFlag(args, "api-key-stdin") {
+		bytes, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return err
+		}
+		apiKey = strings.TrimSpace(string(bytes))
+	}
+	if err := updateEnvValues(args, map[string]string{
+		"EMBEDDING_PROVIDER":                   "local",
+		"EMBEDDING_BASE_URL":                   flag(args, "base-url", "http://host.docker.internal:8080/v1"),
+		"EMBEDDING_API_KEY":                    apiKey,
+		"EMBEDDING_MODEL":                      flag(args, "model", "text-embeddings-inference"),
+		"EMBEDDING_DIMENSIONS":                 flag(args, "dimensions", "1024"),
+		"RERANKER_PROVIDER":                    "local",
+		"RERANKER_BASE_URL":                    flag(args, "reranker-base-url", "http://host.docker.internal:8081"),
+		"RERANKER_API_KEY":                     apiKey,
+		"RERANKER_MODEL":                       flag(args, "reranker-model", "text-embeddings-inference"),
+		"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION": "false",
+	}); err != nil {
+		return err
+	}
+	fmt.Println("Model config updated: " + label)
+	fmt.Println("Run Qwen/Qwen3-Embedding-0.6B at the embedding base URL and Qwen/Qwen3-Reranker-0.6B at the reranker base URL.")
+	printRestartHint(args)
+	return nil
+}
+
 func configModelCompatible(args cliArgs, label string) error {
 	baseURL := flag(args, "base-url", "")
 	apiKey := flag(args, "api-key", "")
@@ -373,8 +402,8 @@ func configModelCompatible(args cliArgs, label string) error {
 		}
 		apiKey = strings.TrimSpace(string(bytes))
 	}
-	if baseURL == "" || apiKey == "" || model == "" {
-		return errors.New("config model compatible requires --base-url, --api-key or --api-key-stdin, and --model")
+	if baseURL == "" || model == "" {
+		return errors.New("config model compatible requires --base-url and --model; add --api-key or --api-key-stdin when the provider requires auth")
 	}
 	if err := updateEnvValues(args, map[string]string{
 		"EMBEDDING_PROVIDER":                   "compatible",
@@ -382,6 +411,10 @@ func configModelCompatible(args cliArgs, label string) error {
 		"EMBEDDING_API_KEY":                    apiKey,
 		"EMBEDDING_MODEL":                      model,
 		"EMBEDDING_DIMENSIONS":                 flag(args, "dimensions", "1536"),
+		"RERANKER_PROVIDER":                    "",
+		"RERANKER_BASE_URL":                    "",
+		"RERANKER_API_KEY":                     "",
+		"RERANKER_MODEL":                       "",
 		"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION": "false",
 	}); err != nil {
 		return err
@@ -417,6 +450,10 @@ func updateEnvValues(args cliArgs, updates map[string]string) error {
 		"EMBEDDING_API_KEY",
 		"EMBEDDING_MODEL",
 		"EMBEDDING_DIMENSIONS",
+		"RERANKER_PROVIDER",
+		"RERANKER_BASE_URL",
+		"RERANKER_API_KEY",
+		"RERANKER_MODEL",
 		"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION",
 	} {
 		if value, exists := updates[key]; exists && !applied[key] {
@@ -1669,7 +1706,7 @@ Usage:
   abra config show
   abra config model local
   abra config model openai --api-key-stdin
-  abra config model compatible --base-url <url> --api-key-stdin --model <model>
+  abra config model compatible --base-url <url> --model <model> [--api-key-stdin]
   abra down [--reset]
   abra status
   abra doctor
@@ -1727,9 +1764,9 @@ Source ingestion flags:
 		return `Usage:
   abra config show [--json]
   abra config path
-  abra config model local [--model embedding-model-1536]
+  abra config model local [--base-url http://host.docker.internal:8080/v1] [--reranker-base-url http://host.docker.internal:8081]
   abra config model openai --api-key-stdin
-  abra config model compatible --base-url <url> --api-key-stdin --model <model> [--dimensions 1536]
+  abra config model compatible --base-url <url> --model <model> [--api-key-stdin] [--dimensions 1536]
 
 Config edits the Abra runtime env file used by abra up. It intentionally only
 exposes core runtime settings needed for local operation and model connection.
@@ -1789,12 +1826,14 @@ Builds a task-specific working-memory packet for AI coding agents.
   abra setup
   abra setup --local
   abra setup --openai --api-key-stdin
-  abra setup --compatible --base-url <url> --embedding-model <model> --api-key-stdin
-  abra setup --provider openai --api-key-stdin
+  abra setup --compatible --base-url <url> --embedding-model <model> [--api-key-stdin]
+  abra setup --provider compatible --base-url <url> --embedding-model <model>
   abra setup --yes --no-start
 
 Guided first-run onboarding. It checks prerequisites, creates the runtime env,
-chooses the embedding model, and can start the local stack.
+chooses the embedding provider, and can start the local stack. The default
+local provider expects Qwen/Qwen3-Embedding-0.6B and Qwen/Qwen3-Reranker-0.6B
+served by local OpenAI-compatible endpoints.
 `
 	case "install", "up", "quickstart", "demo":
 		return `Usage:
@@ -1835,9 +1874,13 @@ ABRA_APPROVAL_MODE=advisory
 ABRA_PORT=18080
 POSTGRES_PORT=5433
 EMBEDDING_PROVIDER=local
-EMBEDDING_MODEL=embedding-model-1536
-EMBEDDING_DIMENSIONS=1536
-ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=true
+EMBEDDING_BASE_URL=http://host.docker.internal:8080/v1
+EMBEDDING_MODEL=text-embeddings-inference
+EMBEDDING_DIMENSIONS=1024
+RERANKER_PROVIDER=local
+RERANKER_BASE_URL=http://host.docker.internal:8081
+RERANKER_MODEL=text-embeddings-inference
+ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=false
 REDACT_PII=true
 RATE_LIMIT_MAX=1000
 RATE_LIMIT_WINDOW=1 minute
@@ -1850,8 +1893,12 @@ ABRA_APPROVAL_MODE=enforce
 EMBEDDING_PROVIDER=compatible
 EMBEDDING_BASE_URL=https://embedding-provider.example/v1
 EMBEDDING_API_KEY=replace-with-embedding-key
-EMBEDDING_MODEL=embedding-model-1536
-EMBEDDING_DIMENSIONS=1536
+EMBEDDING_MODEL=embedding-model
+EMBEDDING_DIMENSIONS=1024
+RERANKER_PROVIDER=
+RERANKER_BASE_URL=
+RERANKER_API_KEY=
+RERANKER_MODEL=
 ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=false
 REDACT_PII=true
 RATE_LIMIT_MAX=120

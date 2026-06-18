@@ -177,11 +177,12 @@ func TestSearchClaimsQueryCanUseClaimSearchVector(t *testing.T) {
 }
 
 func TestHybridRecallQueriesUseVectorAndTextCandidates(t *testing.T) {
-	claims := hybridRecallClaimsSQL("status IN ('verified', 'inferred')")
+	claims := hybridRecallClaimsSQL("status IN ('verified', 'inferred')", 1024)
 	for _, fragment := range []string{
 		"WITH text_matches AS",
 		"vector_matches AS",
-		"embedding <=> $5::vector",
+		"embedding::vector(1024) <=> $5::vector(1024)",
+		"embedding_dimensions = $6",
 		"UNION",
 		"COALESCE(tm.text_score, 0) AS text_score",
 		"COALESCE(vm.vector_score, 0) AS vector_score",
@@ -194,11 +195,12 @@ func TestHybridRecallQueriesUseVectorAndTextCandidates(t *testing.T) {
 		}
 	}
 
-	docs := hybridRecallDocumentsSQL()
+	docs := hybridRecallDocumentsSQL(1024)
 	for _, fragment := range []string{
 		"WITH text_matches AS",
 		"vector_matches AS",
-		"ch.embedding <=> $5::vector",
+		"ch.embedding::vector(1024) <=> $5::vector(1024)",
+		"ch.embedding_dimensions = $6",
 		"UNION",
 		"COALESCE(tm.text_score, 0) AS text_score",
 		"COALESCE(vm.vector_score, 0) AS vector_score",
