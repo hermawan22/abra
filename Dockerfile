@@ -1,4 +1,4 @@
-FROM golang:1.25.11-bookworm AS build
+FROM golang:1.26.4-bookworm AS build
 WORKDIR /src
 ARG ABRA_VERSION=dev
 ARG ABRA_COMMIT=unknown
