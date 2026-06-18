@@ -58,7 +58,7 @@ docker compose --env-file .env.production up -d api worker
 
 If `ABRA_IMAGE` points at a pushed registry image, use `docker compose --env-file .env.production pull` instead of the build command.
 
-Back up the `abra-postgres` volume or, for serious production use, point `ABRA_DATABASE_URL` at managed Postgres with `pgvector` and an existing backup policy. Use [RUNBOOKS.md](./RUNBOOKS.md) for backup, restore, reindex, embedding migration, incident checks, and rollback steps.
+Back up the `abra-postgres` volume or, for serious production use, point `ABRA_DATABASE_URL` at managed Postgres with `pgvector` and an existing backup policy. The bundled backup, restore-drill, and reindex scripts are in `scripts/`.
 
 ## Kubernetes Install
 
@@ -284,7 +284,7 @@ ABRA_AUDIT_SINK_BATCH_SIZE=100
 
 Delivery uses `application/x-ndjson`, `authorization: Bearer ...` when a token is set, and `x-abra-signature: sha256=<hmac>` when a secret is set. The cursor is stored in Postgres and only advances after a 2xx sink response. Leave `ABRA_AUDIT_SINK_URL` empty when the deployment uses pull-based SIEM collection.
 
-Operational checks live in [RUNBOOKS.md](./RUNBOOKS.md). At minimum, on-call operators should know how to:
+At minimum, on-call operators should know how to:
 
 - distinguish API, Postgres, embedding provider, and worker failures
 - inspect ingestion job failures
@@ -331,7 +331,7 @@ ABRA_BASE_URL=http://localhost:18080 ABRA_API_TOKEN=replace-with-generated-token
 
 The eval process defaults to the current checkout path, but the worker must be able to read that path. For container layouts, mount the checkout read-only and set `ABRA_DOGFOOD_SOURCE_ROOT` to the mounted path visible to the worker. The gate pauses its source config after success unless `ABRA_DOGFOOD_KEEP_SOURCE_ACTIVE=1` is set. This gate proves Abra can ingest its own docs and Go source, rebuild summaries, return graph-aware working memory for `repo:abra`, and expose Go code intelligence in graph relations.
 
-Smoke tests are not quality evaluation. Use [EVALS.md](./EVALS.md) for the v1 eval plan covering recall quality, citation precision, scope leakage, graph quality, policy planning, and embedding provider migrations.
+Smoke tests are not quality evaluation. The full release gate covers recall quality, citation precision, scope leakage, graph quality, policy planning, dogfood ingestion, and embedding provider checks.
 
 ## Backup, Restore, Reindex, and Embedding Changes
 
@@ -351,7 +351,7 @@ ABRA_RESTORE_DUMP=backups/abra_YYYYMMDD_HHMMSS.dump ABRA_RESTORE_DATABASE_URL=po
 DATABASE_URL=postgres://... npm run ops:reindex
 ```
 
-`ops:restore-drill` and `ops:reindex` are dry-run by default; set `ABRA_DRY_RUN=0` only after confirming the isolated target or maintenance window. See [RUNBOOKS.md](./RUNBOOKS.md) for exact procedures.
+`ops:restore-drill` and `ops:reindex` are dry-run by default; set `ABRA_DRY_RUN=0` only after confirming the isolated target or maintenance window.
 
 ## V1 Production Target
 

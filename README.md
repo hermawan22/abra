@@ -207,7 +207,7 @@ Prometheus-compatible metrics are available at `GET /metrics` with the same API 
 In addition to HTTP route metrics, Abra exposes smart-path metrics for recall and working-memory composition: `abra_smart_path_requests_total`, duration sums, returned facts/documents/graph relations, learning suggestions, review-required decisions, autonomous-allowed decisions, recall retrieval modes, working-memory retrieval-quality counters/scores, and working-memory memory-health gates. Health-aware compose metrics include `abra_working_memory_health_status_total`, `abra_working_memory_health_lookup_total`, returned signal counts, critical/warning signal totals, last health score, and bounded per-signal counters. Stored agent-action policy decisions are counted with `abra_agent_policy_decisions_total`. These labels intentionally avoid scope, principal IDs, and query text; policy action labels, quality labels, health status labels, health lookup labels, and health signal labels are normalized to bounded sets.
 Optional OpenTelemetry tracing is available through OTLP HTTP by setting `OTEL_EXPORTER_OTLP_ENDPOINT` or `ABRA_OTEL_EXPORTER_OTLP_ENDPOINT`. Traces cover HTTP routes, recall, working-memory composition, MCP tool calls, and worker ingestion cycles with bounded attributes; raw scope names, query text, task text, principals, and tokens are not attached as span attributes.
 
-Production operators should read [PRODUCTION.md](./PRODUCTION.md), [RUNBOOKS.md](./RUNBOOKS.md), [EVALS.md](./EVALS.md), [docs/THREAT_MODEL.md](./docs/THREAT_MODEL.md), [docs/EXTENSIONS.md](./docs/EXTENSIONS.md), [RELEASE.md](./RELEASE.md), and [SUPPLY_CHAIN.md](./SUPPLY_CHAIN.md) before exposing Abra to internal agents.
+Production operators should read [PRODUCTION.md](./PRODUCTION.md), [docs/EXTENSIONS.md](./docs/EXTENSIONS.md), [RELEASE.md](./RELEASE.md), and [SECURITY.md](./SECURITY.md) before exposing Abra to internal agents.
 
 Bundled ops helpers and eval gates use the repository scripts. They are developer/operator tooling, not required for the Go CLI first-run path:
 
@@ -768,9 +768,9 @@ Remote Git example:
 
 Abra stores normalized fields as document metadata (`git_remote_url`, `git_ref`, `git_revision`, `git_path`, `git_provider`, `git_project_path`, `git_cache_key`) and builds stable source URLs for GitHub, GitLab, and Bitbucket files when enough identity is present.
 
-## Project Scope
+## Scope
 
-Abra is open source and self-hostable. The core project stays generic: CLI, API, worker, Postgres, pgvector, MCP, ingestion, source configs, metrics, approval requests and enforcement for core memory operations, audit export, runbooks, and eval gates. See [PROJECT_SCOPE.md](./PROJECT_SCOPE.md).
+Abra is open source and self-hostable. The core project stays generic: CLI, API, worker, Postgres, pgvector, MCP, ingestion, source configs, metrics, approval requests and enforcement for core memory operations, audit export, and release gates.
 
 Deployment-specific identity, ACL sync, private connector automation, SIEM routing, and managed operations should be added through extensions or overlays without making the OSS runtime unusable.
 
@@ -780,8 +780,8 @@ Deployment-specific identity, ACL sync, private connector automation, SIEM routi
 2. Add connector extension hooks for external source systems.
 3. Add richer graph relation types for supersedes, contradicts, derives-from, and duplicates relationships.
 4. Extend stored agent policy enforcement across auto-write, source authority, ACL filtering, and approval gates.
-5. Keep the release gate aligned with Tier 1 to Tier 3 evals described in [EVALS.md](./EVALS.md).
-6. Add admin UI actions for backfill, restore-drill visibility, and richer approval history.
+5. Keep the full release gate aligned with recall, graph, policy, dogfood, and performance checks.
+6. Improve CLI-first operator workflows for restore drills, backfills, and approval history.
 
 ## Extension Path
 

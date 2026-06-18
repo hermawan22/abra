@@ -110,12 +110,10 @@ function sourceConfigBody(approvalId, { id = undefined, status = "active" } = {}
       root: sourceRoot,
       include: [
         "README.md",
-        "ARCHITECTURE.md",
-        "EVALS.md",
-        "PROJECT_SCOPE.md",
         "PRODUCTION.md",
-        "RUNBOOKS.md",
+        "RELEASE.md",
         "SECURITY.md",
+        "docs/**/*.md",
         "deploy/**/*.md",
         "examples/**/*.md",
       ],
@@ -173,7 +171,7 @@ function isCodeSourceURL(sourceURL = "") {
 
 async function main() {
   requireRepoFile("README.md");
-  requireRepoFile("ARCHITECTURE.md");
+  requireRepoFile("PRODUCTION.md");
   requireRepoFile("go.mod");
   requireRepoFile("internal/memory/composer.go");
 
@@ -233,7 +231,7 @@ async function main() {
       agent: "dogfood-eval",
       hook: "before_task",
       language: "go",
-      files: ["README.md", "ARCHITECTURE.md", "internal/memory/composer.go", "internal/brain/service.go"],
+      files: ["README.md", "PRODUCTION.md", "internal/memory/composer.go", "internal/brain/service.go"],
       limit: 10,
       max_queries: 8,
       token_budget: 1200,
