@@ -4,6 +4,12 @@ All notable changes to Abra are documented here.
 
 This project uses semantic versioning for public releases. Until v1.0.0, minor versions may include breaking changes when they are documented in this file and in the release notes.
 
+## 0.1.7 - 2026-06-18
+
+### Added
+
+- Add `abra ui`, a native terminal cockpit for runtime health, model configuration, local repo ingestion, governed think, and MCP config without shipping a browser UI.
+
 ## 0.1.6 - 2026-06-18
 
 ### Added

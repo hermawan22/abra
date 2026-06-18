@@ -15,12 +15,56 @@ import (
 )
 
 func TestCommandHelpDoesNotRequireFlags(t *testing.T) {
-	for _, command := range []string{"config", "ingest", "watch", "sources", "jobs"} {
+	for _, command := range []string{"config", "ingest", "ui", "watch", "sources", "jobs"} {
 		t.Run(command, func(t *testing.T) {
 			if err := run(context.Background(), []string{command, "--help"}); err != nil {
 				t.Fatalf("run(%s --help) error = %v", command, err)
 			}
 		})
+	}
+}
+
+func TestUIRenderBootstrapsWithoutInitNoise(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+
+	output, err := captureRun(context.Background(), []string{"ui", "--render"})
+	if err != nil {
+		t.Fatalf("ui render error = %v", err)
+	}
+	if strings.Contains(output, "Wrote ") {
+		t.Fatalf("ui render leaked init output: %q", output)
+	}
+	if !strings.Contains(output, "ABRA") || !strings.Contains(output, "CLI brain cockpit") {
+		t.Fatalf("ui render output missing cockpit content: %q", output)
+	}
+}
+
+func TestUIChildArgsPreservesRuntimeFlags(t *testing.T) {
+	args := parseArgs([]string{
+		"ui",
+		"--env-file", "/tmp/abra.env",
+		"--base-url", "http://127.0.0.1:9999",
+		"--token", "token",
+		"--scope", "repo:test",
+	})
+	got := strings.Join(uiChildArgs(args, []string{"think", "question"}), " ")
+	for _, want := range []string{
+		"--env-file /tmp/abra.env",
+		"--base-url http://127.0.0.1:9999",
+		"--token token",
+		"--scope repo:test",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("ui child args = %q, missing %q", got, want)
+		}
+	}
+
+	got = strings.Join(uiChildArgs(args, []string{"config", "model", "compatible", "--base-url", "https://models.example/v1"}), " ")
+	if strings.Count(got, "--base-url") != 1 {
+		t.Fatalf("ui child args should not duplicate explicit base-url: %q", got)
 	}
 }
 

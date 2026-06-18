@@ -85,6 +85,8 @@ func run(ctx context.Context, argv []string) error {
 		return initEnv(args)
 	case "config":
 		return configCommand(args)
+	case "ui", "dashboard":
+		return runUI(ctx, args)
 	case "up", "start":
 		return up(ctx, args)
 	case "down", "stop":
@@ -1658,7 +1660,8 @@ func usage() string {
 Usage:
   abra version
   abra up
-  abra upgrade [--version v0.1.6]
+  abra ui
+  abra upgrade [--version v0.1.7]
   abra uninstall --yes
   abra demo
   abra quickstart
@@ -1689,7 +1692,7 @@ Common flags:
   --token dev-token
   --json
 
-Abra is CLI + MCP only. No browser UI is shipped.
+Abra is terminal UI + CLI + MCP only. No browser UI is shipped.
 `
 }
 
@@ -1730,6 +1733,27 @@ Source ingestion flags:
 Config edits the Abra runtime env file used by abra up. It intentionally only
 exposes core runtime settings needed for local operation and model connection.
 After changing model config, restart with: abra down && abra up
+`
+	case "ui", "dashboard":
+		return `Usage:
+  abra ui
+  abra ui --render
+
+Opens the terminal cockpit for runtime health, model config, local repo ingest,
+governed think, and MCP config. It is shipped inside the same abra binary.
+
+Keys:
+  up/down or k/j  select
+  enter           open
+  r               refresh runtime
+  l               switch to local embeddings
+  c               connect compatible model
+  i               ingest current repo with code intelligence
+  t               ask Abra
+  m               generate MCP config
+  q               quit
+
+--render prints a non-interactive preview for smoke tests and CI.
 `
 	case "watch", "source":
 		return `Usage:

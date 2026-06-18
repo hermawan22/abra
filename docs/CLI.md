@@ -1,6 +1,6 @@
 # CLI Guide
 
-Abra is CLI-only: install the `abra` command, start the service from the terminal, and operate it through CLI, HTTP, or MCP.
+Abra is terminal-first: install the `abra` command, start the service from the terminal, and operate it through the terminal UI, CLI, HTTP, or MCP.
 
 The quickstart path uses local deterministic embeddings for evaluation. Production deployments should use compatible external embeddings, scoped credentials, and approval enforcement.
 
@@ -18,7 +18,7 @@ After the public GitHub repository exists, the remote installer is:
 curl -fsSL https://raw.githubusercontent.com/hermawan22/abra/main/scripts/install.sh | sh
 ```
 
-The remote URL only works after `hermawan22/abra` is published with a `main` branch. Release downloads are verified against `SHA256SUMS` before the binary is installed. Set `ABRA_VERSION=v0.1.6` to install a specific release.
+The remote URL only works after `hermawan22/abra` is published with a `main` branch. Release downloads are verified against `SHA256SUMS` before the binary is installed. Set `ABRA_VERSION=v0.1.7` to install a specific release.
 
 Start the local stack:
 
@@ -31,11 +31,14 @@ abra up
 View or change the important runtime config without opening the env file:
 
 ```sh
+abra ui
 abra config show
 abra config path
 abra config model local
 abra config model compatible --base-url https://api.example.com/v1 --api-key-stdin --model embedding-model-1536
 ```
+
+`abra ui` opens the terminal cockpit for runtime health, model setup, local repo ingest, governed think, and MCP config. Use `abra ui --render` for a non-interactive preview in smoke tests.
 
 After changing model config, restart the stack:
 
@@ -108,7 +111,7 @@ Upgrade or remove the CLI binary:
 
 ```sh
 abra upgrade
-abra upgrade --version v0.1.6
+abra upgrade --version v0.1.7
 abra uninstall --yes
 ```
 
@@ -155,6 +158,7 @@ From a source checkout, run the CLI as `go run ./cmd/abra <command>`. In a relea
 | install CLI from checkout | `./scripts/install.sh` |
 | install CLI from published release | `curl -fsSL https://raw.githubusercontent.com/hermawan22/abra/main/scripts/install.sh \| sh` |
 | start local stack | `abra up` |
+| open terminal cockpit | `abra ui` |
 | init env only | `abra init` |
 | compatibility stack alias | `abra install` |
 | ingest one document | `abra ingest --text "source-backed content"` |

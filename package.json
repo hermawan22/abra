@@ -1,6 +1,6 @@
 {
   "name": "abra",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Developer scripts for Abra. The production runtime and CLI are Go.",
   "type": "module",
   "private": true,

@@ -52,6 +52,14 @@ abra up
 
 `abra up` creates an env file if needed, starts Postgres, runs migrations, starts the API and worker, then prints the MCP URL and token. From a source checkout it uses `.tmp/quickstart.env`; from a global CLI install it stores runtime files under your Abra config directory and can be run from any folder. `abra install` is only a compatibility alias for `abra up`; the curl script is what installs the CLI binary.
 
+Open the terminal cockpit:
+
+```sh
+abra ui
+```
+
+The cockpit keeps the product CLI-only while giving users a guided interface for runtime health, model connection, local repo ingest, governed think, and MCP config.
+
 Try the governed brain:
 
 ```sh
@@ -132,6 +140,12 @@ When it finishes:
 
 - MCP endpoint: `http://localhost:18080/mcp`
 - Demo token: `dev-token`
+
+Open the terminal cockpit:
+
+```sh
+go run ./cmd/abra ui
+```
 
 Ingest one source-backed demo document:
 
