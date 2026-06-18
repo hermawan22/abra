@@ -4,6 +4,8 @@ Abra is terminal-first: install the `abra` command, start the service from the t
 
 The quickstart path defaults to local neural embeddings: Qwen/Qwen3-Embedding-0.6B-GGUF served by a local llama.cpp OpenAI-compatible endpoint managed by `abra models up`. Qwen/Qwen3-Reranker-0.6B can be configured when a compatible rerank endpoint is available. Custom providers are supported and replace the local defaults when configured.
 
+Local embedding calls default to a 10-minute provider timeout because CPU-backed model requests can be slower than normal API calls on large files. Custom providers default to 30 seconds and can be changed with `EMBEDDING_TIMEOUT`.
+
 ## 3-Minute Local Flow
 
 Install the CLI from this checkout:

@@ -16,6 +16,7 @@ type AIProviderConfig struct {
 	APIKey     string
 	Model      string
 	Dimensions int
+	Timeout    time.Duration
 }
 
 type AuditSinkConfig struct {
@@ -61,8 +62,10 @@ func Load() (Config, error) {
 	_ = loadDotEnv(".env")
 	embeddingProvider := env("EMBEDDING_PROVIDER", "local")
 	defaultEmbeddingBaseURL := ""
+	defaultEmbeddingTimeout := 30 * time.Second
 	if isLocalNeuralProvider(embeddingProvider) {
 		defaultEmbeddingBaseURL = "http://host.docker.internal:8080/v1"
+		defaultEmbeddingTimeout = 10 * time.Minute
 	}
 
 	cfg := Config{
@@ -95,18 +98,21 @@ func Load() (Config, error) {
 			APIKey:     os.Getenv("EMBEDDING_API_KEY"),
 			Model:      env("EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0"),
 			Dimensions: intEnv("EMBEDDING_DIMENSIONS", 1024),
+			Timeout:    durationEnv("EMBEDDING_TIMEOUT", defaultEmbeddingTimeout),
 		},
 		Reranker: AIProviderConfig{
 			Provider: os.Getenv("RERANKER_PROVIDER"),
 			BaseURL:  os.Getenv("RERANKER_BASE_URL"),
 			APIKey:   os.Getenv("RERANKER_API_KEY"),
 			Model:    os.Getenv("RERANKER_MODEL"),
+			Timeout:  durationEnv("RERANKER_TIMEOUT", 30*time.Second),
 		},
 		Extractor: AIProviderConfig{
 			Provider: env("EXTRACTOR_PROVIDER", env("LLM_PROVIDER", "local")),
 			BaseURL:  env("EXTRACTOR_BASE_URL", os.Getenv("LLM_BASE_URL")),
 			APIKey:   env("EXTRACTOR_API_KEY", os.Getenv("LLM_API_KEY")),
 			Model:    env("EXTRACTOR_MODEL", env("LLM_MODEL", "local-extractor")),
+			Timeout:  durationEnv("EXTRACTOR_TIMEOUT", durationEnv("LLM_TIMEOUT", 30*time.Second)),
 		},
 		RateLimitMax:          intEnv("RATE_LIMIT_MAX", 120),
 		RateLimitWindow:       durationEnv("RATE_LIMIT_WINDOW", time.Minute),
@@ -129,6 +135,15 @@ func Load() (Config, error) {
 	}
 	if cfg.Embedding.Dimensions < 1 {
 		return Config{}, errors.New("EMBEDDING_DIMENSIONS must be positive")
+	}
+	if cfg.Embedding.Timeout <= 0 || cfg.Embedding.Timeout > 30*time.Minute {
+		return Config{}, errors.New("EMBEDDING_TIMEOUT must be between 1ns and 30m")
+	}
+	if cfg.Reranker.Timeout <= 0 || cfg.Reranker.Timeout > 30*time.Minute {
+		return Config{}, errors.New("RERANKER_TIMEOUT must be between 1ns and 30m")
+	}
+	if cfg.Extractor.Timeout <= 0 || cfg.Extractor.Timeout > 30*time.Minute {
+		return Config{}, errors.New("EXTRACTOR_TIMEOUT must be between 1ns and 30m")
 	}
 	if cfg.RateLimitMax < 1 {
 		return Config{}, errors.New("RATE_LIMIT_MAX must be at least 1")

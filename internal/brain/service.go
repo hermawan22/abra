@@ -127,6 +127,7 @@ func newEmbeddingProvider(cfg config.Config) (ai.EmbeddingProvider, error) {
 			APIKey:              cfg.Embedding.APIKey,
 			EmbeddingModel:      cfg.Embedding.Model,
 			EmbeddingDimensions: cfg.Embedding.Dimensions,
+			Timeout:             cfg.Embedding.Timeout,
 		}, nil)
 	default:
 		return nil, fmt.Errorf("unsupported embedding provider %q", cfg.Embedding.Provider)
@@ -145,6 +146,7 @@ func newRerankerProvider(cfg config.Config) (ai.RerankerProvider, error) {
 			BaseURL:       cfg.Reranker.BaseURL,
 			APIKey:        cfg.Reranker.APIKey,
 			RerankerModel: cfg.Reranker.Model,
+			Timeout:       cfg.Reranker.Timeout,
 		}, nil)
 	default:
 		return nil, fmt.Errorf("unsupported reranker provider %q", cfg.Reranker.Provider)

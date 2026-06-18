@@ -50,6 +50,9 @@ func TestSetupYesNoStartDefaultsLocalQwen(t *testing.T) {
 	if values["EMBEDDING_DIMENSIONS"] != "1024" {
 		t.Fatalf("dimensions = %q", values["EMBEDDING_DIMENSIONS"])
 	}
+	if values["EMBEDDING_TIMEOUT"] != "10m" {
+		t.Fatalf("timeout = %q", values["EMBEDDING_TIMEOUT"])
+	}
 	if values["RERANKER_PROVIDER"] != "" {
 		t.Fatalf("reranker provider = %q", values["RERANKER_PROVIDER"])
 	}
@@ -227,6 +230,9 @@ func TestConfigModelCompatibleAllowsNoAPIKey(t *testing.T) {
 	if values["EMBEDDING_DIMENSIONS"] != "768" {
 		t.Fatalf("dimensions = %q", values["EMBEDDING_DIMENSIONS"])
 	}
+	if values["EMBEDDING_TIMEOUT"] != "30s" {
+		t.Fatalf("timeout = %q", values["EMBEDDING_TIMEOUT"])
+	}
 }
 
 func TestConfigModelOpenAIDefaults(t *testing.T) {
@@ -304,6 +310,9 @@ func TestConfigModelLocalRestoresQwenDefaults(t *testing.T) {
 	}
 	if values["EMBEDDING_API_KEY"] != "" {
 		t.Fatalf("api key = %q", values["EMBEDDING_API_KEY"])
+	}
+	if values["EMBEDDING_TIMEOUT"] != "10m" {
+		t.Fatalf("timeout = %q", values["EMBEDDING_TIMEOUT"])
 	}
 	if values["RERANKER_PROVIDER"] != "" || values["RERANKER_BASE_URL"] != "" {
 		t.Fatalf("reranker fields = provider %q base %q", values["RERANKER_PROVIDER"], values["RERANKER_BASE_URL"])

@@ -306,6 +306,7 @@ func configShow(args cliArgs) error {
 		"embedding_api_key":    maskSecret(values["EMBEDDING_API_KEY"]),
 		"embedding_model":      values["EMBEDDING_MODEL"],
 		"embedding_dimensions": values["EMBEDDING_DIMENSIONS"],
+		"embedding_timeout":    values["EMBEDDING_TIMEOUT"],
 		"reranker_provider":    values["RERANKER_PROVIDER"],
 		"reranker_base_url":    values["RERANKER_BASE_URL"],
 		"reranker_api_key":     maskSecret(values["RERANKER_API_KEY"]),
@@ -325,6 +326,9 @@ func configShow(args cliArgs) error {
 	}
 	fmt.Println("model:     " + stringValue(view["embedding_model"], ""))
 	fmt.Println("dims:      " + stringValue(view["embedding_dimensions"], ""))
+	if timeout := stringValue(view["embedding_timeout"], ""); timeout != "" {
+		fmt.Println("timeout:   " + timeout)
+	}
 	fmt.Println("api_key:   " + stringValue(view["embedding_api_key"], ""))
 	if rerankerProvider := stringValue(view["reranker_provider"], ""); rerankerProvider != "" {
 		fmt.Println("reranker:  " + rerankerProvider)
@@ -381,6 +385,7 @@ func configModelLocalNeural(args cliArgs, label string) error {
 		"EMBEDDING_API_KEY":                    apiKey,
 		"EMBEDDING_MODEL":                      flag(args, "model", defaultServedModelName),
 		"EMBEDDING_DIMENSIONS":                 flag(args, "dimensions", "1024"),
+		"EMBEDDING_TIMEOUT":                    flag(args, "embedding-timeout", "10m"),
 		"RERANKER_PROVIDER":                    flag(args, "reranker-provider", ""),
 		"RERANKER_BASE_URL":                    flag(args, "reranker-base-url", ""),
 		"RERANKER_API_KEY":                     apiKey,
@@ -415,6 +420,7 @@ func configModelCompatible(args cliArgs, label string) error {
 		"EMBEDDING_API_KEY":                    apiKey,
 		"EMBEDDING_MODEL":                      model,
 		"EMBEDDING_DIMENSIONS":                 flag(args, "dimensions", "1536"),
+		"EMBEDDING_TIMEOUT":                    flag(args, "embedding-timeout", "30s"),
 		"RERANKER_PROVIDER":                    "",
 		"RERANKER_BASE_URL":                    "",
 		"RERANKER_API_KEY":                     "",
@@ -454,6 +460,7 @@ func updateEnvValues(args cliArgs, updates map[string]string) error {
 		"EMBEDDING_API_KEY",
 		"EMBEDDING_MODEL",
 		"EMBEDDING_DIMENSIONS",
+		"EMBEDDING_TIMEOUT",
 		"RERANKER_PROVIDER",
 		"RERANKER_BASE_URL",
 		"RERANKER_API_KEY",
@@ -1928,6 +1935,7 @@ EMBEDDING_PROVIDER=local
 EMBEDDING_BASE_URL=http://host.docker.internal:8080/v1
 EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0
 EMBEDDING_DIMENSIONS=1024
+EMBEDDING_TIMEOUT=10m
 RERANKER_PROVIDER=
 RERANKER_BASE_URL=
 RERANKER_MODEL=
@@ -1946,6 +1954,7 @@ EMBEDDING_BASE_URL=https://embedding-provider.example/v1
 EMBEDDING_API_KEY=replace-with-embedding-key
 EMBEDDING_MODEL=embedding-model
 EMBEDDING_DIMENSIONS=1024
+EMBEDDING_TIMEOUT=30s
 RERANKER_PROVIDER=
 RERANKER_BASE_URL=
 RERANKER_API_KEY=

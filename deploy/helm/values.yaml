@@ -40,6 +40,7 @@ config:
   embeddingProvider: compatible
   embeddingModel: embedding-model
   embeddingDimensions: "1024"
+  embeddingTimeout: 30s
   rerankerProvider: ""
   rerankerModel: ""
   allowLocalEmbeddingsInProduction: "false"

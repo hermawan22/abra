@@ -4,6 +4,14 @@ All notable changes to Abra are documented here.
 
 This project uses semantic versioning for public releases. Until v1.0.0, minor versions may include breaking changes when they are documented in this file and in the release notes.
 
+## 0.3.5 - 2026-06-19
+
+### Fixed
+
+- Increase the API-side local embedding provider timeout to 10 minutes so direct CLI ingestion does not fail while the local Qwen runner is still processing.
+- Increase the API write timeout for synchronous ingestion requests.
+- Align Docker Compose local defaults with the built-in Qwen embedding runner and leave reranking disabled unless explicitly configured.
+
 ## 0.3.4 - 2026-06-19
 
 ### Fixed

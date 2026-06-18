@@ -59,6 +59,9 @@ func TestLoadDefaultsToLocalQwenCompatibleEndpoints(t *testing.T) {
 	if cfg.Embedding.Model != "Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0" {
 		t.Fatalf("Embedding.Model = %q", cfg.Embedding.Model)
 	}
+	if cfg.Embedding.Timeout != 10*time.Minute {
+		t.Fatalf("Embedding.Timeout = %s, want 10m", cfg.Embedding.Timeout)
+	}
 	if cfg.Reranker.Provider != "" {
 		t.Fatalf("Reranker.Provider = %q, want empty", cfg.Reranker.Provider)
 	}
@@ -98,6 +101,29 @@ func TestLoadAllowsExternalEmbeddingsInProductionWithoutOverride(t *testing.T) {
 	}
 	if cfg.Reranker.Provider != "" {
 		t.Fatalf("Reranker.Provider = %q, want empty for custom embedding provider", cfg.Reranker.Provider)
+	}
+	if cfg.Embedding.Timeout != 30*time.Second {
+		t.Fatalf("Embedding.Timeout = %s, want 30s", cfg.Embedding.Timeout)
+	}
+}
+
+func TestLoadEmbeddingTimeoutOverride(t *testing.T) {
+	t.Setenv("EMBEDDING_TIMEOUT", "3m")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Embedding.Timeout != 3*time.Minute {
+		t.Fatalf("Embedding.Timeout = %s, want 3m", cfg.Embedding.Timeout)
+	}
+}
+
+func TestLoadRejectsInvalidEmbeddingTimeout(t *testing.T) {
+	t.Setenv("EMBEDDING_TIMEOUT", "45m")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected invalid embedding timeout error")
 	}
 }
 
