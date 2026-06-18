@@ -4,6 +4,19 @@ All notable changes to Abra are documented here.
 
 This project uses semantic versioning for public releases. Until v1.0.0, minor versions may include breaking changes when they are documented in this file and in the release notes.
 
+## 0.3.1 - 2026-06-19
+
+### Added
+
+- Add `abra models up`, `abra models status`, `abra models logs`, and `abra models down` to manage the default local Qwen embedding runner from the CLI.
+- Add local embedding readiness checks to `abra doctor`.
+
+### Changed
+
+- Let `abra setup` start the built-in local Qwen embedding runner before the Abra stack when local embeddings are selected.
+- Replace raw embedding-provider ingest failures with a CLI hint to run `abra models up`.
+- Document the CLI-owned local model path instead of asking users to manually run embedding servers.
+
 ## 0.3.0 - 2026-06-18
 
 ### Added

@@ -15,7 +15,7 @@ import (
 )
 
 func TestCommandHelpDoesNotRequireFlags(t *testing.T) {
-	for _, command := range []string{"config", "ingest", "setup", "watch", "sources", "jobs"} {
+	for _, command := range []string{"config", "ingest", "setup", "models", "watch", "sources", "jobs"} {
 		t.Run(command, func(t *testing.T) {
 			if err := run(context.Background(), []string{command, "--help"}); err != nil {
 				t.Fatalf("run(%s --help) error = %v", command, err)
@@ -315,6 +315,78 @@ func TestConfigModelLocalRestoresQwenDefaults(t *testing.T) {
 func TestConfigMasksSecrets(t *testing.T) {
 	if got := maskSecret("secret-model-key"); got != "secr...-key" {
 		t.Fatalf("maskSecret = %q", got)
+	}
+}
+
+func TestEmbeddingRunnerUsesLocalQwenDefaults(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+
+	if err := run(context.Background(), []string{"config", "model", "local"}); err != nil {
+		t.Fatalf("config model local error = %v", err)
+	}
+	cfg := embeddingRunner(cliArgs{Flags: map[string]string{}, Bools: map[string]bool{}})
+	if cfg.ModelID != defaultEmbeddingModelID {
+		t.Fatalf("model id = %q", cfg.ModelID)
+	}
+	if cfg.Model != defaultServedModelName {
+		t.Fatalf("served model = %q", cfg.Model)
+	}
+	if cfg.BaseURL != "http://127.0.0.1:8080/v1" {
+		t.Fatalf("base url = %q", cfg.BaseURL)
+	}
+	if cfg.Port != "8080" {
+		t.Fatalf("port = %q", cfg.Port)
+	}
+	if cfg.Dims != 1024 {
+		t.Fatalf("dims = %d", cfg.Dims)
+	}
+	if !strings.Contains(cfg.Image, "text-embeddings-inference") {
+		t.Fatalf("image = %q", cfg.Image)
+	}
+}
+
+func TestEmbeddingRunnerIgnoresCompatibleProviderConfig(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+
+	if err := run(context.Background(), []string{
+		"config", "model", "compatible",
+		"--base-url", "https://models.example/v1",
+		"--model", "embed-3072",
+		"--dimensions", "3072",
+	}); err != nil {
+		t.Fatalf("config model compatible error = %v", err)
+	}
+	cfg := embeddingRunner(cliArgs{Flags: map[string]string{}, Bools: map[string]bool{}})
+	if cfg.BaseURL != "http://127.0.0.1:8080/v1" {
+		t.Fatalf("base url = %q", cfg.BaseURL)
+	}
+	if cfg.Port != "8080" {
+		t.Fatalf("port = %q", cfg.Port)
+	}
+	if cfg.Model != defaultServedModelName {
+		t.Fatalf("model = %q", cfg.Model)
+	}
+	if cfg.Dims != 1024 {
+		t.Fatalf("dims = %d", cfg.Dims)
+	}
+}
+
+func TestFriendlyProviderErrorAddsModelsHint(t *testing.T) {
+	err := friendlyProviderError(&httpStatusError{
+		Code: 400,
+		Body: `{"error":"ai provider request failed: Post \"http://host.docker.internal:8080/v1/embeddings\": dial tcp: connect: connection refused"}`,
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "abra models up") {
+		t.Fatalf("error = %v", err)
 	}
 }
 

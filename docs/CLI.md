@@ -2,7 +2,7 @@
 
 Abra is terminal-first: install the `abra` command, start the service from the terminal, and operate it through the CLI, HTTP, or MCP.
 
-The quickstart path defaults to local neural embeddings: Qwen/Qwen3-Embedding-0.6B plus Qwen/Qwen3-Reranker-0.6B served from local OpenAI-compatible endpoints. Custom providers are supported and replace the local defaults when configured.
+The quickstart path defaults to local neural embeddings: Qwen/Qwen3-Embedding-0.6B served from a local OpenAI-compatible endpoint managed by `abra models up`. Qwen/Qwen3-Reranker-0.6B can be configured when a compatible rerank endpoint is available. Custom providers are supported and replace the local defaults when configured.
 
 ## 3-Minute Local Flow
 
@@ -26,7 +26,7 @@ Run the guided first-run setup:
 abra setup
 ```
 
-`abra setup` checks prerequisites, creates an env file, asks which embedding provider to use, and can start Postgres, migrations, API, and worker. From a source checkout it uses `.tmp/quickstart.env`; from a global CLI install it stores runtime files under your Abra config directory and can be run from any folder. `abra install` is kept as a compatibility alias for `abra setup`; the curl script installs the CLI binary.
+`abra setup` checks prerequisites, creates an env file, asks which embedding provider to use, can start the built-in local Qwen embedding runner, and can start Postgres, migrations, API, and worker. From a source checkout it uses `.tmp/quickstart.env`; from a global CLI install it stores runtime files under your Abra config directory and can be run from any folder. `abra install` is kept as a compatibility alias for `abra setup`; the curl script installs the CLI binary.
 
 View or change the important runtime config without opening the env file:
 
@@ -43,6 +43,7 @@ For non-interactive local setup, use `abra setup --yes`. For authenticated compa
 After changing model config, restart the stack:
 
 ```sh
+abra models up
 abra down
 abra up
 abra status
@@ -158,6 +159,8 @@ From a source checkout, run the CLI as `go run ./cmd/abra <command>`. In a relea
 | install CLI from checkout | `./scripts/install.sh` |
 | install CLI from published release | `curl -fsSL https://raw.githubusercontent.com/hermawan22/abra/main/scripts/install.sh \| sh` |
 | guided first-run setup | `abra setup` |
+| start local Qwen embedding runner | `abra models up` |
+| check local embedding runner | `abra models status` |
 | start local stack | `abra up` |
 | init env only | `abra init` |
 | compatibility setup alias | `abra install` |

@@ -47,6 +47,24 @@ func setup(ctx context.Context, args cliArgs) error {
 		printSetupNext(args)
 		return nil
 	}
+	if setupUsesLocalEmbeddings(args) && !boolFlag(args, "no-models") && !boolFlag(args, "skip-models") {
+		startModels := "yes"
+		if interactive && !boolFlag(args, "yes") {
+			var err error
+			startModels, err = promptDefault(reader, "Start local Qwen embedding model now?", "yes")
+			if err != nil {
+				return err
+			}
+		}
+		if yesish(startModels) {
+			if err := modelsUp(ctx, args); err != nil {
+				return err
+			}
+		} else {
+			fmt.Println("Skipped local model runner.")
+			fmt.Println("Run before ingest: abra models up")
+		}
+	}
 	if interactive && !boolFlag(args, "yes") {
 		start, err := promptDefault(reader, "Start local stack now?", "yes")
 		if err != nil {
@@ -66,6 +84,14 @@ func setup(ctx context.Context, args cliArgs) error {
 	}
 	fmt.Println("Local stack is ready.")
 	return nil
+}
+
+func setupUsesLocalEmbeddings(args cliArgs) bool {
+	values, err := readEnvValues(envPath(args))
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(values["EMBEDDING_PROVIDER"]) == "local"
 }
 
 func printSetupPrerequisites() {
@@ -229,8 +255,8 @@ func setupLocalNeuralEmbeddings(args cliArgs, reader *bufio.Reader, interactive 
 		return err
 	}
 	fmt.Println("Embedding: local neural default (Qwen3-compatible)")
-	fmt.Println("Prerequisite: run local OpenAI-compatible servers for Qwen/Qwen3-Embedding-0.6B and Qwen/Qwen3-Reranker-0.6B before neural recall.")
-	fmt.Println("Host endpoints: embedding http://127.0.0.1:8080/v1, reranker http://127.0.0.1:8081")
+	fmt.Println("Local model runner: abra models up")
+	fmt.Println("Host endpoint: embedding http://127.0.0.1:8080/v1")
 	fmt.Println("Compose endpoints are written as host.docker.internal so Abra containers can reach those host services.")
 	fmt.Println("After changing embedding providers, re-ingest important sources so vector recall uses the new embedding space.")
 	return nil
@@ -324,6 +350,7 @@ func promptSecret(label string) (string, error) {
 
 func printSetupNext(args cliArgs) {
 	fmt.Println("Next:")
+	fmt.Println("  abra models up")
 	fmt.Println("  abra up --env-file " + envPath(args))
 	fmt.Println("  abra ingest . --code")
 	fmt.Println(`  abra think "What should I know before changing this project?"`)

@@ -50,12 +50,19 @@ Then run the guided CLI onboarding:
 abra setup
 ```
 
-`abra setup` checks required commands, creates the runtime env file, asks which embedding provider to use, and can start the local stack. From a source checkout it uses `.tmp/quickstart.env`; from a global CLI install it stores runtime files under your Abra config directory and can be run from any folder. `abra install` is a compatibility alias for `abra setup`; the curl script is what installs the CLI binary.
+`abra setup` checks required commands, creates the runtime env file, asks which embedding provider to use, can start the built-in local Qwen embedding runner, and can start the local stack. From a source checkout it uses `.tmp/quickstart.env`; from a global CLI install it stores runtime files under your Abra config directory and can be run from any folder. `abra install` is a compatibility alias for `abra setup`; the curl script is what installs the CLI binary.
 
 For non-interactive local setup:
 
 ```sh
 abra setup --yes
+```
+
+If you skipped startup or need to recover a stopped local model, start the default self-hosted embedding runner:
+
+```sh
+abra models up
+abra models status
 ```
 
 Connect a custom compatible embedding provider during setup without editing env files:
@@ -199,7 +206,7 @@ Reset demo data:
 go run ./cmd/abra down --reset
 ```
 
-The demo uses the default local neural embedding path. Run Qwen/Qwen3-Embedding-0.6B and Qwen/Qwen3-Reranker-0.6B on the configured local endpoints before ingesting documents. For production, keep approval enforcement on and either self-host those local models or configure a compatible custom embedding provider.
+The demo uses the default local neural embedding path. Run `abra models up` before ingesting documents if the local embedding runner is not already active. For production, keep approval enforcement on and either self-host compatible embedding/rerank endpoints or configure a managed compatible custom provider.
 
 For command-by-command local and self-host usage, read [docs/CLI.md](./docs/CLI.md).
 
@@ -563,7 +570,7 @@ Recall responses include `retrieval_mode`, plus `text_score` and `vector_score` 
 4. Run the migration.
 5. Start the API, MCP server, or worker process.
 
-The default embedding provider is `local`, meaning self-hosted Qwen-compatible neural retrieval: Qwen/Qwen3-Embedding-0.6B for first-stage vectors and Qwen/Qwen3-Reranker-0.6B for optional reranking. Custom providers replace the local defaults by setting `EMBEDDING_PROVIDER=compatible`, `EMBEDDING_BASE_URL`, `EMBEDDING_MODEL`, and `EMBEDDING_DIMENSIONS`; set `RERANKER_PROVIDER` only when the custom provider also exposes a rerank endpoint.
+The default embedding provider is `local`, meaning self-hosted Qwen-compatible neural retrieval. `abra models up` starts Qwen/Qwen3-Embedding-0.6B through a local OpenAI-compatible embedding runner. Qwen/Qwen3-Reranker-0.6B remains configurable for deployments that expose a compatible rerank endpoint. Custom providers replace the local defaults by setting `EMBEDDING_PROVIDER=compatible`, `EMBEDDING_BASE_URL`, `EMBEDDING_MODEL`, and `EMBEDDING_DIMENSIONS`; set `RERANKER_PROVIDER` only when the custom provider also exposes a rerank endpoint.
 
 Forgetting a claim marks it `deprecated`. Source re-ingestion will not reactivate a manually forgotten claim; only claims and relations temporarily deprecated by source refresh can be reactivated.
 

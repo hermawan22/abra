@@ -85,6 +85,8 @@ func run(ctx context.Context, argv []string) error {
 		return initEnv(args)
 	case "config":
 		return configCommand(args)
+	case "models", "model":
+		return models(ctx, args)
 	case "ui", "dashboard":
 		return errors.New("abra ui was removed; use `abra setup` for guided onboarding or `abra up` for non-interactive start")
 	case "up", "start":
@@ -386,7 +388,7 @@ func configModelLocalNeural(args cliArgs, label string) error {
 		return err
 	}
 	fmt.Println("Model config updated: " + label)
-	fmt.Println("Run Qwen/Qwen3-Embedding-0.6B at the embedding base URL and Qwen/Qwen3-Reranker-0.6B at the reranker base URL.")
+	fmt.Println("Run `abra models up` for the default local Qwen embedding runner, or point this config at any compatible custom provider.")
 	printRestartHint(args)
 	return nil
 }
@@ -613,6 +615,7 @@ func doctor(ctx context.Context, args cliArgs) error {
 	if envPath(args) != "" {
 		checks = append(checks, envFileCheck(envPath(args)))
 	}
+	checks = append(checks, localEmbeddingCheck(ctx, args))
 	result, code, err := getJSON(ctx, args, "/readyz")
 	if err != nil || code < 200 || code >= 300 {
 		checks = append(checks, map[string]any{"name": "readyz", "ok": false, "status": code, "hint": "run: abra up"})
@@ -788,7 +791,7 @@ func ingestCommand(ctx context.Context, args cliArgs) error {
 	}
 	result, err := postJSON(ctx, args, "/ingest/documents", body)
 	if err != nil {
-		return err
+		return friendlyProviderError(err)
 	}
 	if boolFlag(args, "json") {
 		return printJSON(result)
@@ -868,7 +871,7 @@ func localPathIngest(ctx context.Context, args cliArgs) error {
 			"metadata":    metadata,
 		})
 		if err != nil {
-			return fmt.Errorf("ingest %s: %w", doc.Path, err)
+			return fmt.Errorf("ingest %s: %w", doc.Path, friendlyProviderError(err))
 		}
 		results = append(results, map[string]any{
 			"path":        doc.Path,
@@ -1280,6 +1283,15 @@ func runCommandIn(dir, name string, args ...string) error {
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 	return cmd.Run()
+}
+
+func commandOutput(name string, args ...string) (string, error) {
+	cmd := exec.Command(name, args...)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	err := cmd.Run()
+	return strings.TrimSpace(out.String()), err
 }
 
 func ensureEnv(args cliArgs) error {
@@ -1704,6 +1716,8 @@ Usage:
   abra quickstart
   abra init [--production]
   abra config show
+  abra models up
+  abra models status
   abra config model local
   abra config model openai --api-key-stdin
   abra config model compatible --base-url <url> --model <model> [--api-key-stdin]
@@ -1773,6 +1787,17 @@ exposes core runtime settings needed for local operation and model connection.
 After changing model config, restart with: abra down && abra up
 After changing embedding providers, re-ingest important sources for reliable vector recall.
 `
+	case "models", "model":
+		return `Usage:
+  abra models up [--recreate] [--port 8080]
+  abra models status [--json]
+  abra models logs
+  abra models down
+
+Starts and manages the built-in local embedding runner for the default local
+Qwen3 setup. Abra keeps the binary lightweight: model weights stay in Docker's
+model cache, while the CLI owns startup, health checks, and lifecycle.
+`
 	case "ui", "dashboard":
 		return `Usage:
   abra setup
@@ -1832,8 +1857,8 @@ Builds a task-specific working-memory packet for AI coding agents.
 
 Guided first-run onboarding. It checks prerequisites, creates the runtime env,
 chooses the embedding provider, and can start the local stack. The default
-local provider expects Qwen/Qwen3-Embedding-0.6B and Qwen/Qwen3-Reranker-0.6B
-served by local OpenAI-compatible endpoints.
+local provider uses abra models up to serve Qwen/Qwen3-Embedding-0.6B through a
+local OpenAI-compatible endpoint.
 `
 	case "install", "up", "quickstart", "demo":
 		return `Usage:
