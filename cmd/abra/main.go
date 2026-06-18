@@ -23,10 +23,12 @@ import (
 )
 
 const (
-	checkoutEnvPath = ".tmp/quickstart.env"
-	defaultBaseURL  = "http://127.0.0.1:18080"
-	defaultToken    = "dev-token"
-	installScript   = "https://raw.githubusercontent.com/hermawan22/abra/main/scripts/install.sh"
+	checkoutEnvPath      = ".tmp/quickstart.env"
+	defaultBaseURL       = "http://127.0.0.1:18080"
+	defaultToken         = "dev-token"
+	defaultHTTPTimeout   = 30 * time.Second
+	defaultIngestTimeout = 10 * time.Minute
+	installScript        = "https://raw.githubusercontent.com/hermawan22/abra/main/scripts/install.sh"
 )
 
 var (
@@ -789,7 +791,7 @@ func ingestCommand(ctx context.Context, args cliArgs) error {
 		"content":     content,
 		"authority":   flag(args, "authority", "official-doc"),
 	}
-	result, err := postJSON(ctx, args, "/ingest/documents", body)
+	result, err := postJSONWithTimeout(ctx, args, "/ingest/documents", body, cliTimeout(args, defaultIngestTimeout))
 	if err != nil {
 		return friendlyProviderError(err)
 	}
@@ -861,7 +863,7 @@ func localPathIngest(ctx context.Context, args cliArgs) error {
 		metadata["ingest_checksum"] = doc.Checksum
 		metadata["ingest_fingerprint"] = doc.Fingerprint
 		sourceURL := localFileURL(abs, doc.Path)
-		result, err := postJSON(ctx, args, "/ingest/documents", map[string]any{
+		result, err := postJSONWithTimeout(ctx, args, "/ingest/documents", map[string]any{
 			"source_type": string(doc.SourceType),
 			"source_url":  sourceURL,
 			"source_id":   doc.SourceID,
@@ -869,7 +871,7 @@ func localPathIngest(ctx context.Context, args cliArgs) error {
 			"scope":       doc.Scope,
 			"content":     doc.Content,
 			"metadata":    metadata,
-		})
+		}, cliTimeout(args, defaultIngestTimeout))
 		if err != nil {
 			return fmt.Errorf("ingest %s: %w", doc.Path, friendlyProviderError(err))
 		}
@@ -1069,7 +1071,7 @@ func listJobs(ctx context.Context, args cliArgs) error {
 }
 
 func ingest(ctx context.Context, args cliArgs, body map[string]any) error {
-	_, err := postJSON(ctx, args, "/ingest/documents", body)
+	_, err := postJSONWithTimeout(ctx, args, "/ingest/documents", body, cliTimeout(args, defaultIngestTimeout))
 	return err
 }
 
@@ -1170,6 +1172,10 @@ func mcp(args cliArgs) error {
 }
 
 func postJSON(ctx context.Context, args cliArgs, path string, body map[string]any) (map[string]any, error) {
+	return postJSONWithTimeout(ctx, args, path, body, cliTimeout(args, defaultHTTPTimeout))
+}
+
+func postJSONWithTimeout(ctx context.Context, args cliArgs, path string, body map[string]any, timeout time.Duration) (map[string]any, error) {
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
@@ -1180,7 +1186,7 @@ func postJSON(ctx context.Context, args cliArgs, path string, body map[string]an
 	}
 	req.Header.Set("content-type", "application/json")
 	req.Header.Set("authorization", "Bearer "+cfg(args).Token)
-	return doJSON(req)
+	return doJSON(req, timeout)
 }
 
 func getJSON(ctx context.Context, args cliArgs, path string) (map[string]any, int, error) {
@@ -1189,7 +1195,7 @@ func getJSON(ctx context.Context, args cliArgs, path string) (map[string]any, in
 		return nil, 0, err
 	}
 	req.Header.Set("authorization", "Bearer "+cfg(args).Token)
-	body, err := doJSON(req)
+	body, err := doJSON(req, cliTimeout(args, defaultHTTPTimeout))
 	if err != nil {
 		if statusErr := (&httpStatusError{}); errors.As(err, &statusErr) {
 			return body, statusErr.Code, err
@@ -1208,8 +1214,11 @@ func (e *httpStatusError) Error() string {
 	return fmt.Sprintf("http %d: %s", e.Code, e.Body)
 }
 
-func doJSON(req *http.Request) (map[string]any, error) {
-	client := &http.Client{Timeout: 30 * time.Second}
+func doJSON(req *http.Request, timeout time.Duration) (map[string]any, error) {
+	if timeout <= 0 {
+		timeout = defaultHTTPTimeout
+	}
+	client := &http.Client{Timeout: timeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -1579,6 +1588,22 @@ func floatFlag(args cliArgs, name string, fallback float64) float64 {
 	return parsed
 }
 
+func cliTimeout(args cliArgs, fallback time.Duration) time.Duration {
+	value := firstNonEmpty(flag(args, "timeout", ""), os.Getenv("ABRA_CLI_TIMEOUT"))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(value)
+	if err == nil && parsed > 0 {
+		return parsed
+	}
+	seconds, err := strconv.Atoi(value)
+	if err == nil && seconds > 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	return fallback
+}
+
 func envOr(name, fallback string) string {
 	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
 		return value
@@ -1773,6 +1798,7 @@ Source ingestion flags:
   --exclude        comma-separated exclude globs
   --code           also ingest code intelligence from supported code files
   --wait           wait up to 60s for the queued worker job when using --git
+  --timeout        HTTP timeout for direct local ingest, default 10m
 `
 	case "config":
 		return `Usage:

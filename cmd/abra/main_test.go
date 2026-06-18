@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCommandHelpDoesNotRequireFlags(t *testing.T) {
@@ -315,6 +316,15 @@ func TestConfigModelLocalRestoresQwenDefaults(t *testing.T) {
 func TestConfigMasksSecrets(t *testing.T) {
 	if got := maskSecret("secret-model-key"); got != "secr...-key" {
 		t.Fatalf("maskSecret = %q", got)
+	}
+}
+
+func TestCLITimeoutParsesDurationAndSeconds(t *testing.T) {
+	if got := cliTimeout(cliArgs{Flags: map[string]string{"timeout": "10m"}, Bools: map[string]bool{}}, time.Second); got != 10*time.Minute {
+		t.Fatalf("duration timeout = %s", got)
+	}
+	if got := cliTimeout(cliArgs{Flags: map[string]string{"timeout": "45"}, Bools: map[string]bool{}}, time.Second); got != 45*time.Second {
+		t.Fatalf("seconds timeout = %s", got)
 	}
 }
 
