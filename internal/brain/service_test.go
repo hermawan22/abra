@@ -105,9 +105,9 @@ func TestExtractClaimsIgnoresFencedCodeAndReturnsDeterministicClaims(t *testing.
 }
 
 func TestRedactSecretContext(t *testing.T) {
-	input := "Access to Nexus - request the rotated NEXUS_USER and NEXUS_PASSWORD from Infra; stored as Bitbucket workspace variables."
+	input := "Access to private registry - request the rotated REGISTRY_USER and REGISTRY_PASSWORD from Infra; stored as CI workspace variables."
 	got := redact(input)
-	if strings.Contains(got, "NEXUS_USER") || strings.Contains(got, "NEXUS_PASSWORD") {
+	if strings.Contains(got, "REGISTRY_USER") || strings.Contains(got, "REGISTRY_PASSWORD") {
 		t.Fatalf("redaction leaked credential names: %q", got)
 	}
 	if strings.Contains(strings.ToLower(got), "request the rotated") {

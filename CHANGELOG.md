@@ -4,6 +4,12 @@ All notable changes to Abra are documented here.
 
 This project uses semantic versioning for public releases. Until v1.0.0, minor versions may include breaking changes when they are documented in this file and in the release notes.
 
+## 0.1.9 - 2026-06-18
+
+### Changed
+
+- Replace an internal-looking redaction test fixture with generic OSS-safe registry placeholders.
+
 ## 0.1.8 - 2026-06-18
 
 ### Added
