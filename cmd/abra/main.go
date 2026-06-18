@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	ingestpkg "github.com/hermawan22/abra/internal/ingest"
 )
 
 const (
@@ -58,6 +61,10 @@ func main() {
 
 func run(ctx context.Context, argv []string) error {
 	args := parseArgs(argv)
+	if args.Command != "" && boolFlag(args, "help") {
+		fmt.Print(commandUsage(args.Command))
+		return nil
+	}
 	switch args.Command {
 	case "", "help", "-h", "--help":
 		fmt.Print(usage())
@@ -86,6 +93,12 @@ func run(ctx context.Context, argv []string) error {
 		return seed(ctx, args)
 	case "ingest":
 		return ingestCommand(ctx, args)
+	case "watch", "source":
+		return watch(ctx, args)
+	case "sources":
+		return listSources(ctx, args)
+	case "jobs":
+		return listJobs(ctx, args)
 	case "think", "ask":
 		return think(ctx, args)
 	case "recall":
@@ -446,6 +459,12 @@ func seed(ctx context.Context, args cliArgs) error {
 }
 
 func ingestCommand(ctx context.Context, args cliArgs) error {
+	if flag(args, "path", "") != "" {
+		return localPathIngest(ctx, args)
+	}
+	if flag(args, "git", "") != "" || flag(args, "repo", "") != "" {
+		return sourceIngest(ctx, args)
+	}
 	scope := required(args, "scope")
 	content := flag(args, "text", "")
 	if file := flag(args, "file", ""); file != "" {
@@ -478,6 +497,265 @@ func ingestCommand(ctx context.Context, args cliArgs) error {
 	}
 	fmt.Println("Ingested: " + stringValue(result["document_id"], stringValue(body["source_url"], "")))
 	fmt.Println("scope: " + scope)
+	return nil
+}
+
+func localPathIngest(ctx context.Context, args cliArgs) error {
+	scope := required(args, "scope")
+	root := flag(args, "path", ".")
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	sourceID := flag(args, "source-id", "")
+	if sourceID == "" {
+		sourceID = flag(args, "name", "")
+	}
+	if sourceID == "" {
+		sourceID = slug(abs)
+	}
+	if sourceID == "" {
+		sourceID = "local-" + timestamp()
+	}
+	source := ingestpkg.SourceSpec{
+		ID:          sourceID,
+		Type:        ingestpkg.SourceTypeLocalRepo,
+		Root:        abs,
+		Scope:       scope,
+		Include:     csv(flag(args, "include", "")),
+		Exclude:     csv(flag(args, "exclude", "")),
+		IncludeCode: boolFlag(args, "code"),
+		CodeInclude: csv(flag(args, "code-include", "")),
+		CodeExclude: csv(flag(args, "code-exclude", "")),
+		Metadata: map[string]string{
+			"created_by":      flag(args, "created-by", "abra-cli"),
+			"ingest_channel":  "cli-local",
+			"authority":       flag(args, "authority", "manual-unverified"),
+			"authority_score": strconv.FormatFloat(floatFlag(args, "authority-score", 0.35), 'f', -1, 64),
+		},
+	}
+	if len(source.Include) == 0 {
+		source.Include = []string{"**/*.md"}
+	}
+	ingestor, err := ingestpkg.NewLocalRepoMarkdownIngestor(source)
+	if err != nil {
+		return err
+	}
+	documents, err := ingestor.Ingest(ctx)
+	if err != nil {
+		return err
+	}
+	if len(documents) == 0 {
+		return errors.New("no matching files found; adjust --include, add --code, or check --path")
+	}
+	results := make([]map[string]any, 0, len(documents))
+	for _, doc := range documents {
+		metadata := stringMapToAny(doc.Metadata)
+		metadata["ingest_path"] = doc.Path
+		metadata["ingest_checksum"] = doc.Checksum
+		metadata["ingest_fingerprint"] = doc.Fingerprint
+		sourceURL := localFileURL(abs, doc.Path)
+		result, err := postJSON(ctx, args, "/ingest/documents", map[string]any{
+			"source_type": string(doc.SourceType),
+			"source_url":  sourceURL,
+			"source_id":   doc.SourceID,
+			"title":       doc.Title,
+			"scope":       doc.Scope,
+			"content":     doc.Content,
+			"metadata":    metadata,
+		})
+		if err != nil {
+			return fmt.Errorf("ingest %s: %w", doc.Path, err)
+		}
+		results = append(results, map[string]any{
+			"path":        doc.Path,
+			"source_url":  sourceURL,
+			"document_id": stringValue(result["document_id"], ""),
+			"chunks":      result["chunks"],
+			"claims":      result["claims"],
+			"relations":   result["relations"],
+		})
+	}
+	if boolFlag(args, "json") {
+		return printJSON(map[string]any{"scope": scope, "documents": results})
+	}
+	fmt.Printf("Ingested files: %d\n", len(results))
+	fmt.Println("scope: " + scope)
+	fmt.Println("source: " + source.ID)
+	return nil
+}
+
+func watch(ctx context.Context, args cliArgs) error {
+	if len(args.Rest) == 0 {
+		return errors.New(commandUsage("watch"))
+	}
+	mode := strings.ToLower(strings.TrimSpace(args.Rest[0]))
+	args.Rest = args.Rest[1:]
+	switch mode {
+	case "local", "path", "repo":
+		if flag(args, "path", "") == "" {
+			args.Flags["path"] = "."
+		}
+	case "git", "github", "remote":
+		if flag(args, "git", "") == "" && flag(args, "repo", "") == "" {
+			if len(args.Rest) == 0 {
+				return errors.New("watch git requires --git <url> or a positional repo URL")
+			}
+			args.Flags["git"] = args.Rest[0]
+			args.Rest = args.Rest[1:]
+		}
+	default:
+		return fmt.Errorf("unknown watch mode %q\n\n%s", mode, commandUsage("watch"))
+	}
+	return sourceIngest(ctx, args)
+}
+
+func sourceIngest(ctx context.Context, args cliArgs) error {
+	scope := required(args, "scope")
+	sourceType := "local_repo"
+	sourceURL := ""
+	config := map[string]any{}
+	if repo := firstNonEmpty(flag(args, "git", ""), flag(args, "repo", "")); repo != "" {
+		sourceType = "git_repo"
+		sourceURL = repo
+		config["repository_url"] = repo
+		if ref := firstNonEmpty(flag(args, "ref", ""), flag(args, "branch", "")); ref != "" {
+			config["git_ref"] = ref
+		}
+		config["git_depth"] = intFlag(args, "depth", 1)
+	} else {
+		path := flag(args, "path", ".")
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			return err
+		}
+		sourceURL = "file://" + filepath.ToSlash(abs)
+		config["root"] = abs
+	}
+	if include := csv(flag(args, "include", "")); len(include) > 0 {
+		config["include"] = include
+	} else {
+		config["include"] = []string{"**/*.md"}
+	}
+	if exclude := csv(flag(args, "exclude", "")); len(exclude) > 0 {
+		config["exclude"] = exclude
+	}
+	if boolFlag(args, "code") {
+		config["include_code"] = true
+		if codeInclude := csv(flag(args, "code-include", "")); len(codeInclude) > 0 {
+			config["code_include"] = codeInclude
+		}
+		if codeExclude := csv(flag(args, "code-exclude", "")); len(codeExclude) > 0 {
+			config["code_exclude"] = codeExclude
+		}
+	}
+	name := flag(args, "name", "")
+	if name == "" {
+		name = slug(strings.TrimPrefix(strings.TrimPrefix(sourceURL, "file://"), "https://"))
+		if name == "" {
+			name = "source-" + timestamp()
+		}
+	}
+	body := map[string]any{
+		"name":            name,
+		"source_type":     sourceType,
+		"scope":           scope,
+		"base_url":        sourceURL,
+		"connector_kind":  flag(args, "connector", "generic"),
+		"status":          flag(args, "status", "active"),
+		"authority":       flag(args, "authority", "manual-unverified"),
+		"authority_score": floatFlag(args, "authority-score", 0.35),
+		"config":          config,
+		"metadata": map[string]any{
+			"created_by": "abra-cli",
+		},
+		"created_by": flag(args, "created-by", "abra-cli"),
+	}
+	if approvalID := flag(args, "approval-id", ""); approvalID != "" {
+		body["approval_id"] = approvalID
+	}
+	source, err := postJSON(ctx, args, "/sources/configs", body)
+	if err != nil {
+		return err
+	}
+	sourceID := stringValue(source["source_config_id"], "")
+	if sourceID == "" {
+		return errors.New("source config response did not include source_config_id")
+	}
+	job, err := postJSON(ctx, args, "/ingestion/jobs", map[string]any{
+		"source_config_id": sourceID,
+		"trigger_type":     flag(args, "trigger", "manual"),
+		"created_by":       flag(args, "created-by", "abra-cli"),
+		"max_attempts":     intFlag(args, "max-attempts", 3),
+		"metadata":         map[string]any{"channel": "cli"},
+	})
+	if err != nil {
+		return err
+	}
+	if boolFlag(args, "json") {
+		return printJSON(map[string]any{"source": source, "job": job})
+	}
+	fmt.Println("Source configured: " + sourceID)
+	fmt.Println("scope: " + scope)
+	if ingestionJob, _ := job["ingestion_job"].(map[string]any); ingestionJob != nil {
+		fmt.Println("Job queued: " + stringValue(ingestionJob["id"], ""))
+	}
+	fmt.Println("Check jobs: abra jobs --scope " + scope)
+	if boolFlag(args, "wait") {
+		return waitForSourceJob(ctx, args, scope, sourceID)
+	}
+	return nil
+}
+
+func listSources(ctx context.Context, args cliArgs) error {
+	path := "/sources/configs?limit=" + strconv.Itoa(intFlag(args, "limit", 50))
+	if scope := flag(args, "scope", os.Getenv("ABRA_SCOPE")); scope != "" {
+		path += "&scope=" + urlQueryEscape(scope)
+	}
+	result, _, err := getJSON(ctx, args, path)
+	if err != nil {
+		return err
+	}
+	if boolFlag(args, "json") {
+		return printJSON(result)
+	}
+	items, _ := result["source_configs"].([]any)
+	fmt.Printf("Sources: %d\n", len(items))
+	for _, raw := range items {
+		item, _ := raw.(map[string]any)
+		fmt.Printf("- %s  %s  %s  %s\n", stringValue(item["id"], ""), stringValue(item["status"], ""), stringValue(item["source_type"], ""), stringValue(item["name"], ""))
+	}
+	return nil
+}
+
+func listJobs(ctx context.Context, args cliArgs) error {
+	scope := flag(args, "scope", os.Getenv("ABRA_SCOPE"))
+	if scope == "" {
+		return errors.New("jobs requires --scope or ABRA_SCOPE")
+	}
+	path := "/ingestion/jobs?scope=" + urlQueryEscape(scope) + "&limit=" + strconv.Itoa(intFlag(args, "limit", 20))
+	if sourceID := flag(args, "source-config-id", ""); sourceID != "" {
+		path += "&source_config_id=" + urlQueryEscape(sourceID)
+	}
+	result, _, err := getJSON(ctx, args, path)
+	if err != nil {
+		return err
+	}
+	if boolFlag(args, "json") {
+		return printJSON(result)
+	}
+	items, _ := result["ingestion_jobs"].([]any)
+	fmt.Printf("Jobs: %d\n", len(items))
+	for _, raw := range items {
+		item, _ := raw.(map[string]any)
+		fmt.Printf("- %s  %s  seen=%v changed=%v source=%s\n",
+			stringValue(item["id"], ""),
+			stringValue(item["status"], ""),
+			item["documents_seen"],
+			item["documents_changed"],
+			stringValue(item["source_config_id"], ""),
+		)
+	}
 	return nil
 }
 
@@ -749,6 +1027,18 @@ func intFlag(args cliArgs, name string, fallback int) int {
 	return parsed
 }
 
+func floatFlag(args cliArgs, name string, fallback float64) float64 {
+	value := flag(args, name, "")
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil || parsed < 0 {
+		return fallback
+	}
+	return parsed
+}
+
 func envOr(name, fallback string) string {
 	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
 		return value
@@ -763,6 +1053,66 @@ func firstCSV(value, fallback string) string {
 		}
 	}
 	return fallback
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func csv(value string) []string {
+	parts := []string{}
+	for _, item := range strings.Split(value, ",") {
+		if trimmed := strings.TrimSpace(item); trimmed != "" {
+			parts = append(parts, trimmed)
+		}
+	}
+	return parts
+}
+
+func urlQueryEscape(value string) string {
+	return url.QueryEscape(value)
+}
+
+func stringMapToAny(input map[string]string) map[string]any {
+	out := make(map[string]any, len(input))
+	for key, value := range input {
+		out[key] = value
+	}
+	return out
+}
+
+func localFileURL(root, relPath string) string {
+	u := url.URL{Scheme: "file", Path: filepath.ToSlash(filepath.Join(root, filepath.FromSlash(relPath)))}
+	return u.String()
+}
+
+func waitForSourceJob(ctx context.Context, args cliArgs, scope, sourceID string) error {
+	for i := 0; i < 60; i++ {
+		path := "/ingestion/jobs?scope=" + urlQueryEscape(scope) + "&source_config_id=" + urlQueryEscape(sourceID) + "&limit=1"
+		result, _, err := getJSON(ctx, args, path)
+		if err == nil {
+			jobs, _ := result["ingestion_jobs"].([]any)
+			if len(jobs) > 0 {
+				job, _ := jobs[0].(map[string]any)
+				status := stringValue(job["status"], "")
+				switch status {
+				case "succeeded":
+					fmt.Printf("Job succeeded: seen=%v changed=%v chunks=%v claims=%v\n", job["documents_seen"], job["documents_changed"], job["chunks_written"], job["claims_written"])
+					return nil
+				case "failed", "canceled":
+					return fmt.Errorf("job %s: %s", status, stringValue(job["last_error"], ""))
+				}
+				fmt.Println("Job " + status + "...")
+			}
+		}
+		time.Sleep(time.Second)
+	}
+	return errors.New("job did not finish within 60s; run `abra jobs --scope " + scope + "`")
 }
 
 func stringValue(value any, fallback string) string {
@@ -830,6 +1180,12 @@ Usage:
   abra doctor
   abra seed [--scope repo:demo]
   abra ingest --scope repo:demo --text "Agents should use Abra" [--title Intro]
+  abra ingest --scope repo:demo --path . --include "**/*.md" [--code]
+  abra ingest --scope repo:demo --git https://github.com/owner/repo.git [--ref main]
+  abra watch local --scope repo:demo --path . [--wait]
+  abra watch git --scope repo:demo --git https://github.com/owner/repo.git [--wait]
+  abra sources [--scope repo:demo]
+  abra jobs --scope repo:demo
   abra think "What should agents use?" --scope repo:demo
   abra recall "agent memory" --scope repo:demo
   abra compose "ship a change" --scope repo:demo
@@ -843,6 +1199,86 @@ Common flags:
 
 Abra is CLI + MCP only. No browser UI is shipped.
 `
+}
+
+func commandUsage(command string) string {
+	switch command {
+	case "ingest":
+		return `Usage:
+  abra ingest --scope repo:demo --text "source-backed content" [--title Intro]
+  abra ingest --scope repo:demo --file ./notes.md [--source-url file://notes.md]
+  abra ingest --scope repo:demo --path . --include "**/*.md" [--code]
+  abra ingest --scope repo:demo --git https://github.com/owner/repo.git [--ref main] [--wait]
+
+Manual document flags:
+  --scope          memory scope, e.g. repo:demo
+  --text           document text
+  --file           read document text from file
+  --title          document title
+  --source-url     stable source URL
+  --source-type    default markdown
+
+Source ingestion flags:
+  --path           local repository or directory to ingest immediately from the CLI
+  --git, --repo    remote Git repository URL to clone through the worker
+  --ref, --branch  Git ref for --git
+  --include        comma-separated document globs, default **/*.md
+  --exclude        comma-separated exclude globs
+  --code           also ingest code intelligence from supported code files
+  --wait           wait up to 60s for the queued worker job when using --git
+`
+	case "watch", "source":
+		return `Usage:
+  abra watch local --scope repo:demo --path . [--include "**/*.md"] [--code] [--wait]
+  abra watch git --scope repo:demo --git https://github.com/owner/repo.git [--ref main] [--wait]
+
+This creates or updates a source config, then enqueues an ingestion job.
+The OSS worker supports markdown, local_repo, and git_repo. External systems
+such as Jira, Confluence, Slack, and Drive should push normalized documents
+through the HTTP/MCP ingestion API or a deployment-specific connector overlay.
+`
+	case "sources":
+		return `Usage:
+  abra sources [--scope repo:demo] [--limit 50] [--json]
+
+Lists configured ingestion sources.
+`
+	case "jobs":
+		return `Usage:
+  abra jobs --scope repo:demo [--source-config-id source...] [--limit 20] [--json]
+
+Lists worker ingestion jobs for a scope.
+`
+	case "think":
+		return `Usage:
+  abra think "question" --scope repo:demo [--agent codex] [--json]
+
+Asks the governed brain layer. Returns a cited answer, verification, gaps,
+memory health, and an agent decision gate.
+`
+	case "recall":
+		return `Usage:
+  abra recall "query" --scope repo:demo [--include-unverified] [--json]
+
+Runs hybrid lexical/vector retrieval over source-backed memory.
+`
+	case "compose":
+		return `Usage:
+  abra compose "task" --scope repo:demo [--agent codex] [--hook before_task] [--json]
+
+Builds a task-specific working-memory packet for AI coding agents.
+`
+	case "install", "up", "quickstart", "demo":
+		return `Usage:
+  abra install
+  abra demo
+  abra up [--env-file .tmp/quickstart.env]
+
+Starts the local Docker Compose stack: Postgres, migrations, API, and worker.
+`
+	default:
+		return usage()
+	}
 }
 
 const demoEnv = `ABRA_API_KEYS=dev-token

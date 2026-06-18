@@ -45,6 +45,18 @@ abra ingest --scope "$ABRA_SCOPE" \
   --text "Agents should use Abra before autonomous code changes."
 ```
 
+Ingest local docs or repo files immediately from the CLI:
+
+```sh
+abra ingest --scope "$ABRA_SCOPE" --path . --include "**/*.md" --code
+```
+
+Queue a remote Git repo through the worker:
+
+```sh
+abra ingest --scope "$ABRA_SCOPE" --git https://github.com/owner/repo.git --ref main --code --wait
+```
+
 Ask Abra to think with governed memory:
 
 ```sh
@@ -129,7 +141,11 @@ From a source checkout, run the CLI as `go run ./cmd/abra <command>`. In a relea
 | bootstrap stack | `abra install` |
 | init env only | `abra init` |
 | up | `abra up` |
-| ingest | `abra ingest --scope "$ABRA_SCOPE" --text "source-backed content"` |
+| ingest one document | `abra ingest --scope "$ABRA_SCOPE" --text "source-backed content"` |
+| ingest local repo | `abra ingest --scope "$ABRA_SCOPE" --path . --include "**/*.md" --code` |
+| ingest remote git | `abra ingest --scope "$ABRA_SCOPE" --git https://github.com/owner/repo.git --ref main --code --wait` |
+| list sources | `abra sources --scope "$ABRA_SCOPE"` |
+| list jobs | `abra jobs --scope "$ABRA_SCOPE"` |
 | think | `abra think --scope "$ABRA_SCOPE" "question"` |
 | status | `abra status` |
 | doctor | `abra doctor` |
@@ -155,6 +171,13 @@ curl -sS -H "$auth_header" \
   }' \
   "$ABRA_BASE_URL/ingest/documents"
 ```
+
+For worker-based source refreshes, use `abra watch local --scope "$ABRA_SCOPE" --path . --wait`
+or `abra watch git --scope "$ABRA_SCOPE" --git https://github.com/owner/repo.git --wait`.
+For event-based ingestion, send normalized documents to `POST /ingest/webhooks`
+from your connector or automation. The core OSS worker schedules `local_repo`,
+`git_repo`, and markdown source configs. Other source systems should use a thin
+connector overlay that listens to source events and posts documents into Abra.
 
 ## Self-Host Commands
 

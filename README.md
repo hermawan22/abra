@@ -26,7 +26,7 @@ Agents / agent runtimes
       -> Auto-ingestion Worker
 ```
 
-Source systems are ingested through the API or through `source_configs` consumed by the worker. The OSS build starts with generic document ingestion plus local markdown/repo and provider-neutral remote Git ingestion. Deployment extensions can add private connectors for Confluence, Jira, Slack decisions, or other source systems.
+Source systems are ingested through the API, signed webhooks, or `source_configs` consumed by the worker. The OSS build supports generic document ingestion, local repo ingestion, and provider-neutral remote Git ingestion. Deployment extensions can add event connectors for Confluence, Jira, Slack decisions, Drive, or other systems by pushing normalized documents into Abra.
 
 ## 3-Minute CLI Install
 
@@ -61,6 +61,18 @@ abra ingest --scope repo:demo \
   --text "Agents should use Abra before autonomous code changes."
 
 abra think "What should agents use before autonomous code changes?" --scope repo:demo
+```
+
+Ingest local docs or repo files immediately from the CLI:
+
+```sh
+abra ingest --scope repo:my-app --path . --include "**/*.md" --code
+```
+
+Queue a remote Git repo through the worker:
+
+```sh
+abra ingest --scope repo:my-app --git https://github.com/owner/repo.git --ref main --code --wait
 ```
 
 Generate MCP client config:
@@ -128,6 +140,12 @@ go run ./cmd/abra ingest --scope repo:demo \
   --title Intro \
   --source-url file://intro.md \
   --text "Agents should use Abra before autonomous code changes."
+```
+
+Ingest local repo docs and code intelligence immediately from the CLI:
+
+```sh
+go run ./cmd/abra ingest --scope repo:demo --path . --include "**/*.md" --code
 ```
 
 Think with governed memory:
