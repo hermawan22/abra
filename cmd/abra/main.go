@@ -169,7 +169,7 @@ func install(ctx context.Context, args cliArgs) error {
 	if err := up(ctx, args); err != nil {
 		return err
 	}
-	fmt.Println("Install complete.")
+	fmt.Println("Local stack is ready.")
 	return nil
 }
 
@@ -459,6 +459,17 @@ func seed(ctx context.Context, args cliArgs) error {
 }
 
 func ingestCommand(ctx context.Context, args cliArgs) error {
+	if flag(args, "path", "") == "" && flag(args, "file", "") == "" && flag(args, "text", "") == "" && len(args.Rest) > 0 {
+		if info, err := os.Stat(args.Rest[0]); err == nil {
+			if info.IsDir() {
+				args.Flags["path"] = args.Rest[0]
+				args.Rest = args.Rest[1:]
+			} else {
+				args.Flags["file"] = args.Rest[0]
+				args.Rest = args.Rest[1:]
+			}
+		}
+	}
 	if flag(args, "path", "") != "" {
 		return localPathIngest(ctx, args)
 	}
@@ -467,23 +478,38 @@ func ingestCommand(ctx context.Context, args cliArgs) error {
 	}
 	scope := required(args, "scope")
 	content := flag(args, "text", "")
+	sourceURL := flag(args, "source-url", "")
+	title := flag(args, "title", "CLI Note")
 	if file := flag(args, "file", ""); file != "" {
 		bytes, err := os.ReadFile(file)
 		if err != nil {
 			return err
 		}
 		content = string(bytes)
+		if sourceURL == "" {
+			abs, err := filepath.Abs(file)
+			if err != nil {
+				return err
+			}
+			sourceURL = localFileURL(filepath.Dir(abs), filepath.Base(abs))
+		}
+		if title == "CLI Note" {
+			title = strings.TrimSuffix(filepath.Base(file), filepath.Ext(file))
+		}
 	}
 	if content == "" {
 		content = strings.TrimSpace(strings.Join(args.Rest, " "))
 	}
 	if content == "" {
-		return errors.New("ingest requires --text, --file, or positional content")
+		return errors.New("ingest requires a path, --text, --file, or positional content")
+	}
+	if sourceURL == "" {
+		sourceURL = "cli://" + slug(title) + "-" + timestamp()
 	}
 	body := map[string]any{
 		"source_type": flag(args, "source-type", "markdown"),
-		"source_url":  flag(args, "source-url", "cli://"+slug(flag(args, "title", "note"))+"-"+timestamp()),
-		"title":       flag(args, "title", "CLI Note"),
+		"source_url":  sourceURL,
+		"title":       title,
 		"scope":       scope,
 		"content":     content,
 		"authority":   flag(args, "authority", "official-doc"),
@@ -501,12 +527,12 @@ func ingestCommand(ctx context.Context, args cliArgs) error {
 }
 
 func localPathIngest(ctx context.Context, args cliArgs) error {
-	scope := required(args, "scope")
 	root := flag(args, "path", ".")
 	abs, err := filepath.Abs(root)
 	if err != nil {
 		return err
 	}
+	scope := scopeOrDefault(args, abs)
 	sourceID := flag(args, "source-id", "")
 	if sourceID == "" {
 		sourceID = flag(args, "name", "")
@@ -611,7 +637,7 @@ func watch(ctx context.Context, args cliArgs) error {
 }
 
 func sourceIngest(ctx context.Context, args cliArgs) error {
-	scope := required(args, "scope")
+	scope := scopeOrDefault(args, ".")
 	sourceType := "local_repo"
 	sourceURL := ""
 	config := map[string]any{}
@@ -729,10 +755,7 @@ func listSources(ctx context.Context, args cliArgs) error {
 }
 
 func listJobs(ctx context.Context, args cliArgs) error {
-	scope := flag(args, "scope", os.Getenv("ABRA_SCOPE"))
-	if scope == "" {
-		return errors.New("jobs requires --scope or ABRA_SCOPE")
-	}
+	scope := scopeOrDefault(args, ".")
 	path := "/ingestion/jobs?scope=" + urlQueryEscape(scope) + "&limit=" + strconv.Itoa(intFlag(args, "limit", 20))
 	if sourceID := flag(args, "source-config-id", ""); sourceID != "" {
 		path += "&source_config_id=" + urlQueryEscape(sourceID)
@@ -999,12 +1022,58 @@ func flag(args cliArgs, name, fallback string) string {
 func required(args cliArgs, name string) string {
 	value := flag(args, name, "")
 	if value == "" && name == "scope" {
-		value = os.Getenv("ABRA_SCOPE")
+		value = scopeOrDefault(args, ".")
 	}
 	if value == "" {
 		panic(fmt.Sprintf("missing --%s", name))
 	}
 	return value
+}
+
+func scopeOrDefault(args cliArgs, pathHint string) string {
+	if value := flag(args, "scope", ""); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(os.Getenv("ABRA_SCOPE")); value != "" {
+		return value
+	}
+	return defaultScope(pathHint)
+}
+
+func defaultScope(pathHint string) string {
+	root := "."
+	if strings.TrimSpace(pathHint) != "" {
+		root = pathHint
+	}
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		abs = root
+	}
+	if info, err := os.Stat(abs); err == nil && !info.IsDir() {
+		abs = filepath.Dir(abs)
+	}
+	if gitRoot := findGitRoot(abs); gitRoot != "" {
+		abs = gitRoot
+	}
+	name := slug(filepath.Base(abs))
+	if name == "" {
+		name = "local"
+	}
+	return "repo:" + name
+}
+
+func findGitRoot(start string) string {
+	dir := start
+	for {
+		if info, err := os.Stat(filepath.Join(dir, ".git")); err == nil && (info.IsDir() || info.Mode().IsRegular()) {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
 }
 
 func boolFlag(args cliArgs, name string) bool {
@@ -1168,27 +1237,27 @@ func usage() string {
 
 Usage:
   abra version
-  abra install
-  abra upgrade [--version v0.1.0]
+  abra up
+  abra upgrade [--version v0.1.1]
   abra uninstall --yes
   abra demo
   abra quickstart
   abra init [--production]
-  abra up [--env-file .tmp/quickstart.env]
   abra down [--reset]
   abra status
   abra doctor
   abra seed [--scope repo:demo]
+  abra ingest . [--code]
+  abra ingest ./notes.md
   abra ingest --scope repo:demo --text "Agents should use Abra" [--title Intro]
-  abra ingest --scope repo:demo --path . --include "**/*.md" [--code]
-  abra ingest --scope repo:demo --git https://github.com/owner/repo.git [--ref main]
+  abra ingest --git https://github.com/owner/repo.git [--ref main] [--scope repo:demo]
   abra watch local --scope repo:demo --path . [--wait]
   abra watch git --scope repo:demo --git https://github.com/owner/repo.git [--wait]
   abra sources [--scope repo:demo]
-  abra jobs --scope repo:demo
-  abra think "What should agents use?" --scope repo:demo
-  abra recall "agent memory" --scope repo:demo
-  abra compose "ship a change" --scope repo:demo
+  abra jobs [--scope repo:demo]
+  abra think "What should agents use?"
+  abra recall "agent memory"
+  abra compose "ship a change"
   abra mcp
 
 Common flags:
@@ -1205,13 +1274,13 @@ func commandUsage(command string) string {
 	switch command {
 	case "ingest":
 		return `Usage:
-  abra ingest --scope repo:demo --text "source-backed content" [--title Intro]
-  abra ingest --scope repo:demo --file ./notes.md [--source-url file://notes.md]
-  abra ingest --scope repo:demo --path . --include "**/*.md" [--code]
-  abra ingest --scope repo:demo --git https://github.com/owner/repo.git [--ref main] [--wait]
+  abra ingest . [--code]
+  abra ingest ./notes.md
+  abra ingest --text "source-backed content" [--title Intro]
+  abra ingest --git https://github.com/owner/repo.git [--ref main] [--wait]
 
 Manual document flags:
-  --scope          memory scope, e.g. repo:demo
+  --scope          memory scope, default repo:<current-git-root-or-folder>
   --text           document text
   --file           read document text from file
   --title          document title
@@ -1270,11 +1339,13 @@ Builds a task-specific working-memory packet for AI coding agents.
 `
 	case "install", "up", "quickstart", "demo":
 		return `Usage:
-  abra install
+  abra up
   abra demo
-  abra up [--env-file .tmp/quickstart.env]
+  abra install
 
-Starts the local Docker Compose stack: Postgres, migrations, API, and worker.
+abra up starts the local Docker Compose stack: Postgres, migrations, API, and worker.
+abra install is kept as a compatibility alias for abra up; the curl installer
+is what installs the CLI binary.
 `
 	default:
 		return usage()

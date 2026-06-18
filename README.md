@@ -44,13 +44,13 @@ curl -fsSL https://raw.githubusercontent.com/hermawan22/abra/main/scripts/instal
 
 The remote URL only works after the `hermawan22/abra` repository and its `main` branch exist publicly. The installer downloads a platform release binary when available and verifies it against `SHA256SUMS` before installing. If no release asset exists yet, it falls back to `go install`.
 
-Then bootstrap Abra:
+Then start the local Abra service:
 
 ```sh
-abra install
+abra up
 ```
 
-`abra install` creates `.tmp/quickstart.env` if needed, starts Postgres, runs migrations, starts the API and worker, then prints the MCP URL and token.
+`abra up` creates `.tmp/quickstart.env` if needed, starts Postgres, runs migrations, starts the API and worker, then prints the MCP URL and token. `abra install` is only a compatibility alias for `abra up`; the curl script is what installs the CLI binary.
 
 Try the governed brain:
 
@@ -66,7 +66,7 @@ abra think "What should agents use before autonomous code changes?" --scope repo
 Ingest local docs or repo files immediately from the CLI:
 
 ```sh
-abra ingest --scope repo:my-app --path . --include "**/*.md" --code
+abra ingest . --code
 ```
 
 Queue a remote Git repo through the worker:
@@ -105,14 +105,14 @@ abra uninstall --yes
 From source, run the Go CLI directly:
 
 ```sh
-go run ./cmd/abra install
+go run ./cmd/abra up
 ```
 
 For repeated use, build one local binary:
 
 ```sh
 go build -o .tmp/abra ./cmd/abra
-.tmp/abra install
+.tmp/abra up
 ```
 
 The `demo` command is still available when you want seed data and an immediate `brain/think` probe:
@@ -145,7 +145,7 @@ go run ./cmd/abra ingest --scope repo:demo \
 Ingest local repo docs and code intelligence immediately from the CLI:
 
 ```sh
-go run ./cmd/abra ingest --scope repo:demo --path . --include "**/*.md" --code
+go run ./cmd/abra ingest . --code
 ```
 
 Think with governed memory:

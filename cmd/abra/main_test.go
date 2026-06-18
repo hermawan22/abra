@@ -68,6 +68,37 @@ func TestLocalPathIngestPostsMatchedFiles(t *testing.T) {
 	}
 }
 
+func TestLocalPathShortcutUsesDefaultScope(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "README.md"), "# Local Brain\n\nAgents should use Abra.")
+
+	var request map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ingest/documents" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"document_id": "doc"})
+	}))
+	defer server.Close()
+
+	err := run(context.Background(), []string{
+		"ingest",
+		root,
+		"--base-url", server.URL,
+		"--token", "test-token",
+	})
+	if err != nil {
+		t.Fatalf("shortcut ingest error = %v", err)
+	}
+	wantScope := "repo:" + slug(filepath.Base(root))
+	if request["scope"] != wantScope {
+		t.Fatalf("scope = %v, want %s", request["scope"], wantScope)
+	}
+}
+
 func mustWrite(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

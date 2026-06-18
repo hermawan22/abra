@@ -4,7 +4,15 @@ All notable changes to Abra are documented here.
 
 This project uses semantic versioning for public releases. Until v1.0.0, minor versions may include breaking changes when they are documented in this file and in the release notes.
 
-## 0.1.0 - Unreleased
+## 0.1.1 - 2026-06-18
+
+### Changed
+
+- Make `abra up` the primary command for starting the local stack; `abra install` remains a compatibility alias.
+- Add `abra ingest . --code` and positional file/directory ingestion shortcuts.
+- Default CLI scope to `repo:<current-git-root-or-folder>` when `--scope` is omitted.
+
+## 0.1.0 - 2026-06-18
 
 ### Added
 

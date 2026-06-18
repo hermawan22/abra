@@ -18,28 +18,27 @@ After the public GitHub repository exists, the remote installer is:
 curl -fsSL https://raw.githubusercontent.com/hermawan22/abra/main/scripts/install.sh | sh
 ```
 
-The remote URL only works after `hermawan22/abra` is published with a `main` branch. Release downloads are verified against `SHA256SUMS` before the binary is installed. Set `ABRA_VERSION=v0.1.0` to install a specific release.
+The remote URL only works after `hermawan22/abra` is published with a `main` branch. Release downloads are verified against `SHA256SUMS` before the binary is installed. Set `ABRA_VERSION=v0.1.1` to install a specific release.
 
-Bootstrap the local stack:
+Start the local stack:
 
 ```sh
-abra install
+abra up
 ```
 
-`abra install` creates `.tmp/quickstart.env`, starts Postgres, runs migrations, and starts the API and worker.
+`abra up` creates `.tmp/quickstart.env`, starts Postgres, runs migrations, and starts the API and worker. `abra install` is kept as a compatibility alias for `abra up`; the curl script installs the CLI binary.
 
 Use these defaults for the remaining commands:
 
 ```sh
 export ABRA_BASE_URL=http://localhost:18080
 export ABRA_API_TOKEN=dev-token
-export ABRA_SCOPE=repo:demo
 ```
 
 Ingest a demo document:
 
 ```sh
-abra ingest --scope "$ABRA_SCOPE" \
+abra ingest --scope repo:demo \
   --title Intro \
   --source-url file://intro.md \
   --text "Agents should use Abra before autonomous code changes."
@@ -48,19 +47,19 @@ abra ingest --scope "$ABRA_SCOPE" \
 Ingest local docs or repo files immediately from the CLI:
 
 ```sh
-abra ingest --scope "$ABRA_SCOPE" --path . --include "**/*.md" --code
+abra ingest . --code
 ```
 
 Queue a remote Git repo through the worker:
 
 ```sh
-abra ingest --scope "$ABRA_SCOPE" --git https://github.com/owner/repo.git --ref main --code --wait
+abra ingest --git https://github.com/owner/repo.git --ref main --code --wait
 ```
 
 Ask Abra to think with governed memory:
 
 ```sh
-abra think --scope "$ABRA_SCOPE" "What should agents use before autonomous code changes?"
+abra think "What should agents use before autonomous code changes?"
 ```
 
 Check runtime status:
@@ -92,7 +91,7 @@ Upgrade or remove the CLI binary:
 
 ```sh
 abra upgrade
-abra upgrade --version v0.1.0
+abra upgrade --version v0.1.1
 abra uninstall --yes
 ```
 
@@ -101,14 +100,14 @@ abra uninstall --yes
 From source, run the Go CLI directly:
 
 ```sh
-go run ./cmd/abra install
+go run ./cmd/abra up
 ```
 
 For repeated local use, build a binary:
 
 ```sh
 go build -o .tmp/abra ./cmd/abra
-.tmp/abra install
+.tmp/abra up
 ```
 
 The generated config uses:
@@ -138,15 +137,15 @@ From a source checkout, run the CLI as `go run ./cmd/abra <command>`. In a relea
 | --- | --- |
 | install CLI from checkout | `./scripts/install.sh` |
 | install CLI from published release | `curl -fsSL https://raw.githubusercontent.com/hermawan22/abra/main/scripts/install.sh \| sh` |
-| bootstrap stack | `abra install` |
+| start local stack | `abra up` |
 | init env only | `abra init` |
-| up | `abra up` |
-| ingest one document | `abra ingest --scope "$ABRA_SCOPE" --text "source-backed content"` |
-| ingest local repo | `abra ingest --scope "$ABRA_SCOPE" --path . --include "**/*.md" --code` |
-| ingest remote git | `abra ingest --scope "$ABRA_SCOPE" --git https://github.com/owner/repo.git --ref main --code --wait` |
-| list sources | `abra sources --scope "$ABRA_SCOPE"` |
-| list jobs | `abra jobs --scope "$ABRA_SCOPE"` |
-| think | `abra think --scope "$ABRA_SCOPE" "question"` |
+| compatibility stack alias | `abra install` |
+| ingest one document | `abra ingest --text "source-backed content"` |
+| ingest local repo | `abra ingest . --code` |
+| ingest remote git | `abra ingest --git https://github.com/owner/repo.git --ref main --code --wait` |
+| list sources | `abra sources` |
+| list jobs | `abra jobs` |
+| think | `abra think "question"` |
 | status | `abra status` |
 | doctor | `abra doctor` |
 | version | `abra version` |
@@ -172,8 +171,8 @@ curl -sS -H "$auth_header" \
   "$ABRA_BASE_URL/ingest/documents"
 ```
 
-For worker-based source refreshes, use `abra watch local --scope "$ABRA_SCOPE" --path . --wait`
-or `abra watch git --scope "$ABRA_SCOPE" --git https://github.com/owner/repo.git --wait`.
+For worker-based source refreshes, use `abra watch local --path . --wait`
+or `abra watch git --git https://github.com/owner/repo.git --wait`.
 For event-based ingestion, send normalized documents to `POST /ingest/webhooks`
 from your connector or automation. The core OSS worker schedules `local_repo`,
 `git_repo`, and markdown source configs. Other source systems should use a thin
