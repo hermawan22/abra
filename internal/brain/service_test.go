@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/hermawan22/abra/internal/ai"
 	"github.com/hermawan22/abra/internal/config"
@@ -104,6 +105,52 @@ func TestExtractClaimsIgnoresFencedCodeAndReturnsDeterministicClaims(t *testing.
 		if claims[i] != want[i] {
 			t.Fatalf("claims = %#v, want deterministic %#v", claims, want)
 		}
+	}
+}
+
+func TestChunkTextHardSplitsOversizedParagraph(t *testing.T) {
+	chunks := chunkText(strings.Repeat("a", 10000), 1200)
+	if len(chunks) < 8 {
+		t.Fatalf("chunks = %d, want hard split", len(chunks))
+	}
+	for _, chunk := range chunks {
+		if len(chunk) > 1200 {
+			t.Fatalf("chunk len = %d, want <= 1200", len(chunk))
+		}
+	}
+}
+
+func TestChunkTextSplitsMinifiedJSON(t *testing.T) {
+	content := `{"items":[` + strings.Repeat(`{"name":"alpha","value":"`+strings.Repeat("x", 80)+`"},`, 120) + `{}]}`
+	chunks := chunkText(content, 1200)
+	if len(chunks) < 2 {
+		t.Fatalf("chunks = %d, want split minified json", len(chunks))
+	}
+	for _, chunk := range chunks {
+		if len(chunk) > 1200 {
+			t.Fatalf("chunk len = %d, want <= 1200", len(chunk))
+		}
+	}
+}
+
+func TestChunkTextHardSplitsNonASCIIOnUTF8Boundaries(t *testing.T) {
+	chunks := chunkText(strings.Repeat("東京", 900), 1200)
+	if len(chunks) < 2 {
+		t.Fatalf("chunks = %d, want hard split", len(chunks))
+	}
+	for _, chunk := range chunks {
+		if len(chunk) > 1200 {
+			t.Fatalf("chunk len = %d, want <= 1200", len(chunk))
+		}
+		if !utf8.ValidString(chunk) {
+			t.Fatalf("chunk is not valid utf8: %q", chunk)
+		}
+	}
+}
+
+func TestTokenEstimateCountsDenseText(t *testing.T) {
+	if got := tokenEstimate(strings.Repeat("x", 1200)); got < 250 {
+		t.Fatalf("token estimate = %d, want dense text estimate", got)
 	}
 }
 

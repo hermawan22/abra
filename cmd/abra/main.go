@@ -28,6 +28,7 @@ const (
 	defaultToken         = "dev-token"
 	defaultHTTPTimeout   = 30 * time.Second
 	defaultIngestTimeout = 10 * time.Minute
+	maxCLIResponseBody   = 8 << 20
 	installScript        = "https://raw.githubusercontent.com/hermawan22/abra/main/scripts/install.sh"
 )
 
@@ -118,7 +119,7 @@ func run(ctx context.Context, argv []string) error {
 	case "compose":
 		return composeMemory(ctx, args)
 	case "mcp", "mcp-config":
-		return mcp(args)
+		return mcp(ctx, args)
 	default:
 		return fmt.Errorf("unknown command %q\n\n%s", args.Command, usage())
 	}
@@ -601,7 +602,7 @@ func down(args cliArgs) error {
 }
 
 func status(ctx context.Context, args cliArgs) error {
-	result, code, err := getJSON(ctx, args, "/readyz")
+	result, code, err := getJSON(ctx, args, readyzPath(args))
 	if err != nil || code < 200 || code >= 300 {
 		fmt.Printf("Abra: not ready (%d)\n", code)
 		fmt.Println("Run: abra up")
@@ -666,18 +667,11 @@ func envFileCheck(path string) map[string]any {
 }
 
 func mcpCheck(ctx context.Context, args cliArgs) map[string]any {
-	result, err := postJSON(ctx, args, "/mcp", map[string]any{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"method":  "tools/list",
-		"params":  map[string]any{},
-	})
+	toolCount, err := validateMCPTools(ctx, args)
 	if err != nil {
 		return map[string]any{"name": "mcp", "ok": false, "error": err.Error()}
 	}
-	rawResult, _ := result["result"].(map[string]any)
-	tools, _ := rawResult["tools"].([]any)
-	return map[string]any{"name": "mcp", "ok": len(tools) > 0, "tools": len(tools)}
+	return map[string]any{"name": "mcp", "ok": true, "tools": toolCount}
 }
 
 func browserUICheck(ctx context.Context, args cliArgs) map[string]any {
@@ -1186,13 +1180,13 @@ func composeMemory(ctx context.Context, args cliArgs) error {
 	}
 	if len(stats) > 0 && intValue(stats["facts"])+intValue(stats["supporting_documents"])+intValue(stats["summaries"]) == 0 {
 		fmt.Println("No source-backed context found for this scope.")
-		fmt.Println("Run: abra scope")
-		fmt.Println("Run: abra ingest . --code --scope " + scope)
+		fmt.Println("Confirm the project scope: abra scope")
+		fmt.Println("Then ingest the project with that exact scope: abra ingest . --code --scope " + scope)
 	}
 	return nil
 }
 
-func mcp(args cliArgs) error {
+func mcp(ctx context.Context, args cliArgs) error {
 	action := ""
 	if len(args.Rest) > 0 {
 		action = strings.ToLower(strings.TrimSpace(args.Rest[0]))
@@ -1200,7 +1194,7 @@ func mcp(args cliArgs) error {
 	}
 	switch action {
 	case "install-codex", "codex":
-		return installCodexMCP(args)
+		return installCodexMCP(ctx, args)
 	case "":
 	default:
 		return fmt.Errorf("unknown mcp command %q\n\n%s", action, commandUsage("mcp"))
@@ -1232,7 +1226,7 @@ func scopeCommand(args cliArgs) error {
 			"examples": map[string]string{
 				"ingest":  "abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope),
 				"think":   "abra think \"what should I know before changing this project?\" --scope " + scope,
-				"codex":   "Use Abra MCP first. Scope: " + scope + ". Call working_memory_compose before answering or changing code.",
+				"codex":   "Use Abra MCP first. Scope: " + scope + ". Call working_memory_compose before answering or changing code. If the scope is missing in MCP, run discover_scopes and then ingest this project with the exact scope.",
 				"compose": "abra compose \"ship this change\" --scope " + scope + " --agent codex",
 			},
 		})
@@ -1242,10 +1236,11 @@ func scopeCommand(args cliArgs) error {
 	fmt.Println("Ingest: abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope))
 	fmt.Println("Think:  abra think \"what should I know before changing this project?\" --scope " + scope)
 	fmt.Println("Codex:  Use Abra MCP first. Scope: " + scope + ". Call working_memory_compose before answering or changing code.")
+	fmt.Println("MCP:    If discover_scopes does not show this project, ingest it with the command above and retry with the exact scope.")
 	return nil
 }
 
-func installCodexMCP(args cliArgs) error {
+func installCodexMCP(ctx context.Context, args cliArgs) error {
 	codex, err := codexCommandPath()
 	if err != nil {
 		return err
@@ -1266,9 +1261,14 @@ func installCodexMCP(args cliArgs) error {
 	if err := runQuiet(codex, "mcp", "add", "abra", "--url", strings.TrimRight(cfg(args).BaseURL, "/")+"/mcp", "--bearer-token-env-var", tokenEnv); err != nil {
 		return fmt.Errorf("codex mcp add failed: %w", err)
 	}
+	toolCount, err := validateMCPTools(ctx, args)
+	if err != nil {
+		return fmt.Errorf("codex mcp config was written, but Abra MCP endpoint validation failed: %w\nRun `abra up` and retry `abra mcp install-codex`", err)
+	}
 	fmt.Println("Installed Abra MCP for Codex:")
 	fmt.Println("  url:       " + strings.TrimRight(cfg(args).BaseURL, "/") + "/mcp")
 	fmt.Println("  token env: " + tokenEnv)
+	fmt.Printf("  endpoint:  validated (%d tools)\n", toolCount)
 	if launchctlWarning != "" {
 		fmt.Println("Warning: could not set macOS launch environment: " + launchctlWarning)
 		fmt.Println("Set this before starting Codex: export " + tokenEnv + "=" + shellQuote(token))
@@ -1280,6 +1280,39 @@ func installCodexMCP(args cliArgs) error {
 	fmt.Println("Opening a new thread is enough only when the env var was already available to the Codex process.")
 	fmt.Println("Scope hint: run `abra scope` in each project and pass that scope to working_memory_compose.")
 	return nil
+}
+
+func validateMCPTools(ctx context.Context, args cliArgs) (int, error) {
+	result, err := postJSON(ctx, args, "/mcp", map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/list",
+		"params":  map[string]any{},
+	})
+	if err != nil {
+		return 0, err
+	}
+	names := mcpToolNames(result)
+	for _, required := range []string{"discover_scopes", "working_memory_compose"} {
+		if !names[required] {
+			return len(names), fmt.Errorf("missing required MCP tool %q", required)
+		}
+	}
+	return len(names), nil
+}
+
+func mcpToolNames(result map[string]any) map[string]bool {
+	rawResult, _ := result["result"].(map[string]any)
+	rawTools, _ := rawResult["tools"].([]any)
+	names := map[string]bool{}
+	for _, rawTool := range rawTools {
+		tool, _ := rawTool.(map[string]any)
+		name := strings.TrimSpace(stringValue(tool["name"], ""))
+		if name != "" {
+			names[name] = true
+		}
+	}
+	return names
 }
 
 func codexCommandPath() (string, error) {
@@ -1362,7 +1395,14 @@ func doJSON(req *http.Request, timeout time.Duration) (map[string]any, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
+	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, maxCLIResponseBody+1))
+	if readErr != nil {
+		return nil, readErr
+	}
+	if len(raw) > maxCLIResponseBody {
+		raw = raw[:maxCLIResponseBody]
+		return nil, fmt.Errorf("response body exceeded %d bytes", maxCLIResponseBody)
+	}
 	var out map[string]any
 	if len(strings.TrimSpace(string(raw))) > 0 {
 		_ = json.Unmarshal(raw, &out)
@@ -1378,13 +1418,21 @@ func doJSON(req *http.Request, timeout time.Duration) (map[string]any, error) {
 
 func waitReady(ctx context.Context, args cliArgs) error {
 	for i := 0; i < 60; i++ {
-		_, code, err := getJSON(ctx, args, "/readyz")
+		_, code, err := getJSON(ctx, args, readyzPath(args))
 		if err == nil && code >= 200 && code < 300 {
 			return nil
 		}
 		time.Sleep(time.Second)
 	}
 	return errors.New("Abra did not become ready")
+}
+
+func readyzPath(args cliArgs) string {
+	values, err := readEnvValues(envPath(args))
+	if err == nil && strings.TrimSpace(values["EMBEDDING_PROVIDER"]) == "local" {
+		return "/readyz?deep=1"
+	}
+	return "/readyz"
 }
 
 func printThink(result map[string]any) {
@@ -2084,9 +2132,10 @@ the usual cause is a scope mismatch between ingest and working_memory_compose.
 
 ` + "`abra mcp`" + ` prints generic remote HTTP MCP client JSON.
 ` + "`abra mcp install-codex`" + ` installs Abra into Codex as a streamable HTTP MCP
-server using the Codex CLI, stores the bearer-token env var name, and sets the
-token for the current macOS launch environment when available. Fully quit and
-reopen Codex Desktop after installing or changing the token env.
+server using the Codex CLI, stores the bearer-token env var name, validates the
+Abra MCP endpoint, and sets the token for the current macOS launch environment
+when available. Fully quit and reopen Codex Desktop after installing or changing
+the token env.
 `
 	case "setup":
 		return `Usage:
@@ -2166,12 +2215,15 @@ ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=false
 REDACT_PII=true
 RATE_LIMIT_MAX=1000
 RATE_LIMIT_WINDOW=1 minute
+ABRA_API_READ_TIMEOUT=10m
+ABRA_MAX_REQUEST_BODY_BYTES=26214400
 WORKER_INTERVAL=1s
 ABRA_DEPLOYMENT_ENVIRONMENT=development
 `
 
 const productionEnvExample = `NODE_ENV=production
 ABRA_API_KEYS=replace-with-generated-token
+ABRA_WEBHOOK_SECRETS=replace-with-webhook-signing-secret
 ABRA_APPROVAL_MODE=enforce
 EMBEDDING_PROVIDER=compatible
 EMBEDDING_BASE_URL=https://embedding-provider.example/v1
@@ -2187,5 +2239,7 @@ ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=false
 REDACT_PII=true
 RATE_LIMIT_MAX=120
 RATE_LIMIT_WINDOW=1 minute
+ABRA_API_READ_TIMEOUT=2m
+ABRA_MAX_REQUEST_BODY_BYTES=26214400
 ABRA_PORT=18080
 `

@@ -61,6 +61,29 @@ func TestDiscoverScopesMCPToolIsDiscoverable(t *testing.T) {
 	}
 }
 
+func TestScopeDiscoveryLimitsScanBeyondVisibleLimitForScopedTokens(t *testing.T) {
+	limit, candidateLimit := scopeDiscoveryLimits(2, &apiPrincipal{
+		roles:  map[string]struct{}{"reader": {}},
+		scopes: []string{"repo:target"},
+	})
+	if limit != 2 {
+		t.Fatalf("limit = %d, want 2", limit)
+	}
+	if candidateLimit <= limit {
+		t.Fatalf("candidateLimit = %d, want beyond visible limit %d", candidateLimit, limit)
+	}
+}
+
+func TestScopeDiscoveryLimitsClampClientLimit(t *testing.T) {
+	limit, candidateLimit := scopeDiscoveryLimits(1000, anonymousAdmin())
+	if limit != maxScopeDiscoveryLimit {
+		t.Fatalf("limit = %d, want %d", limit, maxScopeDiscoveryLimit)
+	}
+	if candidateLimit != maxScopeDiscoveryLimit {
+		t.Fatalf("candidateLimit = %d, want %d", candidateLimit, maxScopeDiscoveryLimit)
+	}
+}
+
 func TestPolicyPlanMCPRequiresScope(t *testing.T) {
 	schema := mcpToolSchema(t, "policy_plan")
 	required := requiredSet(t, schema)

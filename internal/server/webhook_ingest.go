@@ -45,7 +45,8 @@ type webhookDocumentInput struct {
 }
 
 func (h *handler) ingestWebhook(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 5<<20))
+	r.Body = http.MaxBytesReader(w, r.Body, h.cfg.MaxRequestBodyBytes)
+	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "read_body_failed"})
 		return

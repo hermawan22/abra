@@ -8,6 +8,9 @@ Security fixes are applied to the latest `0.1.x` release and the current `main` 
 
 - API key authentication for every non-health endpoint.
 - Production startup fails without `ABRA_API_KEYS`.
+- Production startup fails without signed webhook secrets unless `ABRA_ALLOW_UNSIGNED_WEBHOOKS_IN_PRODUCTION=true` is explicitly set for deployments that do not accept webhook ingestion or verify it upstream.
+- Production startup fails when local neural embeddings are selected without `ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=true`.
+- Invalid numeric, boolean, duration, and tracing sample config values fail startup instead of falling back silently.
 - Local mode uses self-hosted Qwen-compatible embedding and reranker endpoints by default; custom providers replace those endpoints through env/CLI config.
 - PII redaction is enabled by default.
 - Claims retain source, scope, status, confidence, and freshness metadata.

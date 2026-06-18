@@ -56,7 +56,7 @@ func main() {
 		Addr:              net.JoinHostPort(cfg.BindAddress, cfg.Port),
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       30 * time.Second,
+		ReadTimeout:       cfg.APIReadTimeout,
 		WriteTimeout:      10 * time.Minute,
 		IdleTimeout:       120 * time.Second,
 	}

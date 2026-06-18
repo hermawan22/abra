@@ -49,7 +49,7 @@ func mcpResourceTemplates() []map[string]any {
 			"annotations": map[string]any{"audience": []string{"assistant"}, "priority": 0.8},
 		},
 		{
-			"uriTemplate": "abra://working-memory/{scope}/{task}",
+			"uriTemplate": "abra://working-memory?scope={scope}&task={task}",
 			"name":        "working-memory",
 			"title":       "Scoped Working Memory",
 			"description": "Compose a bounded working-memory packet for a task. Requires read access to the requested scope.",
@@ -65,7 +65,7 @@ func (h *handler) mcpReadResource(r *http.Request, uri string) (map[string]any, 
 		return mcpTextResource(uri, "text/markdown", strings.TrimSpace(`
 # Abra Agent Workflow
 
-1. If the task scope is missing or uncertain, call `+"`discover_scopes`"+` first and use an exact returned scope.
+1. If the task scope is missing or uncertain, call `+"`discover_scopes`"+` first and use an exact returned scope. If the expected project is not listed, ask the operator to run `+"`abra scope`"+` in that project and ingest with the printed scope.
 2. Use `+"`policy_plan`"+` before task, before code, or after task to get scoped recall queries.
 3. Use `+"`working_memory_compose`"+` before implementation to get source-backed facts, summaries, graph context, risks, validation steps, memory health, and the agent decision gate.
 4. Obey `+"`agent_decision`"+`. If it returns `+"`blocked`"+` or `+"`needs_review`"+`, use the allowed next actions instead of bypassing the gate.
@@ -86,7 +86,7 @@ func (h *handler) mcpReadResource(r *http.Request, uri string) (map[string]any, 
 			return nil, err
 		}
 		return mcpJSONResource(uri, health)
-	case strings.HasPrefix(uri, "abra://working-memory/"):
+	case strings.HasPrefix(uri, "abra://working-memory?") || strings.HasPrefix(uri, "abra://working-memory/"):
 		scope, task, err := decodeWorkingMemoryURI(uri)
 		if err != nil {
 			return nil, err
@@ -112,7 +112,7 @@ func mcpPrompts() []map[string]any {
 			"description": "Guide an agent to fetch policy-planned, source-backed working memory before changing code.",
 			"arguments": []map[string]any{
 				{"name": "task", "description": "The implementation or investigation task.", "required": true},
-				{"name": "scope", "description": "The Abra memory scope to use.", "required": true},
+				{"name": "scope", "description": "Optional exact Abra memory scope. If missing, discover it first.", "required": false},
 				{"name": "agent", "description": "Optional agent/profile key.", "required": false},
 			},
 		},
@@ -133,8 +133,12 @@ func mcpPrompt(name string, args map[string]any) (map[string]any, error) {
 		task := strings.TrimSpace(stringArg(args, "task"))
 		scope := strings.TrimSpace(stringArg(args, "scope"))
 		agent := strings.TrimSpace(stringArg(args, "agent"))
-		if task == "" || scope == "" {
-			return nil, fmt.Errorf("task and scope are required")
+		if task == "" {
+			return nil, fmt.Errorf("task is required")
+		}
+		if scope == "" {
+			text := "Before changing code, call `discover_scopes`, choose the exact matching project scope, then call `policy_plan` with hook `before_code` and task " + quoteText(task) + ". Then call `working_memory_compose` with the same task and chosen scope. Use the returned `agent_decision`, `verification`, `memory_health`, `conflicts`, `impact_map`, and `validation_plan` as the implementation gate."
+			return mcpPromptResult("Discover scope and fetch working memory before code changes.", text), nil
 		}
 		text := "Before changing code, call `policy_plan` with hook `before_code`, task " + quoteText(task) + ", and scope " + quoteText(scope) + ". Then call `working_memory_compose` with the same task and scope"
 		if agent != "" {
@@ -234,6 +238,18 @@ func decodeResourceTail(uri, prefix string) (string, error) {
 }
 
 func decodeWorkingMemoryURI(uri string) (string, string, error) {
+	if strings.HasPrefix(uri, "abra://working-memory?") {
+		parsed, err := url.Parse(uri)
+		if err != nil {
+			return "", "", fmt.Errorf("invalid working-memory resource uri: %w", err)
+		}
+		scope := strings.TrimSpace(parsed.Query().Get("scope"))
+		task := strings.TrimSpace(parsed.Query().Get("task"))
+		if scope == "" || task == "" {
+			return "", "", fmt.Errorf("scope and task are required")
+		}
+		return scope, task, nil
+	}
 	tail := strings.TrimSpace(strings.TrimPrefix(uri, "abra://working-memory/"))
 	parts := strings.SplitN(tail, "/", 2)
 	if len(parts) != 2 {

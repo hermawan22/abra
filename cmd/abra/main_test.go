@@ -98,6 +98,47 @@ func TestCfgReadsRuntimeEnvFile(t *testing.T) {
 	}
 }
 
+func TestValidateMCPToolsRequiresAgentIntegrationTools(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/mcp" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result": map[string]any{"tools": []map[string]any{
+				{"name": "discover_scopes"},
+				{"name": "working_memory_compose"},
+			}},
+		})
+	}))
+	defer server.Close()
+
+	count, err := validateMCPTools(context.Background(), parseArgs([]string{"mcp", "--base-url", server.URL, "--token", "test-token"}))
+	if err != nil {
+		t.Fatalf("validateMCPTools error = %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("tool count = %d, want 2", count)
+	}
+}
+
+func TestValidateMCPToolsFailsWhenRequiredToolMissing(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result":  map[string]any{"tools": []map[string]any{{"name": "recall"}}},
+		})
+	}))
+	defer server.Close()
+
+	_, err := validateMCPTools(context.Background(), parseArgs([]string{"mcp", "--base-url", server.URL, "--token", "test-token"}))
+	if err == nil || !strings.Contains(err.Error(), "discover_scopes") {
+		t.Fatalf("validateMCPTools error = %v", err)
+	}
+}
+
 func TestSetupYesNoStartDefaultsLocalQwen(t *testing.T) {
 	root := t.TempDir()
 	home := t.TempDir()
@@ -407,6 +448,21 @@ func TestCLITimeoutParsesDurationAndSeconds(t *testing.T) {
 	}
 	if got := cliTimeout(cliArgs{Flags: map[string]string{"timeout": "45"}, Bools: map[string]bool{}}, time.Second); got != 45*time.Second {
 		t.Fatalf("seconds timeout = %s", got)
+	}
+}
+
+func TestDoJSONRejectsOversizedResponseBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(bytes.Repeat([]byte("x"), maxCLIResponseBody+1))
+	}))
+	defer server.Close()
+
+	req, err := http.NewRequest(http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := doJSON(req, time.Second); err == nil || !strings.Contains(err.Error(), "response body exceeded") {
+		t.Fatalf("error = %v, want response body exceeded", err)
 	}
 }
 

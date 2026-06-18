@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/hermawan22/abra/internal/ai"
 	"github.com/hermawan22/abra/internal/config"
@@ -151,6 +152,23 @@ func newRerankerProvider(cfg config.Config) (ai.RerankerProvider, error) {
 	default:
 		return nil, fmt.Errorf("unsupported reranker provider %q", cfg.Reranker.Provider)
 	}
+}
+
+func (s *Service) CheckEmbeddingReady(ctx context.Context) error {
+	response, err := s.embeddings.Embed(ctx, ai.EmbeddingRequest{
+		Input:      []string{"abra readiness check"},
+		Dimensions: s.cfg.Embedding.Dimensions,
+	})
+	if err != nil {
+		return err
+	}
+	if len(response.Embeddings) == 0 {
+		return fmt.Errorf("embedding provider returned no embeddings")
+	}
+	if len(response.Embeddings[0].Vector) == 0 {
+		return fmt.Errorf("embedding provider returned an empty vector")
+	}
+	return nil
 }
 
 func (s *Service) Recall(ctx context.Context, query, scope string, limit int, includeUnverified bool) (store.RecallResult, error) {
@@ -1242,10 +1260,13 @@ func normalizeSummaryPath(path string) string {
 
 func tokenEstimate(value string) int {
 	words := len(strings.Fields(value))
+	runes := utf8.RuneCountInString(value)
+	charEstimate := (runes + 3) / 4
 	if words == 0 {
-		return 0
+		return charEstimate
 	}
-	return (words * 4) / 3
+	wordEstimate := (words * 4) / 3
+	return max(1, max(wordEstimate, charEstimate))
 }
 
 func limitStrings(values []string, limit int) []string {
@@ -1261,6 +1282,9 @@ func checksum(content string) string {
 }
 
 func chunkText(content string, maxChars int) []string {
+	if maxChars < 1 {
+		maxChars = 1200
+	}
 	parts := regexp.MustCompile(`\n{2,}`).Split(content, -1)
 	var chunks []string
 	current := ""
@@ -1269,18 +1293,120 @@ func chunkText(content string, maxChars int) []string {
 		if part == "" {
 			continue
 		}
-		next := strings.TrimSpace(current + "\n\n" + part)
-		if len(next) > maxChars && current != "" {
-			chunks = append(chunks, strings.TrimSpace(current))
-			current = part
-			continue
+		for _, piece := range splitOversizedPart(part, maxChars, minInt(120, maxChars/5)) {
+			next := strings.TrimSpace(current + "\n\n" + piece)
+			if len(next) > maxChars && current != "" {
+				chunks = append(chunks, strings.TrimSpace(current))
+				current = piece
+				continue
+			}
+			current = next
 		}
-		current = next
 	}
 	if strings.TrimSpace(current) != "" {
 		chunks = append(chunks, strings.TrimSpace(current))
 	}
 	return chunks
+}
+
+func splitOversizedPart(part string, maxChars, overlap int) []string {
+	part = strings.TrimSpace(part)
+	if part == "" {
+		return nil
+	}
+	if len(part) <= maxChars {
+		return []string{part}
+	}
+	lines := strings.Split(part, "\n")
+	if len(lines) > 1 {
+		pieces := []string{}
+		current := ""
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			if len(line) > maxChars {
+				if current != "" {
+					pieces = append(pieces, current)
+					current = ""
+				}
+				pieces = append(pieces, hardSplitText(line, maxChars, overlap)...)
+				continue
+			}
+			next := strings.TrimSpace(current + "\n" + line)
+			if len(next) > maxChars && current != "" {
+				pieces = append(pieces, current)
+				current = line
+				continue
+			}
+			current = next
+		}
+		if current != "" {
+			pieces = append(pieces, current)
+		}
+		return pieces
+	}
+	return hardSplitText(part, maxChars, overlap)
+}
+
+func hardSplitText(value string, maxChars, overlap int) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	if maxChars < 1 {
+		maxChars = 1200
+	}
+	if overlap < 0 {
+		overlap = 0
+	}
+	if overlap >= maxChars {
+		overlap = maxChars / 5
+	}
+	pieces := []string{}
+	for start := 0; start < len(value); {
+		end := utf8BoundaryAtOrBefore(value, minInt(start+maxChars, len(value)), start)
+		if end <= start {
+			end = minInt(start+maxChars, len(value))
+		}
+		piece := strings.TrimSpace(value[start:end])
+		if piece != "" {
+			pieces = append(pieces, piece)
+		}
+		if end >= len(value) {
+			break
+		}
+		nextStart := end - overlap
+		if nextStart <= start {
+			nextStart = end
+		}
+		start = utf8BoundaryAtOrBefore(value, nextStart, 0)
+		if start < 0 || start >= end {
+			start = end
+		}
+	}
+	return pieces
+}
+
+func utf8BoundaryAtOrBefore(value string, index, minIndex int) int {
+	if index >= len(value) {
+		return len(value)
+	}
+	if index < minIndex {
+		return minIndex
+	}
+	for index > minIndex && !utf8.RuneStart(value[index]) {
+		index--
+	}
+	return index
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func extractClaimsForDocument(input IngestDocumentInput, content string) []string {

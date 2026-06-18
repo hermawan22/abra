@@ -33,9 +33,10 @@ Each release should publish:
 
 - `abra` CLI archives for supported platforms
 - `SHA256SUMS`
+- GitHub Artifact Attestations for the CLI archives and `SHA256SUMS`
 
-Container images, SBOMs, and provenance should only be documented in release
-notes after the workflow publishes them.
+Container images and SBOMs should only be documented in release notes after the
+workflow publishes them.
 
 ## Tagging
 
@@ -44,7 +45,11 @@ git tag -s vX.Y.Z -m "Abra vX.Y.Z"
 git push origin vX.Y.Z
 ```
 
-The release workflow builds CLI archives and uploads checksums.
+The release workflow rejects lightweight tags, unsigned or unverified tag
+signatures, and release tags whose version does not match `package.json`,
+`deploy/helm/Chart.yaml`, chart `appVersion`, and the latest numbered
+`CHANGELOG.md` entry. It then builds CLI archives, verifies `SHA256SUMS`, creates
+GitHub Artifact Attestations, and uploads the release assets.
 
 ## Verification
 
@@ -52,6 +57,12 @@ Download release artifacts and verify checksums:
 
 ```sh
 sha256sum -c SHA256SUMS
+```
+
+Verify artifact provenance with GitHub CLI:
+
+```sh
+gh attestation verify --repo OWNER/REPO abra_linux_amd64.tar.gz
 ```
 
 For container images published by downstream deployment workflows, prefer digests over mutable tags in production deploy manifests.

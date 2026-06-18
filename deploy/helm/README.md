@@ -60,11 +60,15 @@ secrets:
     auditSinkSecret: ABRA_AUDIT_SINK_SECRET
 
 config:
+  bindAddress: "0.0.0.0"
   embeddingProvider: compatible
   embeddingModel: embedding-model
   embeddingDimensions: "1024"
+  apiReadTimeout: 2m
+  maxRequestBodyBytes: "26214400"
   rerankerProvider: ""
   rerankerModel: ""
+  allowUnsignedWebhooksInProduction: "false"
   allowLocalEmbeddingsInProduction: "false"
   approvalMode: enforce
   auditSinkUrl: ""
@@ -98,7 +102,9 @@ migrate:
 - Do not embed secret literals in values files.
 - Run migrations as Helm pre-install/pre-upgrade hooks with a delete policy or unique job names so migrations run once on every release.
 - Keep Abra internal-only by default.
+- Keep `config.bindAddress="0.0.0.0"` for containerized API pods and restrict exposure through the Service, Ingress, gateway, or network policy layers.
 - Keep `config.approvalMode=enforce` before exposing write-capable credentials to autonomous agents.
+- Keep `ABRA_WEBHOOK_SECRETS` present in the existing secret. The chart requires it by default for the migration, API, and worker pods; set `config.allowUnsignedWebhooksInProduction="true"` only when webhook ingestion is disabled or an upstream gateway verifies webhook signatures.
 - `config.embeddingProvider=local` means self-hosted Qwen-compatible neural retrieval. Set `config.embeddingProvider=compatible` plus the embedding secret values to replace it with any custom provider. Set `config.rerankerProvider` only when a reranker endpoint is available.
 - Keep Abra's built-in Postgres-backed rate limit enabled with `config.rateLimitMax` and `config.rateLimitWindow`; it applies across replicated API pods after migrations are applied. Add ingress or gateway rate limits for defense in depth on exposed deployments.
 - Set `config.composeHealthCacheTtl=0s` only when every working-memory compose call must run a fresh scoped health aggregate.

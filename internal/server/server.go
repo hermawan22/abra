@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -94,12 +95,40 @@ func removedBrowserUI(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusNotFound, map[string]string{"error": "browser_ui_not_shipped"})
 }
 
+func minDuration(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 type handler struct {
 	cfg     config.Config
 	db      *store.Store
 	brain   *brain.Service
 	memory  *memory.Composer
 	metrics *metricsCollector
+}
+
+const (
+	defaultScopeDiscoveryLimit    = 50
+	maxScopeDiscoveryLimit        = 100
+	maxScopeDiscoveryCandidateCap = 10000
+)
+
+func scopeDiscoveryLimits(requested int, principal *apiPrincipal) (int, int) {
+	limit := requested
+	if limit < 1 {
+		limit = defaultScopeDiscoveryLimit
+	}
+	if limit > maxScopeDiscoveryLimit {
+		limit = maxScopeDiscoveryLimit
+	}
+	candidateLimit := limit
+	if principal != nil && !principal.allScopes {
+		candidateLimit = maxScopeDiscoveryCandidateCap
+	}
+	return limit, candidateLimit
 }
 
 func (h *handler) index(w http.ResponseWriter, r *http.Request) {
@@ -153,7 +182,7 @@ func (h *handler) ready(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	result := map[string]any{
 		"ok":                   true,
 		"auth_required":        len(h.cfg.APIKeys) > 0,
 		"embedding_provider":   h.cfg.Embedding.Provider,
@@ -161,7 +190,20 @@ func (h *handler) ready(w http.ResponseWriter, r *http.Request) {
 		"approval_enforcement": h.cfg.ApprovalMode == "enforce",
 		"redaction_enabled":    h.cfg.RedactPII,
 		"tracing_enabled":      h.cfg.Tracing.Enabled,
-	})
+	}
+	if r.URL.Query().Get("deep") == "1" || r.URL.Query().Get("deep") == "true" {
+		checkCtx, cancel := context.WithTimeout(r.Context(), minDuration(10*time.Second, h.cfg.Embedding.Timeout))
+		defer cancel()
+		if err := h.brain.CheckEmbeddingReady(checkCtx); err != nil {
+			result["ok"] = false
+			result["embedding_ready"] = false
+			result["embedding_error"] = err.Error()
+			writeJSON(w, http.StatusServiceUnavailable, result)
+			return
+		}
+		result["embedding_ready"] = true
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (h *handler) metricsText(w http.ResponseWriter, r *http.Request) {
@@ -200,6 +242,7 @@ func (h *handler) auditEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) ingestDocument(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, h.cfg.MaxRequestBodyBytes)
 	var input brain.IngestDocumentInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
@@ -972,7 +1015,8 @@ func (h *handler) mcpToolCall(w http.ResponseWriter, r *http.Request, id any, pa
 			err = fmt.Errorf("forbidden: read role required")
 			break
 		}
-		scopes, listErr := h.db.ListScopes(r.Context(), intArg(args, "limit", 50))
+		limit, candidateLimit := scopeDiscoveryLimits(intArg(args, "limit", defaultScopeDiscoveryLimit), principal)
+		scopes, listErr := h.db.ListScopes(r.Context(), candidateLimit)
 		if listErr != nil {
 			err = listErr
 			break
@@ -981,11 +1025,20 @@ func (h *handler) mcpToolCall(w http.ResponseWriter, r *http.Request, id any, pa
 		for _, scope := range scopes {
 			if principal.allows(authActionRead, scope.Scope) {
 				visible = append(visible, scope)
+				if len(visible) >= limit {
+					break
+				}
 			}
 		}
 		result = map[string]any{
-			"scopes": visible,
-			"hint":   "Use one of these exact scope values with brain_think, recall, policy_plan, and working_memory_compose. If the expected project is missing, run `abra scope` and `abra ingest . --code --scope <scope>` from that project.",
+			"scopes":              visible,
+			"returned":            len(visible),
+			"limit":               limit,
+			"candidate_count":     len(scopes),
+			"candidate_limit":     candidateLimit,
+			"candidate_truncated": len(scopes) >= candidateLimit,
+			"filtered_by_token":   !principal.allScopes,
+			"hint":                "Use one exact scope value with brain_think, recall, policy_plan, and working_memory_compose. If the expected project is missing or candidate_truncated is true, run `abra scope` in that project, then `abra ingest . --code --scope <scope>` with the printed scope.",
 		}
 	case "rebuild_summaries":
 		scope := stringArg(args, "scope")

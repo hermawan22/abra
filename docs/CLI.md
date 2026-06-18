@@ -105,6 +105,10 @@ Connect Codex directly:
 abra mcp install-codex
 ```
 
+The installer writes the Codex MCP entry and validates that `/mcp` exposes
+`discover_scopes` and `working_memory_compose`. If validation fails, start Abra
+with `abra up`, check `abra doctor`, and rerun `abra mcp install-codex`.
+
 Fully quit and reopen Codex Desktop after installing or changing the token env.
 Opening a new thread is enough only when the env var was already available to
 the Codex process. In each project, ask Abra for the exact scope before
@@ -115,8 +119,10 @@ abra scope
 ```
 
 Then tell the agent: `Use Abra MCP first. Scope: repo:<project>. If unsure,
-call discover_scopes, then call working_memory_compose before answering or
-changing code.`
+call discover_scopes, choose the exact project scope, then call
+working_memory_compose before answering or changing code. If discover_scopes
+does not show the project, run abra scope and ingest the project with that exact
+scope.`
 
 Stop the local stack:
 
@@ -253,7 +259,11 @@ curl -sS -H "$auth_header" \
   http://localhost:18080/readyz
 ```
 
-The remote MCP endpoint is `http://localhost:18080/mcp`.
+The remote MCP endpoint is `http://localhost:18080/mcp`. `abra doctor` validates
+that the endpoint exposes the MCP tools needed by agents. MCP clients that read
+the working-memory resource should use
+`abra://working-memory?scope={scope}&task={task}`, which preserves scopes that
+contain slashes.
 
 Stop Compose services:
 

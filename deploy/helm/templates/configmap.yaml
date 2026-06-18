@@ -6,13 +6,17 @@ metadata:
     {{- include "abra.labels" . | nindent 4 }}
 data:
   NODE_ENV: {{ .Values.config.nodeEnv | quote }}
+  ABRA_BIND_ADDR: {{ .Values.config.bindAddress | quote }}
   PORT: {{ .Values.config.port | quote }}
+  ABRA_API_READ_TIMEOUT: {{ .Values.config.apiReadTimeout | quote }}
+  ABRA_MAX_REQUEST_BODY_BYTES: {{ .Values.config.maxRequestBodyBytes | quote }}
   EMBEDDING_PROVIDER: {{ .Values.config.embeddingProvider | quote }}
   EMBEDDING_MODEL: {{ .Values.config.embeddingModel | quote }}
   EMBEDDING_DIMENSIONS: {{ .Values.config.embeddingDimensions | quote }}
   EMBEDDING_TIMEOUT: {{ .Values.config.embeddingTimeout | quote }}
   RERANKER_PROVIDER: {{ .Values.config.rerankerProvider | quote }}
   RERANKER_MODEL: {{ .Values.config.rerankerModel | quote }}
+  ABRA_ALLOW_UNSIGNED_WEBHOOKS_IN_PRODUCTION: {{ .Values.config.allowUnsignedWebhooksInProduction | quote }}
   ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION: {{ .Values.config.allowLocalEmbeddingsInProduction | quote }}
   ABRA_APPROVAL_MODE: {{ .Values.config.approvalMode | quote }}
   ABRA_AUDIT_SINK_URL: {{ .Values.config.auditSinkUrl | quote }}

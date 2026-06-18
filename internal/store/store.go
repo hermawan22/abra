@@ -28,6 +28,8 @@ type ScopeSummary struct {
 	Jobs      int    `json:"jobs"`
 }
 
+const maxListScopesLimit = 10000
+
 var fullTextTermPattern = regexp.MustCompile(`[A-Za-z0-9_]+`)
 
 func pgInterval(duration time.Duration) string {
@@ -2942,8 +2944,11 @@ func (s *Store) ListSourceConfigs(ctx context.Context, scope string, limit int) 
 }
 
 func (s *Store) ListScopes(ctx context.Context, limit int) ([]ScopeSummary, error) {
-	if limit < 1 || limit > 100 {
+	if limit < 1 {
 		limit = 50
+	}
+	if limit > maxListScopesLimit {
+		limit = maxListScopesLimit
 	}
 	rows, err := s.pool.Query(ctx, `
 		WITH known_scopes AS (

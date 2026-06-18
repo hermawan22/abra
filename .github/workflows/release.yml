@@ -6,11 +6,94 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  preflight:
+    name: release preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify release tag and version metadata
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tag must match vMAJOR.MINOR.PATCH: $TAG" >&2
+            exit 1
+          fi
+
+          version="${TAG#v}"
+          package_version="$(node -p "require('./package.json').version")"
+          chart_version="$(awk -F': *' '$1 == "version" {gsub(/"/, "", $2); print $2}' deploy/helm/Chart.yaml)"
+          chart_app_version="$(awk -F': *' '$1 == "appVersion" {gsub(/"/, "", $2); print $2}' deploy/helm/Chart.yaml)"
+          changelog_version="$(awk '/^## [0-9]+\.[0-9]+\.[0-9]+ / {print $2; exit}' CHANGELOG.md)"
+
+          if [[ "$package_version" != "$version" ]]; then
+            echo "package.json version $package_version does not match tag $TAG" >&2
+            exit 1
+          fi
+          if [[ "$chart_version" != "$version" ]]; then
+            echo "Helm chart version $chart_version does not match tag $TAG" >&2
+            exit 1
+          fi
+          if [[ "$chart_app_version" != "$version" ]]; then
+            echo "Helm appVersion $chart_app_version does not match tag $TAG" >&2
+            exit 1
+          fi
+          if [[ "$changelog_version" != "$version" ]]; then
+            echo "Latest numbered CHANGELOG.md entry $changelog_version does not match tag $TAG" >&2
+            exit 1
+          fi
+
+          curl -fsSL \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${REPOSITORY}/git/ref/tags/${TAG}" \
+            > /tmp/abra-release-ref.json
+
+          tag_object_url="$(node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const ref = JSON.parse(fs.readFileSync('/tmp/abra-release-ref.json', 'utf8'));
+          if (ref.object?.type !== 'tag') {
+            console.error(`Release tag must be an annotated signed tag; got ${ref.object?.type ?? 'unknown'}.`);
+            process.exit(1);
+          }
+          console.log(ref.object.url);
+          NODE
+          )"
+
+          curl -fsSL \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "$tag_object_url" \
+            > /tmp/abra-release-tag.json
+
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const tag = JSON.parse(fs.readFileSync('/tmp/abra-release-tag.json', 'utf8'));
+          const expectedTag = process.env.TAG;
+          if (tag.tag !== expectedTag) {
+            console.error(`Tag object name ${tag.tag} does not match ${expectedTag}.`);
+            process.exit(1);
+          }
+          if (!tag.verification?.verified) {
+            console.error(`Release tag signature is not verified: ${tag.verification?.reason ?? 'missing verification'}.`);
+            process.exit(1);
+          }
+          console.log(`Verified signed release tag: ${expectedTag}`);
+          NODE
+
   build:
     name: build ${{ matrix.os }} ${{ matrix.arch }}
+    needs: preflight
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -51,6 +134,10 @@ jobs:
   publish:
     name: publish release
     needs: build
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -59,8 +146,24 @@ jobs:
           merge-multiple: true
       - name: Checksums
         run: |
+          set -euo pipefail
+          asset_count="$(find dist -maxdepth 1 -type f -name 'abra_*.tar.gz' | wc -l | tr -d ' ')"
+          if [ "$asset_count" -ne 4 ]; then
+            echo "Expected 4 release archives, found $asset_count" >&2
+            find dist -maxdepth 1 -type f -print >&2
+            exit 1
+          fi
           cd dist
           sha256sum abra_*.tar.gz > SHA256SUMS
+          sha256sum -c SHA256SUMS
+
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/abra_*.tar.gz
+            dist/SHA256SUMS
+
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:

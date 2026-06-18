@@ -36,13 +36,17 @@ migrate:
 
 config:
   nodeEnv: production
+  bindAddress: "0.0.0.0"
   port: "8080"
+  apiReadTimeout: 2m
+  maxRequestBodyBytes: "26214400"
   embeddingProvider: compatible
   embeddingModel: embedding-model
   embeddingDimensions: "1024"
   embeddingTimeout: 30s
   rerankerProvider: ""
   rerankerModel: ""
+  allowUnsignedWebhooksInProduction: "false"
   allowLocalEmbeddingsInProduction: "false"
   approvalMode: enforce
   auditSinkUrl: ""

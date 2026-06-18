@@ -4,6 +4,27 @@ All notable changes to Abra are documented here.
 
 This project uses semantic versioning for public releases. Until v1.0.0, minor versions may include breaking changes when they are documented in this file and in the release notes.
 
+## Unreleased
+
+### Added
+
+- Add repo-local `AGENTS.md` guidance so Codex-style agents use Abra MCP with the exact `repo:abra` scope before code changes.
+- Add deep readiness checks through `/readyz?deep=1` and have the CLI use them for local embedding setups.
+- Add configurable API read timeout and request-body limits for large local ingestion workloads.
+
+### Changed
+
+- Make `abra doctor` and `abra mcp install-codex` validate that the MCP endpoint exposes `discover_scopes` and `working_memory_compose`.
+- Prefer query-form working-memory MCP resources so scopes containing slashes are preserved.
+- Improve chunk splitting and embedding batch token estimation for oversized paragraphs, minified JSON, and dense code.
+- Harden production Compose and Helm defaults around compatible embeddings, loopback publish defaults, webhook signing, bind address, and request sizing.
+
+### Security
+
+- Add release workflow gates for verified signed tags, version alignment, checksum verification, and GitHub Artifact Attestations for CLI release assets.
+- Reject unsigned production webhooks by default unless explicitly overridden for deployments that disable webhook ingestion or verify signatures upstream.
+- Fail startup on malformed numeric, boolean, duration, tracing sample, port, and bind-address configuration.
+
 ## 0.3.7 - 2026-06-19
 
 ### Added

@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"math"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -42,8 +44,11 @@ type Config struct {
 	DatabaseURL                        string
 	Port                               string
 	APIKeys                            []string
+	APIReadTimeout                     time.Duration
+	MaxRequestBodyBytes                int64
 	AllowUnauthenticatedDev            bool
 	WebhookSecrets                     []string
+	AllowUnsignedWebhooksInProduction  bool
 	AllowLocalEmbeddingsInProduction   bool
 	RedactPII                          bool
 	ApprovalMode                       string
@@ -65,16 +70,21 @@ type Config struct {
 
 func Load() (Config, error) {
 	_ = loadDotEnv(".env")
+	if err := validateEnvSyntax(); err != nil {
+		return Config{}, err
+	}
 	embeddingProvider := env("EMBEDDING_PROVIDER", "local")
 	defaultEmbeddingBaseURL := ""
 	defaultEmbeddingTimeout := 30 * time.Second
 	defaultWorkerSourceTimeout := 2 * time.Minute
 	defaultWorkerLeaseTimeout := 5 * time.Minute
+	defaultAPIReadTimeout := 2 * time.Minute
 	if isLocalNeuralProvider(embeddingProvider) {
 		defaultEmbeddingBaseURL = "http://host.docker.internal:8080/v1"
 		defaultEmbeddingTimeout = 10 * time.Minute
 		defaultWorkerSourceTimeout = 30 * time.Minute
 		defaultWorkerLeaseTimeout = 35 * time.Minute
+		defaultAPIReadTimeout = 10 * time.Minute
 	}
 
 	nodeEnv := env("NODE_ENV", "development")
@@ -83,16 +93,19 @@ func Load() (Config, error) {
 		defaultBindAddress = "0.0.0.0"
 	}
 	cfg := Config{
-		NodeEnv:                          nodeEnv,
-		BindAddress:                      env("ABRA_BIND_ADDR", defaultBindAddress),
-		DatabaseURL:                      env("DATABASE_URL", "postgres://abra:abra@localhost:5433/abra"),
-		Port:                             env("PORT", "18080"),
-		APIKeys:                          csvEnv("ABRA_API_KEYS"),
-		AllowUnauthenticatedDev:          boolEnv("ABRA_UNAUTHENTICATED_DEV", false),
-		WebhookSecrets:                   csvEnv("ABRA_WEBHOOK_SECRETS"),
-		AllowLocalEmbeddingsInProduction: boolEnv("ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION", false),
-		RedactPII:                        env("REDACT_PII", "true") != "false",
-		ApprovalMode:                     strings.ToLower(env("ABRA_APPROVAL_MODE", "advisory")),
+		NodeEnv:                           nodeEnv,
+		BindAddress:                       env("ABRA_BIND_ADDR", defaultBindAddress),
+		DatabaseURL:                       env("DATABASE_URL", "postgres://abra:abra@localhost:5433/abra"),
+		Port:                              env("PORT", "18080"),
+		APIKeys:                           csvEnv("ABRA_API_KEYS"),
+		APIReadTimeout:                    durationEnv("ABRA_API_READ_TIMEOUT", defaultAPIReadTimeout),
+		MaxRequestBodyBytes:               int64(intEnv("ABRA_MAX_REQUEST_BODY_BYTES", 25<<20)),
+		AllowUnauthenticatedDev:           boolEnv("ABRA_UNAUTHENTICATED_DEV", false),
+		WebhookSecrets:                    csvEnv("ABRA_WEBHOOK_SECRETS"),
+		AllowUnsignedWebhooksInProduction: boolEnv("ABRA_ALLOW_UNSIGNED_WEBHOOKS_IN_PRODUCTION", false),
+		AllowLocalEmbeddingsInProduction:  boolEnv("ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION", false),
+		RedactPII:                         boolEnv("REDACT_PII", true),
+		ApprovalMode:                      strings.ToLower(env("ABRA_APPROVAL_MODE", "advisory")),
 		AuditSink: AuditSinkConfig{
 			URL:       os.Getenv("ABRA_AUDIT_SINK_URL"),
 			Token:     os.Getenv("ABRA_AUDIT_SINK_TOKEN"),
@@ -151,11 +164,35 @@ func Load() (Config, error) {
 		if err := validateProductionAPIKeys(cfg.APIKeys); err != nil {
 			return Config{}, err
 		}
+		if len(cfg.WebhookSecrets) == 0 && !cfg.AllowUnsignedWebhooksInProduction {
+			return Config{}, errors.New("ABRA_WEBHOOK_SECRETS is required when NODE_ENV=production; set ABRA_ALLOW_UNSIGNED_WEBHOOKS_IN_PRODUCTION=true only when webhook ingestion is disabled or protected elsewhere")
+		}
+		if err := validateProductionSecrets("ABRA_WEBHOOK_SECRETS", cfg.WebhookSecrets); err != nil {
+			return Config{}, err
+		}
 	}
 	if cfg.NodeEnv == "production" && isRemoteCompatibleProvider(cfg.Embedding.Provider) {
 		if strings.TrimSpace(cfg.Embedding.BaseURL) == "" {
 			return Config{}, errors.New("EMBEDDING_BASE_URL is required when NODE_ENV=production and EMBEDDING_PROVIDER=compatible")
 		}
+	}
+	if cfg.NodeEnv == "production" && isLocalNeuralProvider(cfg.Embedding.Provider) && !cfg.AllowLocalEmbeddingsInProduction {
+		return Config{}, errors.New("ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=true is required when NODE_ENV=production and EMBEDDING_PROVIDER=local")
+	}
+	if port, err := strconv.Atoi(cfg.Port); err != nil || port < 1 || port > 65535 {
+		return Config{}, errors.New("PORT must be an integer between 1 and 65535")
+	}
+	if strings.TrimSpace(cfg.BindAddress) == "" {
+		return Config{}, errors.New("ABRA_BIND_ADDR must not be empty")
+	}
+	if _, err := netip.ParseAddr(cfg.BindAddress); err != nil {
+		return Config{}, errors.New("ABRA_BIND_ADDR must be an IP address such as 127.0.0.1 or 0.0.0.0")
+	}
+	if cfg.APIReadTimeout <= 0 || cfg.APIReadTimeout > 30*time.Minute {
+		return Config{}, errors.New("ABRA_API_READ_TIMEOUT must be between 1ns and 30m")
+	}
+	if cfg.MaxRequestBodyBytes < 1 || cfg.MaxRequestBodyBytes > 100<<20 {
+		return Config{}, errors.New("ABRA_MAX_REQUEST_BODY_BYTES must be between 1 and 104857600")
 	}
 	if strings.TrimSpace(cfg.Reranker.Provider) != "" && isRemoteCompatibleProvider(cfg.Reranker.Provider) && strings.TrimSpace(cfg.Reranker.BaseURL) == "" {
 		return Config{}, errors.New("RERANKER_BASE_URL is required when RERANKER_PROVIDER is configured")
@@ -209,15 +246,91 @@ func validateProductionAPIKeys(keys []string) error {
 	for _, spec := range keys {
 		token, _, _ := strings.Cut(strings.TrimSpace(spec), "|")
 		token = strings.TrimSpace(token)
-		if token == "" {
-			return errors.New("ABRA_API_KEYS contains an empty token")
+		if err := validateProductionSecret("ABRA_API_KEYS", token); err != nil {
+			return err
 		}
-		lower := strings.ToLower(token)
-		if strings.Contains(lower, "replace") || strings.Contains(lower, "example") || strings.Contains(lower, "changeme") || strings.Contains(lower, "dev-token") || lower == "test-key" {
-			return errors.New("ABRA_API_KEYS contains a placeholder token; generate a unique production token")
+	}
+	return nil
+}
+
+func validateProductionSecrets(name string, values []string) error {
+	for _, value := range values {
+		if err := validateProductionSecret(name, value); err != nil {
+			return err
 		}
-		if len(token) < 16 {
-			return errors.New("ABRA_API_KEYS production tokens must be at least 16 characters")
+	}
+	return nil
+}
+
+func validateProductionSecret(name, value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fmt.Errorf("%s contains an empty value", name)
+	}
+	lower := strings.ToLower(value)
+	if strings.Contains(lower, "replace") || strings.Contains(lower, "example") || strings.Contains(lower, "changeme") || strings.Contains(lower, "dev-token") || strings.Contains(lower, "test-key") {
+		return fmt.Errorf("%s contains a placeholder value; generate a unique production secret", name)
+	}
+	if len(value) < 16 {
+		return fmt.Errorf("%s production values must be at least 16 characters", name)
+	}
+	return nil
+}
+
+func validateEnvSyntax() error {
+	for _, name := range []string{
+		"EMBEDDING_DIMENSIONS",
+		"RATE_LIMIT_MAX",
+		"ABRA_AUDIT_SINK_BATCH_SIZE",
+		"WORKER_MAX_CHANGED_DOCUMENTS_PER_SOURCE",
+		"ABRA_GIT_CLONE_DEPTH",
+		"ABRA_MAX_REQUEST_BODY_BYTES",
+	} {
+		if raw, ok := os.LookupEnv(name); ok && strings.TrimSpace(raw) != "" {
+			if _, err := strconv.Atoi(strings.TrimSpace(raw)); err != nil {
+				return fmt.Errorf("%s must be an integer", name)
+			}
+		}
+	}
+	for _, name := range []string{"ABRA_TRACING_SAMPLE_RATIO"} {
+		if raw, ok := os.LookupEnv(name); ok && strings.TrimSpace(raw) != "" {
+			value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+			if err != nil || math.IsNaN(value) || math.IsInf(value, 0) {
+				return fmt.Errorf("%s must be a number", name)
+			}
+		}
+	}
+	for _, name := range []string{
+		"ABRA_UNAUTHENTICATED_DEV",
+		"ABRA_ALLOW_UNSIGNED_WEBHOOKS_IN_PRODUCTION",
+		"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION",
+		"REDACT_PII",
+		"ABRA_TRACING_ENABLED",
+		"ABRA_TRACING_INSECURE",
+		"OTEL_EXPORTER_OTLP_INSECURE",
+	} {
+		if raw, ok := os.LookupEnv(name); ok && strings.TrimSpace(raw) != "" {
+			if _, ok := parseBool(strings.TrimSpace(raw)); !ok {
+				return fmt.Errorf("%s must be a boolean", name)
+			}
+		}
+	}
+	for _, name := range []string{
+		"EMBEDDING_TIMEOUT",
+		"RERANKER_TIMEOUT",
+		"EXTRACTOR_TIMEOUT",
+		"LLM_TIMEOUT",
+		"RATE_LIMIT_WINDOW",
+		"WORKER_INTERVAL",
+		"WORKER_SOURCE_TIMEOUT",
+		"WORKER_LEASE_TIMEOUT",
+		"ABRA_COMPOSE_HEALTH_CACHE_TTL",
+		"ABRA_API_READ_TIMEOUT",
+	} {
+		if raw, ok := os.LookupEnv(name); ok && strings.TrimSpace(raw) != "" {
+			if _, err := parseDuration(strings.TrimSpace(raw)); err != nil {
+				return fmt.Errorf("%s must be a duration: %w", name, err)
+			}
 		}
 	}
 	return nil
@@ -282,24 +395,31 @@ func floatEnv(name string, fallback float64) float64 {
 		return fallback
 	}
 	value, err := strconv.ParseFloat(raw, 64)
-	if err != nil {
+	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) {
 		return fallback
 	}
 	return value
 }
 
 func boolEnv(name string, fallback bool) bool {
-	raw := strings.TrimSpace(strings.ToLower(os.Getenv(name)))
+	raw := strings.TrimSpace(os.Getenv(name))
 	if raw == "" {
 		return fallback
 	}
-	switch raw {
+	if parsed, ok := parseBool(raw); ok {
+		return parsed
+	}
+	return fallback
+}
+
+func parseBool(raw string) (bool, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "1", "true", "yes", "y", "on":
-		return true
+		return true, true
 	case "0", "false", "no", "n", "off":
-		return false
+		return false, true
 	default:
-		return fallback
+		return false, false
 	}
 }
 
@@ -315,17 +435,32 @@ func durationEnv(name string, fallback time.Duration) time.Duration {
 	if raw == "" {
 		return fallback
 	}
-	if parsed, err := time.ParseDuration(raw); err == nil {
+	if parsed, err := parseDuration(raw); err == nil {
 		return parsed
 	}
-	switch raw {
-	case "1 minute":
-		return time.Minute
-	case "2 minutes":
-		return 2 * time.Minute
-	default:
-		return fallback
+	return fallback
+}
+
+func parseDuration(raw string) (time.Duration, error) {
+	raw = strings.TrimSpace(raw)
+	if parsed, err := time.ParseDuration(raw); err == nil {
+		return parsed, nil
 	}
+	fields := strings.Fields(raw)
+	if len(fields) == 2 {
+		value, err := strconv.Atoi(fields[0])
+		if err == nil && value >= 0 {
+			switch strings.ToLower(fields[1]) {
+			case "second", "seconds":
+				return time.Duration(value) * time.Second, nil
+			case "minute", "minutes":
+				return time.Duration(value) * time.Minute, nil
+			case "hour", "hours":
+				return time.Duration(value) * time.Hour, nil
+			}
+		}
+	}
+	return 0, fmt.Errorf("invalid duration %q", raw)
 }
 
 func loadDotEnv(path string) error {

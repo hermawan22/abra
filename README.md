@@ -107,6 +107,10 @@ Install Abra into Codex as a streamable HTTP MCP server:
 abra mcp install-codex
 ```
 
+The installer writes the Codex MCP entry and validates that the Abra `/mcp`
+endpoint exposes `discover_scopes` and `working_memory_compose`. If validation
+fails, start the stack with `abra up` and rerun the install command.
+
 Fully quit and reopen Codex Desktop after installing or changing the token env.
 Opening a new thread is enough only when the env var was already available to
 the Codex process. To avoid scope mismatches, run this in each project and pass
@@ -119,7 +123,7 @@ abra scope
 Prompt pattern:
 
 ```text
-Use Abra MCP first. Scope: repo:<project>. If unsure, call discover_scopes, then call working_memory_compose before answering or changing code.
+Use Abra MCP first. Scope: repo:<project>. If unsure, call discover_scopes, choose the exact project scope, then call working_memory_compose before answering or changing code. If discover_scopes does not show the project, run abra scope and ingest the project with that exact scope.
 ```
 
 Stop the stack:
@@ -215,7 +219,7 @@ Connect an MCP client:
 go run ./cmd/abra mcp > .tmp/abra.mcp.json
 ```
 
-The generated config points at `http://127.0.0.1:18080/mcp` with the quickstart token. A static example is available at [examples/mcp/remote-http.json](./examples/mcp/remote-http.json). For Codex, prefer `abra mcp install-codex`; it installs the same HTTP MCP endpoint with a bearer-token environment variable so the token is not stored literally in Codex config.
+The generated config points at `http://127.0.0.1:18080/mcp` with the quickstart token. A static example is available at [examples/mcp/remote-http.json](./examples/mcp/remote-http.json). For Codex, prefer `abra mcp install-codex`; it installs the same HTTP MCP endpoint with a bearer-token environment variable so the token is not stored literally in Codex config, then validates that the endpoint is reachable and exposes the agent setup tools.
 
 Stop the stack:
 
@@ -380,11 +384,11 @@ MCP resources:
 
 - `abra://guide/agent-workflow`
 - `abra://memory/health/{scope}`
-- `abra://working-memory/{scope}/{task}`
+- `abra://working-memory?scope={scope}&task={task}`
 
 MCP prompts:
 
-- `abra-before-code(task, scope, agent?)`
+- `abra-before-code(task, scope?, agent?)`
 - `abra-review-memory(scope)`
 
 MCP tools:

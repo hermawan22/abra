@@ -19,6 +19,8 @@ Create `.env.production`:
 
 ```text
 ABRA_API_KEYS=replace-with-generated-token
+ABRA_WEBHOOK_SECRETS=replace-with-webhook-signing-secret
+ABRA_ALLOW_UNSIGNED_WEBHOOKS_IN_PRODUCTION=false
 ABRA_APPROVAL_MODE=enforce
 EMBEDDING_PROVIDER=compatible
 EMBEDDING_BASE_URL=https://embedding-provider.example/v1
@@ -33,6 +35,10 @@ ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=false
 REDACT_PII=true
 RATE_LIMIT_MAX=120
 RATE_LIMIT_WINDOW=1 minute
+ABRA_BIND_ADDR=0.0.0.0
+ABRA_API_READ_TIMEOUT=2m
+ABRA_MAX_REQUEST_BODY_BYTES=26214400
+ABRA_PUBLISH_ADDR=127.0.0.1
 ABRA_PORT=18080
 ```
 
@@ -96,6 +102,8 @@ The Helm chart is available in `deploy/helm`; render it with `helm template abra
 NODE_ENV=production
 DATABASE_URL=postgres://...
 ABRA_API_KEYS=<comma-separated service tokens>
+ABRA_WEBHOOK_SECRETS=<comma-separated webhook signing secrets>
+ABRA_ALLOW_UNSIGNED_WEBHOOKS_IN_PRODUCTION=false
 ABRA_APPROVAL_MODE=enforce
 EMBEDDING_PROVIDER=compatible
 EMBEDDING_BASE_URL=https://...
@@ -111,6 +119,9 @@ REDACT_PII=true
 RATE_LIMIT_MAX=120
 RATE_LIMIT_WINDOW=1 minute
 ABRA_COMPOSE_HEALTH_CACHE_TTL=2s
+ABRA_BIND_ADDR=0.0.0.0
+ABRA_API_READ_TIMEOUT=2m
+ABRA_MAX_REQUEST_BODY_BYTES=26214400
 # OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
 # ABRA_TRACING_SAMPLE_RATIO=0.25
 ```
@@ -124,6 +135,8 @@ ABRA_API_KEYS=abra_admin_generated_32_chars,abra_reader_generated_32_chars|roles
 ```
 
 Production tokens must be unique, non-placeholder values of at least 16 characters. Use scoped keys for agents and automation. Reserve all-scope `admin` keys for operators and automation that needs write access across scopes.
+
+Production startup fails without `ABRA_WEBHOOK_SECRETS` unless `ABRA_ALLOW_UNSIGNED_WEBHOOKS_IN_PRODUCTION=true` is explicitly set. Keep the override false for deployments that expose `POST /ingest/webhooks`; use it only when webhook ingestion is disabled or an upstream gateway verifies signatures before requests reach Abra.
 
 `EMBEDDING_PROVIDER=local` is the default self-hosted neural path. It does not need an external API key, but it does require local model endpoints reachable from the Abra containers. With Docker Compose, the default URLs use `host.docker.internal` so models running on the host can be reached from the API and worker containers. Set `EMBEDDING_PROVIDER=compatible` to replace the local defaults with a custom provider.
 
@@ -154,6 +167,8 @@ Recommended deployment:
 ## Network
 
 - Expose Abra only on an internal network.
+- Keep `ABRA_BIND_ADDR=0.0.0.0` inside containers and restrict exposure at the platform edge.
+- Docker Compose publishes the API on `ABRA_PUBLISH_ADDR:ABRA_PORT`, defaulting to `127.0.0.1:18080`; set `ABRA_PUBLISH_ADDR` to a private interface or put a gateway on the same host before remote clients use it.
 - Require `Authorization: Bearer <key>` or `x-api-key`.
 - Terminate TLS at the ingress/gateway.
 - Keep Abra's built-in Postgres-backed rate limit enabled with `RATE_LIMIT_MAX` and `RATE_LIMIT_WINDOW`; it applies across replicated API pods after migrations are applied. Put an additional rate limit at the gateway layer for defense in depth before exposing write-capable credentials.

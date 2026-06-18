@@ -52,7 +52,7 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.secrets.existingSecret }}
                   key: {{ .Values.secrets.keys.webhookSecrets }}
-                  optional: true
+                  optional: {{ eq (toString .Values.config.allowUnsignedWebhooksInProduction) "true" }}
             - name: EMBEDDING_BASE_URL
               valueFrom:
                 secretKeyRef:

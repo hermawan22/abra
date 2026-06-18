@@ -27,10 +27,23 @@ func TestLoadRejectsInvalidApprovalMode(t *testing.T) {
 	}
 }
 
-func TestLoadAllowsLocalNeuralEmbeddingsInProductionByDefault(t *testing.T) {
+func TestLoadRejectsLocalNeuralEmbeddingsInProductionWithoutOverride(t *testing.T) {
 	t.Setenv("NODE_ENV", "production")
-	t.Setenv("ABRA_API_KEYS", "test-key-for-production-123")
+	t.Setenv("ABRA_API_KEYS", "unit-production-secret-alpha")
+	t.Setenv("ABRA_WEBHOOK_SECRETS", "webhook-secret-production-123")
 	t.Setenv("EMBEDDING_PROVIDER", "local")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected local production embeddings to require explicit override")
+	}
+}
+
+func TestLoadAllowsLocalNeuralEmbeddingsInProductionWithOverride(t *testing.T) {
+	t.Setenv("NODE_ENV", "production")
+	t.Setenv("ABRA_API_KEYS", "unit-production-secret-alpha")
+	t.Setenv("ABRA_WEBHOOK_SECRETS", "webhook-secret-production-123")
+	t.Setenv("EMBEDDING_PROVIDER", "local")
+	t.Setenv("ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION", "true")
 
 	cfg, err := Load()
 	if err != nil {
@@ -46,7 +59,9 @@ func TestLoadAllowsLocalNeuralEmbeddingsInProductionByDefault(t *testing.T) {
 
 func TestLoadDefaultsToLocalQwenCompatibleEndpoints(t *testing.T) {
 	t.Setenv("NODE_ENV", "production")
-	t.Setenv("ABRA_API_KEYS", "test-key-for-production-123")
+	t.Setenv("ABRA_API_KEYS", "unit-production-secret-alpha")
+	t.Setenv("ABRA_WEBHOOK_SECRETS", "webhook-secret-production-123")
+	t.Setenv("ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION", "true")
 
 	cfg, err := Load()
 	if err != nil {
@@ -100,7 +115,8 @@ func TestLoadAllowsLocalEmbeddingsOutsideProductionByDefault(t *testing.T) {
 
 func TestLoadAllowsExternalEmbeddingsInProductionWithoutOverride(t *testing.T) {
 	t.Setenv("NODE_ENV", "production")
-	t.Setenv("ABRA_API_KEYS", "test-key-for-production-123")
+	t.Setenv("ABRA_API_KEYS", "unit-production-secret-alpha")
+	t.Setenv("ABRA_WEBHOOK_SECRETS", "webhook-secret-production-123")
 	t.Setenv("EMBEDDING_PROVIDER", "compatible")
 	t.Setenv("EMBEDDING_BASE_URL", "https://embedding.example/v1")
 
@@ -138,9 +154,46 @@ func TestLoadRejectsInvalidEmbeddingTimeout(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsInvalidEmbeddingDimensions(t *testing.T) {
+	allowUnauthenticatedDev(t)
+	t.Setenv("EMBEDDING_DIMENSIONS", "abc")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected invalid embedding dimensions error")
+	}
+}
+
+func TestLoadRejectsInvalidBoolean(t *testing.T) {
+	allowUnauthenticatedDev(t)
+	t.Setenv("ABRA_TRACING_ENABLED", "sometimes")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected invalid boolean error")
+	}
+}
+
+func TestLoadRejectsInvalidRedactPIIBoolean(t *testing.T) {
+	allowUnauthenticatedDev(t)
+	t.Setenv("REDACT_PII", "sometimes")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected invalid REDACT_PII boolean error")
+	}
+}
+
+func TestLoadRejectsInvalidPort(t *testing.T) {
+	allowUnauthenticatedDev(t)
+	t.Setenv("PORT", "70000")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected invalid port error")
+	}
+}
+
 func TestLoadRejectsIncompleteExternalEmbeddingsInProduction(t *testing.T) {
 	t.Setenv("NODE_ENV", "production")
-	t.Setenv("ABRA_API_KEYS", "test-key-for-production-123")
+	t.Setenv("ABRA_API_KEYS", "unit-production-secret-alpha")
+	t.Setenv("ABRA_WEBHOOK_SECRETS", "webhook-secret-production-123")
 	t.Setenv("EMBEDDING_PROVIDER", "compatible")
 
 	if _, err := Load(); err == nil {
@@ -278,6 +331,15 @@ func TestLoadRejectsInvalidTracingSampleRatio(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsNaNTracingSampleRatio(t *testing.T) {
+	allowUnauthenticatedDev(t)
+	t.Setenv("ABRA_TRACING_SAMPLE_RATIO", "NaN")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected NaN tracing sample ratio error")
+	}
+}
+
 func TestLoadRejectsMissingAPIKeysWithoutExplicitDevBypass(t *testing.T) {
 	if _, err := Load(); err == nil {
 		t.Fatal("expected missing API keys to be rejected")
@@ -293,6 +355,41 @@ func TestLoadRejectsPlaceholderProductionAPIKeys(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsMissingProductionWebhookSecrets(t *testing.T) {
+	t.Setenv("NODE_ENV", "production")
+	t.Setenv("ABRA_API_KEYS", "unit-production-secret-alpha")
+	t.Setenv("EMBEDDING_PROVIDER", "compatible")
+	t.Setenv("EMBEDDING_BASE_URL", "https://embedding.example/v1")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected missing production webhook secret to be rejected")
+	}
+}
+
+func TestLoadRejectsPlaceholderProductionWebhookSecrets(t *testing.T) {
+	t.Setenv("NODE_ENV", "production")
+	t.Setenv("ABRA_API_KEYS", "unit-production-secret-alpha")
+	t.Setenv("ABRA_WEBHOOK_SECRETS", "replace-with-webhook-signing-secret")
+	t.Setenv("EMBEDDING_PROVIDER", "compatible")
+	t.Setenv("EMBEDDING_BASE_URL", "https://embedding.example/v1")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected placeholder production webhook secret to be rejected")
+	}
+}
+
+func TestLoadAllowsExplicitUnsignedProductionWebhooks(t *testing.T) {
+	t.Setenv("NODE_ENV", "production")
+	t.Setenv("ABRA_API_KEYS", "unit-production-secret-alpha")
+	t.Setenv("ABRA_ALLOW_UNSIGNED_WEBHOOKS_IN_PRODUCTION", "true")
+	t.Setenv("EMBEDDING_PROVIDER", "compatible")
+	t.Setenv("EMBEDDING_BASE_URL", "https://embedding.example/v1")
+
+	if _, err := Load(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestLoadDefaultBindAddressDependsOnEnvironment(t *testing.T) {
 	allowUnauthenticatedDev(t)
 	cfg, err := Load()
@@ -305,7 +402,10 @@ func TestLoadDefaultBindAddressDependsOnEnvironment(t *testing.T) {
 
 	t.Setenv("NODE_ENV", "production")
 	t.Setenv("ABRA_UNAUTHENTICATED_DEV", "")
-	t.Setenv("ABRA_API_KEYS", "test-key-for-production-123")
+	t.Setenv("ABRA_API_KEYS", "unit-production-secret-alpha")
+	t.Setenv("ABRA_WEBHOOK_SECRETS", "webhook-secret-production-123")
+	t.Setenv("EMBEDDING_PROVIDER", "compatible")
+	t.Setenv("EMBEDDING_BASE_URL", "https://embedding.example/v1")
 	cfg, err = Load()
 	if err != nil {
 		t.Fatal(err)

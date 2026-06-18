@@ -44,6 +44,12 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.secrets.existingSecret }}
                   key: {{ .Values.secrets.keys.apiKeys }}
+            - name: ABRA_WEBHOOK_SECRETS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: {{ .Values.secrets.keys.webhookSecrets }}
+                  optional: {{ eq (toString .Values.config.allowUnsignedWebhooksInProduction) "true" }}
             - name: ABRA_AUDIT_SINK_TOKEN
               valueFrom:
                 secretKeyRef:
