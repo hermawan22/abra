@@ -595,7 +595,12 @@ func localPathIngest(ctx context.Context, args cliArgs) error {
 		return errors.New("no matching files found; adjust --include, add --code, or check --path")
 	}
 	results := make([]map[string]any, 0, len(documents))
+	skippedEmpty := 0
 	for _, doc := range documents {
+		if strings.TrimSpace(doc.Content) == "" {
+			skippedEmpty++
+			continue
+		}
 		metadata := stringMapToAny(doc.Metadata)
 		metadata["ingest_path"] = doc.Path
 		metadata["ingest_checksum"] = doc.Checksum
@@ -622,10 +627,16 @@ func localPathIngest(ctx context.Context, args cliArgs) error {
 			"relations":   result["relations"],
 		})
 	}
+	if len(results) == 0 {
+		return fmt.Errorf("no non-empty matching files found; skipped %d empty file(s)", skippedEmpty)
+	}
 	if boolFlag(args, "json") {
-		return printJSON(map[string]any{"scope": scope, "documents": results})
+		return printJSON(map[string]any{"scope": scope, "documents": results, "skipped_empty": skippedEmpty})
 	}
 	fmt.Printf("Ingested files: %d\n", len(results))
+	if skippedEmpty > 0 {
+		fmt.Printf("Skipped empty files: %d\n", skippedEmpty)
+	}
 	fmt.Println("scope: " + scope)
 	fmt.Println("source: " + source.ID)
 	return nil
@@ -1434,7 +1445,7 @@ func usage() string {
 Usage:
   abra version
   abra up
-  abra upgrade [--version v0.1.4]
+  abra upgrade [--version v0.1.5]
   abra uninstall --yes
   abra demo
   abra quickstart

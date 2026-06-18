@@ -102,6 +102,43 @@ func TestLocalPathShortcutUsesDefaultScope(t *testing.T) {
 	}
 }
 
+func TestLocalPathIngestSkipsEmptyFiles(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "README.md"), "# Local Brain\n\nAgents should use Abra.")
+	mustWrite(t, filepath.Join(root, "src", "empty.ts"), "")
+
+	var requests []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ingest/documents" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		requests = append(requests, body)
+		_ = json.NewEncoder(w).Encode(map[string]any{"document_id": "doc"})
+	}))
+	defer server.Close()
+
+	err := run(context.Background(), []string{
+		"ingest",
+		root,
+		"--code",
+		"--base-url", server.URL,
+		"--token", "test-token",
+	})
+	if err != nil {
+		t.Fatalf("shortcut ingest error = %v", err)
+	}
+	if len(requests) != 1 {
+		t.Fatalf("requests = %d, want 1 (%#v)", len(requests), requests)
+	}
+	if requests[0]["title"] != "Local Brain" {
+		t.Fatalf("title = %v", requests[0]["title"])
+	}
+}
+
 func TestDefaultEnvPathOutsideCheckoutUsesAbraHome(t *testing.T) {
 	root := t.TempDir()
 	home := t.TempDir()

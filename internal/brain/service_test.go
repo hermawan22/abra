@@ -104,6 +104,25 @@ func TestExtractClaimsIgnoresFencedCodeAndReturnsDeterministicClaims(t *testing.
 	}
 }
 
+func TestRedactSecretContext(t *testing.T) {
+	input := "Access to Nexus - request the rotated NEXUS_USER and NEXUS_PASSWORD from Infra; stored as Bitbucket workspace variables."
+	got := redact(input)
+	if strings.Contains(got, "NEXUS_USER") || strings.Contains(got, "NEXUS_PASSWORD") {
+		t.Fatalf("redaction leaked credential names: %q", got)
+	}
+	if strings.Contains(strings.ToLower(got), "request the rotated") {
+		t.Fatalf("redaction leaked credential instructions: %q", got)
+	}
+}
+
+func TestRedactKeepsNonSecretDomainTokens(t *testing.T) {
+	input := "Example Web App uses `Shared UI Tokens` for shared UI primitives."
+	got := redact(input)
+	if got != input {
+		t.Fatalf("redaction changed non-secret domain text: %q", got)
+	}
+}
+
 type storeLevelKeySummary struct {
 	level   string
 	key     string

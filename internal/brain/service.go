@@ -1270,15 +1270,24 @@ func looksLikeCodeClaim(claim string) bool {
 }
 
 var (
-	emailRE  = regexp.MustCompile(`(?i)\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b`)
-	phoneRE  = regexp.MustCompile(`(?m)(^|[^\d])((?:\+?62|0)8\d{7,12})([^\d]|$)`)
-	longIDRE = regexp.MustCompile(`(^|[^\d])(\d{12,20})([^\d]|$)`)
+	emailRE          = regexp.MustCompile(`(?i)\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b`)
+	phoneRE          = regexp.MustCompile(`(?m)(^|[^\d])((?:\+?62|0)8\d{7,12})([^\d]|$)`)
+	longIDRE         = regexp.MustCompile(`(^|[^\d])(\d{12,20})([^\d]|$)`)
+	credentialNameRE = regexp.MustCompile(`\b[A-Z][A-Z0-9_]*(?:PASSWORD|PASS|TOKEN|SECRET|API_KEY|ACCESS_KEY|PRIVATE_KEY|CREDENTIAL|USERNAME|_USER|_KEYS)[A-Z0-9_]*\b`)
+	secretContextRE  = regexp.MustCompile(`(?i)\b(?:request|rotate|rotated|stored|store|fetch|set|export|configure|vault|workspace variable|workspace variables|credential|credentials|password|secret|api key)[^\n.]{0,180}`)
 )
 
 func redact(input string) string {
 	input = emailRE.ReplaceAllString(input, "[REDACTED_EMAIL]")
 	input = phoneRE.ReplaceAllString(input, "${1}[REDACTED_PHONE]${3}")
 	input = longIDRE.ReplaceAllString(input, "${1}[REDACTED_ID]${3}")
+	input = credentialNameRE.ReplaceAllString(input, "[REDACTED_SECRET_NAME]")
+	input = secretContextRE.ReplaceAllStringFunc(input, func(match string) string {
+		if credentialNameRE.MatchString(match) || strings.Contains(strings.ToLower(match), "password") || strings.Contains(strings.ToLower(match), "secret") || strings.Contains(strings.ToLower(match), "token") || strings.Contains(strings.ToLower(match), "credential") {
+			return "[REDACTED_SECRET_CONTEXT]"
+		}
+		return match
+	})
 	return input
 }
 
