@@ -15,12 +15,88 @@ import (
 )
 
 func TestCommandHelpDoesNotRequireFlags(t *testing.T) {
-	for _, command := range []string{"ingest", "watch", "sources", "jobs"} {
+	for _, command := range []string{"config", "ingest", "watch", "sources", "jobs"} {
 		t.Run(command, func(t *testing.T) {
 			if err := run(context.Background(), []string{command, "--help"}); err != nil {
 				t.Fatalf("run(%s --help) error = %v", command, err)
 			}
 		})
+	}
+}
+
+func TestConfigModelCompatibleUpdatesEnv(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+
+	err := run(context.Background(), []string{
+		"config",
+		"model",
+		"compatible",
+		"--base-url", "https://models.example/v1",
+		"--api-key", "secret-model-key",
+		"--model", "embed-1536",
+	})
+	if err != nil {
+		t.Fatalf("config model compatible error = %v", err)
+	}
+	values, err := readEnvValues(filepath.Join(home, "quickstart.env"))
+	if err != nil {
+		t.Fatalf("read env: %v", err)
+	}
+	if values["EMBEDDING_PROVIDER"] != "compatible" {
+		t.Fatalf("provider = %q", values["EMBEDDING_PROVIDER"])
+	}
+	if values["EMBEDDING_BASE_URL"] != "https://models.example/v1" {
+		t.Fatalf("base url = %q", values["EMBEDDING_BASE_URL"])
+	}
+	if values["EMBEDDING_API_KEY"] != "secret-model-key" {
+		t.Fatalf("api key = %q", values["EMBEDDING_API_KEY"])
+	}
+	if values["EMBEDDING_MODEL"] != "embed-1536" {
+		t.Fatalf("model = %q", values["EMBEDDING_MODEL"])
+	}
+	if values["ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION"] != "false" {
+		t.Fatalf("local production guard = %q", values["ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION"])
+	}
+}
+
+func TestConfigModelLocalClearsRemoteFields(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+
+	if err := run(context.Background(), []string{
+		"config", "model", "compatible",
+		"--base-url", "https://models.example/v1",
+		"--api-key", "secret-model-key",
+		"--model", "embed-1536",
+	}); err != nil {
+		t.Fatalf("config model compatible error = %v", err)
+	}
+	if err := run(context.Background(), []string{"config", "model", "local"}); err != nil {
+		t.Fatalf("config model local error = %v", err)
+	}
+	values, err := readEnvValues(filepath.Join(home, "quickstart.env"))
+	if err != nil {
+		t.Fatalf("read env: %v", err)
+	}
+	if values["EMBEDDING_PROVIDER"] != "local" {
+		t.Fatalf("provider = %q", values["EMBEDDING_PROVIDER"])
+	}
+	if values["EMBEDDING_BASE_URL"] != "" || values["EMBEDDING_API_KEY"] != "" {
+		t.Fatalf("remote fields not cleared: base=%q key=%q", values["EMBEDDING_BASE_URL"], values["EMBEDDING_API_KEY"])
+	}
+	if values["ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION"] != "true" {
+		t.Fatalf("local production guard = %q", values["ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION"])
+	}
+}
+
+func TestConfigMasksSecrets(t *testing.T) {
+	if got := maskSecret("secret-model-key"); got != "secr...-key" {
+		t.Fatalf("maskSecret = %q", got)
 	}
 }
 

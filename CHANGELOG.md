@@ -4,6 +4,12 @@ All notable changes to Abra are documented here.
 
 This project uses semantic versioning for public releases. Until v1.0.0, minor versions may include breaking changes when they are documented in this file and in the release notes.
 
+## 0.1.6 - 2026-06-18
+
+### Added
+
+- Add `abra config` commands for viewing runtime config and switching embedding model settings without manually editing the env file.
+
 ## 0.1.5 - 2026-06-18
 
 ### Fixed

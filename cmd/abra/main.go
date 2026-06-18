@@ -83,6 +83,8 @@ func run(ctx context.Context, argv []string) error {
 		return demo(ctx, args)
 	case "init":
 		return initEnv(args)
+	case "config":
+		return configCommand(args)
 	case "up", "start":
 		return up(ctx, args)
 	case "down", "stop":
@@ -275,6 +277,217 @@ func initEnv(args cliArgs) error {
 		fmt.Println("Edit placeholders before running: abra up --env-file " + path)
 	}
 	return nil
+}
+
+func configCommand(args cliArgs) error {
+	action := "show"
+	if len(args.Rest) > 0 {
+		action = strings.ToLower(strings.TrimSpace(args.Rest[0]))
+		args.Rest = args.Rest[1:]
+	}
+	switch action {
+	case "", "show", "get":
+		return configShow(args)
+	case "path", "where":
+		fmt.Println(envPath(args))
+		return nil
+	case "model", "embedding":
+		return configModel(args)
+	default:
+		return fmt.Errorf("unknown config command %q\n\n%s", action, commandUsage("config"))
+	}
+}
+
+func configShow(args cliArgs) error {
+	if err := ensureEnv(args); err != nil {
+		return err
+	}
+	values, err := readEnvValues(envPath(args))
+	if err != nil {
+		return err
+	}
+	view := map[string]any{
+		"env_file":             envPath(args),
+		"api_token":            maskSecret(firstNonEmpty(values["ABRA_API_TOKEN"], firstCSV(values["ABRA_API_KEYS"], ""))),
+		"approval_mode":        values["ABRA_APPROVAL_MODE"],
+		"port":                 firstNonEmpty(values["ABRA_PORT"], "18080"),
+		"embedding_provider":   values["EMBEDDING_PROVIDER"],
+		"embedding_base_url":   values["EMBEDDING_BASE_URL"],
+		"embedding_api_key":    maskSecret(values["EMBEDDING_API_KEY"]),
+		"embedding_model":      values["EMBEDDING_MODEL"],
+		"embedding_dimensions": values["EMBEDDING_DIMENSIONS"],
+		"redaction_enabled":    firstNonEmpty(values["REDACT_PII"], "true"),
+	}
+	if boolFlag(args, "json") {
+		return printJSON(view)
+	}
+	fmt.Println("Config: " + envPath(args))
+	fmt.Println("token:     " + stringValue(view["api_token"], ""))
+	fmt.Println("approval:  " + stringValue(view["approval_mode"], ""))
+	fmt.Println("port:      " + stringValue(view["port"], ""))
+	fmt.Println("embedding: " + stringValue(view["embedding_provider"], ""))
+	if baseURL := stringValue(view["embedding_base_url"], ""); baseURL != "" {
+		fmt.Println("base_url:  " + baseURL)
+	}
+	fmt.Println("model:     " + stringValue(view["embedding_model"], ""))
+	fmt.Println("dims:      " + stringValue(view["embedding_dimensions"], ""))
+	fmt.Println("api_key:   " + stringValue(view["embedding_api_key"], ""))
+	return nil
+}
+
+func configModel(args cliArgs) error {
+	mode := "show"
+	if len(args.Rest) > 0 {
+		mode = strings.ToLower(strings.TrimSpace(args.Rest[0]))
+		args.Rest = args.Rest[1:]
+	}
+	switch mode {
+	case "", "show":
+		return configShow(args)
+	case "local":
+		if err := updateEnvValues(args, map[string]string{
+			"EMBEDDING_PROVIDER":                   "local",
+			"EMBEDDING_BASE_URL":                   "",
+			"EMBEDDING_API_KEY":                    "",
+			"EMBEDDING_MODEL":                      flag(args, "model", "embedding-model-1536"),
+			"EMBEDDING_DIMENSIONS":                 flag(args, "dimensions", "1536"),
+			"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION": "true",
+		}); err != nil {
+			return err
+		}
+		fmt.Println("Model config updated: local embeddings")
+		printRestartHint(args)
+		return nil
+	case "compatible", "openai-compatible":
+		baseURL := flag(args, "base-url", "")
+		apiKey := flag(args, "api-key", "")
+		model := flag(args, "model", "")
+		if apiKey == "" && boolFlag(args, "api-key-stdin") {
+			bytes, err := io.ReadAll(os.Stdin)
+			if err != nil {
+				return err
+			}
+			apiKey = strings.TrimSpace(string(bytes))
+		}
+		if baseURL == "" || apiKey == "" || model == "" {
+			return errors.New("config model compatible requires --base-url, --api-key or --api-key-stdin, and --model")
+		}
+		if err := updateEnvValues(args, map[string]string{
+			"EMBEDDING_PROVIDER":                   "compatible",
+			"EMBEDDING_BASE_URL":                   baseURL,
+			"EMBEDDING_API_KEY":                    apiKey,
+			"EMBEDDING_MODEL":                      model,
+			"EMBEDDING_DIMENSIONS":                 flag(args, "dimensions", "1536"),
+			"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION": "false",
+		}); err != nil {
+			return err
+		}
+		fmt.Println("Model config updated: compatible embeddings")
+		printRestartHint(args)
+		return nil
+	default:
+		return fmt.Errorf("unknown model config %q\n\n%s", mode, commandUsage("config"))
+	}
+}
+
+func updateEnvValues(args cliArgs, updates map[string]string) error {
+	if err := ensureEnv(args); err != nil {
+		return err
+	}
+	path := envPath(args)
+	lines, err := readEnvLines(path)
+	if err != nil {
+		return err
+	}
+	applied := map[string]bool{}
+	for i, line := range lines {
+		key, _, ok := parseEnvLine(line)
+		if !ok {
+			continue
+		}
+		if value, exists := updates[key]; exists {
+			lines[i] = key + "=" + value
+			applied[key] = true
+		}
+	}
+	for _, key := range []string{
+		"EMBEDDING_PROVIDER",
+		"EMBEDDING_BASE_URL",
+		"EMBEDDING_API_KEY",
+		"EMBEDDING_MODEL",
+		"EMBEDDING_DIMENSIONS",
+		"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION",
+	} {
+		if value, exists := updates[key]; exists && !applied[key] {
+			lines = append(lines, key+"="+value)
+		}
+	}
+	content := strings.Join(lines, "\n")
+	if !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+	return os.WriteFile(path, []byte(content), 0o600)
+}
+
+func readEnvValues(path string) (map[string]string, error) {
+	lines, err := readEnvLines(path)
+	if err != nil {
+		return nil, err
+	}
+	values := map[string]string{}
+	for _, line := range lines {
+		key, value, ok := parseEnvLine(line)
+		if ok {
+			values[key] = value
+		}
+	}
+	return values, nil
+}
+
+func readEnvLines(path string) ([]string, error) {
+	bytes, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	content := strings.ReplaceAll(string(bytes), "\r\n", "\n")
+	content = strings.TrimSuffix(content, "\n")
+	if content == "" {
+		return []string{}, nil
+	}
+	return strings.Split(content, "\n"), nil
+}
+
+func parseEnvLine(line string) (string, string, bool) {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+		return "", "", false
+	}
+	key, value, ok := strings.Cut(trimmed, "=")
+	if !ok {
+		return "", "", false
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return "", "", false
+	}
+	return key, strings.TrimSpace(value), true
+}
+
+func maskSecret(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if len(value) <= 8 {
+		return "****"
+	}
+	return value[:4] + "..." + value[len(value)-4:]
+}
+
+func printRestartHint(args cliArgs) {
+	fmt.Println("Config: " + envPath(args))
+	fmt.Println("Restart: abra down && abra up")
+	fmt.Println("Check:   abra status")
 }
 
 func up(ctx context.Context, args cliArgs) error {
@@ -1445,11 +1658,14 @@ func usage() string {
 Usage:
   abra version
   abra up
-  abra upgrade [--version v0.1.5]
+  abra upgrade [--version v0.1.6]
   abra uninstall --yes
   abra demo
   abra quickstart
   abra init [--production]
+  abra config show
+  abra config model local
+  abra config model compatible --base-url <url> --api-key <key> --model <model>
   abra down [--reset]
   abra status
   abra doctor
@@ -1502,6 +1718,18 @@ Source ingestion flags:
   --exclude        comma-separated exclude globs
   --code           also ingest code intelligence from supported code files
   --wait           wait up to 60s for the queued worker job when using --git
+`
+	case "config":
+		return `Usage:
+  abra config show [--json]
+  abra config path
+  abra config model local [--model embedding-model-1536]
+  abra config model compatible --base-url <url> --api-key <key> --model <model>
+  abra config model compatible --base-url <url> --api-key-stdin --model <model>
+
+Config edits the Abra runtime env file used by abra up. It intentionally only
+exposes core runtime settings needed for local operation and model connection.
+After changing model config, restart with: abra down && abra up
 `
 	case "watch", "source":
 		return `Usage:
