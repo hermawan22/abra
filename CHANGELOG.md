@@ -4,6 +4,13 @@ All notable changes to Abra are documented here.
 
 This project uses semantic versioning for public releases. Until v1.0.0, minor versions may include breaking changes when they are documented in this file and in the release notes.
 
+## 0.1.4 - 2026-06-18
+
+### Changed
+
+- Make `abra up` next-step output point at the simple project ingest flow.
+- Use a stable Docker Compose project name for global runtime installs.
+
 ## 0.1.3 - 2026-06-18
 
 ### Fixed

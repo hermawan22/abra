@@ -297,10 +297,10 @@ func up(ctx context.Context, args cliArgs) error {
 		fmt.Println("Using runtime: " + projectDir)
 	}
 	steps := [][]string{
-		{"compose", "--env-file", env, "build", "api", "worker", "migrate"},
-		{"compose", "--env-file", env, "up", "-d", "postgres"},
-		{"compose", "--env-file", env, "run", "--rm", "migrate"},
-		{"compose", "--env-file", env, "up", "-d", "api", "worker"},
+		{"compose", "--project-name", "abra", "--env-file", env, "build", "api", "worker", "migrate"},
+		{"compose", "--project-name", "abra", "--env-file", env, "up", "-d", "postgres"},
+		{"compose", "--project-name", "abra", "--env-file", env, "run", "--rm", "migrate"},
+		{"compose", "--project-name", "abra", "--env-file", env, "up", "-d", "api", "worker"},
 	}
 	for _, step := range steps {
 		if err := runCommandIn(projectDir, "docker", step...); err != nil {
@@ -328,7 +328,7 @@ func down(args cliArgs) error {
 	if err != nil {
 		return err
 	}
-	step := []string{"compose", "--env-file", env, "down"}
+	step := []string{"compose", "--project-name", "abra", "--env-file", env, "down"}
 	if boolFlag(args, "reset") {
 		step = append(step, "--volumes")
 	}
@@ -1000,8 +1000,8 @@ func printReady(args cliArgs) {
 	fmt.Println("Abra is ready")
 	fmt.Println("MCP:       " + strings.TrimRight(cfg(args).BaseURL, "/") + "/mcp")
 	fmt.Println("Token:     " + cfg(args).Token)
-	fmt.Println(`Next:      abra ingest --scope repo:demo --title Intro --source-url file://intro.md --text "Agents should use Abra before autonomous code changes."`)
-	fmt.Println(`Then:      abra think "What should agents use before autonomous code changes?" --scope repo:demo`)
+	fmt.Println("Next:      cd /path/to/project && abra ingest . --code")
+	fmt.Println(`Then:      abra think "What should I know before changing this project?"`)
 }
 
 func runCommand(name string, args ...string) error {
@@ -1434,7 +1434,7 @@ func usage() string {
 Usage:
   abra version
   abra up
-  abra upgrade [--version v0.1.3]
+  abra upgrade [--version v0.1.4]
   abra uninstall --yes
   abra demo
   abra quickstart
