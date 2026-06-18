@@ -36,13 +36,13 @@ The fastest path from this checkout puts the `abra` binary on your machine:
 ./scripts/install.sh
 ```
 
-If Abra has already been published to GitHub releases, the remote installer path is:
+Install from GitHub releases:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/hermawan22/abra/main/scripts/install.sh | sh
 ```
 
-The remote URL only works after the `hermawan22/abra` repository and its `main` branch exist publicly. The installer downloads a platform release binary when available and verifies it against `SHA256SUMS` before installing. If no release asset exists yet, it falls back to `go install`.
+The installer downloads a platform release binary when available and verifies it against `SHA256SUMS` before installing. If no release asset exists for your platform yet, it falls back to `go install`.
 
 Then start the local Abra service:
 
@@ -59,6 +59,13 @@ abra ui
 ```
 
 The cockpit keeps the product CLI-only while giving users a guided interface for runtime health, model connection, local repo ingest, governed think, and MCP config.
+
+Connect OpenAI-compatible embeddings without editing env files:
+
+```sh
+printf '%s' "$OPENAI_API_KEY" | abra config model openai --api-key-stdin
+abra down && abra up
+```
 
 Try the governed brain:
 

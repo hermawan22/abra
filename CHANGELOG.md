@@ -4,6 +4,18 @@ All notable changes to Abra are documented here.
 
 This project uses semantic versioning for public releases. Until v1.0.0, minor versions may include breaking changes when they are documented in this file and in the release notes.
 
+## 0.1.8 - 2026-06-18
+
+### Added
+
+- Expand `abra ui` into a terminal cockpit with setup, restart, embedding config, local ingest, remote Git ingest, think, jobs, MCP, and doctor workflows.
+- Add `abra config model openai --api-key-stdin` as a safer OpenAI embedding shortcut with 1536-dimension defaults.
+
+### Changed
+
+- Improve OSS release/security documentation consistency and remove private-term denylist entries from the public CI workflow.
+- Warn users to re-ingest important sources after changing embedding providers.
+
 ## 0.1.7 - 2026-06-18
 
 ### Added

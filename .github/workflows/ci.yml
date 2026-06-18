@@ -92,7 +92,7 @@ jobs:
           test ! -e .tmp
           ! rg -n -i \
             -g '!ci.yml' \
-            'BUSINESS_MODEL|Business Model|Commercial Boundary|pricing|GTM|revenue|buyer|moat|procurement|open-core|company/frontend|frontend-platform|Amartha|fetha|customer data export|funds-web|funds-ui|ng-mis' \
+            'BUSINESS_MODEL|Business Model|Commercial Boundary|pricing|GTM|revenue|buyer|moat|procurement|open-core|company/frontend|frontend-platform|customer data export|private customer|internal-only business' \
             README.md CONTRIBUTING.md CODE_OF_CONDUCT.md PRODUCTION.md SECURITY.md CHANGELOG.md RELEASE.md docs package.json deploy internal scripts examples .github
 
       - name: Build Go binaries

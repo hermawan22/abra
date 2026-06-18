@@ -12,13 +12,13 @@ Install the CLI from this checkout:
 ./scripts/install.sh
 ```
 
-After the public GitHub repository exists, the remote installer is:
+Install from GitHub releases:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/hermawan22/abra/main/scripts/install.sh | sh
 ```
 
-The remote URL only works after `hermawan22/abra` is published with a `main` branch. Release downloads are verified against `SHA256SUMS` before the binary is installed. Set `ABRA_VERSION=v0.1.7` to install a specific release.
+Release downloads are verified against `SHA256SUMS` before the binary is installed. Set `ABRA_VERSION=vX.Y.Z` to install a specific release.
 
 Start the local stack:
 
@@ -35,6 +35,7 @@ abra ui
 abra config show
 abra config path
 abra config model local
+abra config model openai --api-key-stdin
 abra config model compatible --base-url https://api.example.com/v1 --api-key-stdin --model embedding-model-1536
 ```
 
@@ -111,7 +112,7 @@ Upgrade or remove the CLI binary:
 
 ```sh
 abra upgrade
-abra upgrade --version v0.1.7
+abra upgrade --version vX.Y.Z
 abra uninstall --yes
 ```
 

@@ -360,36 +360,51 @@ func configModel(args cliArgs) error {
 		fmt.Println("Model config updated: local embeddings")
 		printRestartHint(args)
 		return nil
+	case "openai":
+		if flag(args, "base-url", "") == "" {
+			args.Flags["base-url"] = "https://api.openai.com/v1"
+		}
+		if flag(args, "model", "") == "" {
+			args.Flags["model"] = "text-embedding-3-small"
+		}
+		if flag(args, "dimensions", "") == "" {
+			args.Flags["dimensions"] = "1536"
+		}
+		return configModelCompatible(args, "OpenAI embeddings")
 	case "compatible", "openai-compatible":
-		baseURL := flag(args, "base-url", "")
-		apiKey := flag(args, "api-key", "")
-		model := flag(args, "model", "")
-		if apiKey == "" && boolFlag(args, "api-key-stdin") {
-			bytes, err := io.ReadAll(os.Stdin)
-			if err != nil {
-				return err
-			}
-			apiKey = strings.TrimSpace(string(bytes))
-		}
-		if baseURL == "" || apiKey == "" || model == "" {
-			return errors.New("config model compatible requires --base-url, --api-key or --api-key-stdin, and --model")
-		}
-		if err := updateEnvValues(args, map[string]string{
-			"EMBEDDING_PROVIDER":                   "compatible",
-			"EMBEDDING_BASE_URL":                   baseURL,
-			"EMBEDDING_API_KEY":                    apiKey,
-			"EMBEDDING_MODEL":                      model,
-			"EMBEDDING_DIMENSIONS":                 flag(args, "dimensions", "1536"),
-			"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION": "false",
-		}); err != nil {
-			return err
-		}
-		fmt.Println("Model config updated: compatible embeddings")
-		printRestartHint(args)
-		return nil
+		return configModelCompatible(args, "compatible embeddings")
 	default:
 		return fmt.Errorf("unknown model config %q\n\n%s", mode, commandUsage("config"))
 	}
+}
+
+func configModelCompatible(args cliArgs, label string) error {
+	baseURL := flag(args, "base-url", "")
+	apiKey := flag(args, "api-key", "")
+	model := flag(args, "model", "")
+	if apiKey == "" && boolFlag(args, "api-key-stdin") {
+		bytes, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return err
+		}
+		apiKey = strings.TrimSpace(string(bytes))
+	}
+	if baseURL == "" || apiKey == "" || model == "" {
+		return errors.New("config model compatible requires --base-url, --api-key or --api-key-stdin, and --model")
+	}
+	if err := updateEnvValues(args, map[string]string{
+		"EMBEDDING_PROVIDER":                   "compatible",
+		"EMBEDDING_BASE_URL":                   baseURL,
+		"EMBEDDING_API_KEY":                    apiKey,
+		"EMBEDDING_MODEL":                      model,
+		"EMBEDDING_DIMENSIONS":                 flag(args, "dimensions", "1536"),
+		"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION": "false",
+	}); err != nil {
+		return err
+	}
+	fmt.Println("Model config updated: " + label)
+	printRestartHint(args)
+	return nil
 }
 
 func updateEnvValues(args cliArgs, updates map[string]string) error {
@@ -490,6 +505,7 @@ func printRestartHint(args cliArgs) {
 	fmt.Println("Config: " + envPath(args))
 	fmt.Println("Restart: abra down && abra up")
 	fmt.Println("Check:   abra status")
+	fmt.Println("After changing embedding providers, re-ingest important sources so vector recall uses the new embedding space.")
 }
 
 func up(ctx context.Context, args cliArgs) error {
@@ -1661,14 +1677,15 @@ Usage:
   abra version
   abra up
   abra ui
-  abra upgrade [--version v0.1.7]
+  abra upgrade [--version vX.Y.Z]
   abra uninstall --yes
   abra demo
   abra quickstart
   abra init [--production]
   abra config show
   abra config model local
-  abra config model compatible --base-url <url> --api-key <key> --model <model>
+  abra config model openai --api-key-stdin
+  abra config model compatible --base-url <url> --api-key-stdin --model <model>
   abra down [--reset]
   abra status
   abra doctor
@@ -1727,12 +1744,13 @@ Source ingestion flags:
   abra config show [--json]
   abra config path
   abra config model local [--model embedding-model-1536]
-  abra config model compatible --base-url <url> --api-key <key> --model <model>
-  abra config model compatible --base-url <url> --api-key-stdin --model <model>
+  abra config model openai --api-key-stdin
+  abra config model compatible --base-url <url> --api-key-stdin --model <model> [--dimensions 1536]
 
 Config edits the Abra runtime env file used by abra up. It intentionally only
 exposes core runtime settings needed for local operation and model connection.
 After changing model config, restart with: abra down && abra up
+After changing embedding providers, re-ingest important sources for reliable vector recall.
 `
 	case "ui", "dashboard":
 		return `Usage:
@@ -1746,11 +1764,16 @@ Keys:
   up/down or k/j  select
   enter           open
   r               refresh runtime
+  s               start stack
+  x               restart stack
   l               switch to local embeddings
   c               connect compatible model
-  i               ingest current repo with code intelligence
+  i               configure local ingest
+  g               configure remote Git ingest
   t               ask Abra
+  J               list ingestion jobs
   m               generate MCP config
+  d               run doctor
   q               quit
 
 --render prints a non-interactive preview for smoke tests and CI.
@@ -1805,6 +1828,22 @@ Builds a task-specific working-memory packet for AI coding agents.
 abra up starts the local Docker Compose stack: Postgres, migrations, API, and worker.
 abra install is kept as a compatibility alias for abra up; the curl installer
 is what installs the CLI binary.
+`
+	case "upgrade", "update":
+		return `Usage:
+  abra upgrade
+  abra upgrade --version vX.Y.Z
+
+Re-runs the public install script into the current binary directory. Set
+ABRA_INSTALL_SCRIPT to override the installer URL or ABRA_INSTALL_DIR when
+running the install script directly.
+`
+	case "uninstall":
+		return `Usage:
+  abra uninstall --yes
+
+Removes the Abra CLI binary only. It does not remove Docker containers,
+volumes, env files, runtime bundles, or memory data.
 `
 	default:
 		return usage()

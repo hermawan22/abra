@@ -30,6 +30,7 @@ type uiModel struct {
 	busy     bool
 	message  string
 	errText  string
+	lastKind string
 	status   map[string]any
 	config   map[string]string
 	inputs   []textinput.Model
@@ -45,12 +46,15 @@ type uiResult struct {
 }
 
 var uiItems = []uiItem{
+	{key: "setup", title: "Setup", description: "Start or restart stack"},
 	{key: "status", title: "Runtime", description: "Health and readiness"},
-	{key: "config", title: "Model Config", description: "Embedding setup"},
-	{key: "ingest", title: "Ingest Repo", description: "Index current folder"},
+	{key: "config", title: "Model", description: "Connect embeddings"},
+	{key: "ingest", title: "Local Ingest", description: "Index this repo"},
+	{key: "git", title: "Remote Git", description: "Queue source ingest"},
 	{key: "think", title: "Think", description: "Ask governed memory"},
+	{key: "jobs", title: "Jobs", description: "Ingestion progress"},
 	{key: "mcp", title: "MCP", description: "Client config"},
-	{key: "help", title: "Help", description: "Shortcuts"},
+	{key: "doctor", title: "Doctor", description: "Run diagnostics"},
 }
 
 var (
@@ -114,6 +118,7 @@ func (m uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case uiResult:
 		m.busy = false
 		m.errText = ""
+		m.lastKind = msg.kind
 		if msg.err != nil {
 			m.errText = msg.err.Error()
 			m.message = "Action failed"
@@ -131,7 +136,10 @@ func (m uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.screen = "home"
 		return m, nil
 	case tea.KeyMsg:
-		if m.screen == "model-form" || m.screen == "think-form" {
+		if m.busy && msg.String() != "ctrl+c" && msg.String() != "q" {
+			return m, nil
+		}
+		if m.inForm() {
 			return m.updateForm(msg)
 		}
 		switch msg.String() {
@@ -151,6 +159,14 @@ func (m uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.busy = true
 			m.message = "Refreshing runtime"
 			return m, uiRefreshCmd(m.ctx, m.args)
+		case "s":
+			m.busy = true
+			m.message = "Starting local stack"
+			return m, uiRunCmd(m.ctx, m.args, []string{"up"})
+		case "x":
+			m.busy = true
+			m.message = "Restarting local stack"
+			return m, uiRunManyCmd(m.ctx, m.args, [][]string{{"down"}, {"up"}})
 		case "l":
 			m.busy = true
 			m.message = "Switching to local embeddings"
@@ -158,15 +174,26 @@ func (m uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "c":
 			return m.openModelForm(), nil
 		case "i":
-			m.busy = true
-			m.message = "Ingesting current repo"
-			return m, uiRunCmd(m.ctx, m.args, []string{"ingest", ".", "--code"})
+			return m.openLocalIngestForm(), nil
+		case "g":
+			return m.openGitIngestForm(), nil
 		case "t":
 			return m.openThinkForm(), nil
+		case "J":
+			m.busy = true
+			m.message = "Loading ingestion jobs"
+			return m, uiRunCmd(m.ctx, m.args, []string{"jobs"})
 		case "m":
 			m.busy = true
 			m.message = "Generating MCP config"
 			return m, uiRunCmd(m.ctx, m.args, []string{"mcp"})
+		case "d":
+			m.busy = true
+			m.message = "Running doctor"
+			return m, uiRunCmd(m.ctx, m.args, []string{"doctor"})
+		case "?":
+			m.selected = len(uiItems) - 1
+			return m, nil
 		case "enter":
 			return m.activateSelected()
 		}
@@ -207,13 +234,60 @@ func (m uiModel) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			baseURL := strings.TrimSpace(m.inputs[0].Value())
 			apiKey := strings.TrimSpace(m.inputs[1].Value())
 			model := strings.TrimSpace(m.inputs[2].Value())
-			if baseURL == "" || apiKey == "" || model == "" {
-				m.errText = "Base URL, API key, and model are required"
+			dims := strings.TrimSpace(m.inputs[3].Value())
+			if apiKey == "" {
+				apiKey = strings.TrimSpace(m.config["EMBEDDING_API_KEY"])
+			}
+			if baseURL == "" || apiKey == "" || model == "" || dims == "" {
+				m.errText = "Base URL, API key, model, and dimensions are required"
 				return m, nil
 			}
 			m.busy = true
 			m.message = "Saving compatible model config"
-			return m, uiRunCmd(m.ctx, m.args, []string{"config", "model", "compatible", "--base-url", baseURL, "--api-key", apiKey, "--model", model})
+			return m, uiRunCmd(m.ctx, m.args, []string{"config", "model", "compatible", "--base-url", baseURL, "--api-key", apiKey, "--model", model, "--dimensions", dims})
+		}
+		if m.screen == "local-ingest-form" {
+			path := strings.TrimSpace(m.inputs[0].Value())
+			scope := strings.TrimSpace(m.inputs[1].Value())
+			include := strings.TrimSpace(m.inputs[2].Value())
+			code := strings.TrimSpace(m.inputs[3].Value())
+			if path == "" {
+				m.errText = "Path is required"
+				return m, nil
+			}
+			argv := []string{"ingest", path}
+			if scope != "" {
+				argv = append(argv, "--scope", scope)
+			}
+			if include != "" {
+				argv = append(argv, "--include", include)
+			}
+			if yesish(code) {
+				argv = append(argv, "--code")
+			}
+			m.busy = true
+			m.message = "Ingesting local source"
+			return m, uiRunCmd(m.ctx, m.args, argv)
+		}
+		if m.screen == "git-ingest-form" {
+			repo := strings.TrimSpace(m.inputs[0].Value())
+			ref := strings.TrimSpace(m.inputs[1].Value())
+			scope := strings.TrimSpace(m.inputs[2].Value())
+			if repo == "" {
+				m.errText = "Repository URL is required"
+				return m, nil
+			}
+			argv := []string{"ingest", "--git", repo}
+			if ref != "" {
+				argv = append(argv, "--ref", ref)
+			}
+			if scope != "" {
+				argv = append(argv, "--scope", scope)
+			}
+			argv = append(argv, "--code", "--wait")
+			m.busy = true
+			m.message = "Queueing remote Git ingest"
+			return m, uiRunCmd(m.ctx, m.args, argv)
 		}
 		question := strings.TrimSpace(m.inputs[0].Value())
 		if question == "" {
@@ -231,6 +305,10 @@ func (m uiModel) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m uiModel) activateSelected() (tea.Model, tea.Cmd) {
 	switch uiItems[m.selected].key {
+	case "setup":
+		m.busy = true
+		m.message = "Starting local stack"
+		return m, uiRunCmd(m.ctx, m.args, []string{"up"})
 	case "status":
 		m.busy = true
 		m.message = "Refreshing runtime"
@@ -238,15 +316,23 @@ func (m uiModel) activateSelected() (tea.Model, tea.Cmd) {
 	case "config":
 		return m.openModelForm(), nil
 	case "ingest":
-		m.busy = true
-		m.message = "Ingesting current repo"
-		return m, uiRunCmd(m.ctx, m.args, []string{"ingest", ".", "--code"})
+		return m.openLocalIngestForm(), nil
+	case "git":
+		return m.openGitIngestForm(), nil
 	case "think":
 		return m.openThinkForm(), nil
+	case "jobs":
+		m.busy = true
+		m.message = "Loading ingestion jobs"
+		return m, uiRunCmd(m.ctx, m.args, []string{"jobs"})
 	case "mcp":
 		m.busy = true
 		m.message = "Generating MCP config"
 		return m, uiRunCmd(m.ctx, m.args, []string{"mcp"})
+	case "doctor":
+		m.busy = true
+		m.message = "Running doctor"
+		return m, uiRunCmd(m.ctx, m.args, []string{"doctor"})
 	default:
 		m.message = "Use the shortcuts below"
 		return m, nil
@@ -255,25 +341,85 @@ func (m uiModel) activateSelected() (tea.Model, tea.Cmd) {
 
 func (m uiModel) openModelForm() uiModel {
 	base := textinput.New()
-	base.Placeholder = "https://api.example.com/v1"
+	base.Placeholder = "https://api.openai.com/v1"
 	base.Prompt = "Base URL  "
-	base.SetValue(m.config["EMBEDDING_BASE_URL"])
+	base.SetValue(firstNonEmpty(m.config["EMBEDDING_BASE_URL"], "https://api.openai.com/v1"))
 	base.Focus()
 
 	key := textinput.New()
 	key.Placeholder = "API key"
+	if strings.TrimSpace(m.config["EMBEDDING_API_KEY"]) != "" {
+		key.Placeholder = "saved key kept if blank"
+	}
 	key.Prompt = "API key   "
 	key.EchoMode = textinput.EchoPassword
 	key.EchoCharacter = '*'
 
 	model := textinput.New()
-	model.Placeholder = "embedding-model-1536"
+	model.Placeholder = "text-embedding-3-small"
 	model.Prompt = "Model     "
-	model.SetValue(firstNonEmpty(m.config["EMBEDDING_MODEL"], "embedding-model-1536"))
+	model.SetValue(firstNonEmpty(m.config["EMBEDDING_MODEL"], "text-embedding-3-small"))
 
-	m.inputs = []textinput.Model{base, key, model}
+	dims := textinput.New()
+	dims.Placeholder = "1536"
+	dims.Prompt = "Dims      "
+	dims.SetValue(firstNonEmpty(m.config["EMBEDDING_DIMENSIONS"], "1536"))
+
+	m.inputs = []textinput.Model{base, key, model, dims}
 	m.focus = 0
 	m.screen = "model-form"
+	m.errText = ""
+	return m
+}
+
+func (m uiModel) openLocalIngestForm() uiModel {
+	path := textinput.New()
+	path.Placeholder = "."
+	path.Prompt = "Path      "
+	path.SetValue(".")
+	path.Focus()
+
+	scope := textinput.New()
+	scope.Placeholder = scopeOrDefault(m.args, ".")
+	scope.Prompt = "Scope     "
+	scope.SetValue(flag(m.args, "scope", ""))
+
+	include := textinput.New()
+	include.Placeholder = "**/*.md"
+	include.Prompt = "Include   "
+	include.SetValue("**/*.md")
+
+	code := textinput.New()
+	code.Placeholder = "yes"
+	code.Prompt = "Code      "
+	code.SetValue("yes")
+
+	m.inputs = []textinput.Model{path, scope, include, code}
+	m.focus = 0
+	m.screen = "local-ingest-form"
+	m.errText = ""
+	return m
+}
+
+func (m uiModel) openGitIngestForm() uiModel {
+	repo := textinput.New()
+	repo.Placeholder = "https://github.com/owner/repo.git"
+	repo.Prompt = "Repo URL  "
+	repo.Focus()
+
+	ref := textinput.New()
+	ref.Placeholder = "main"
+	ref.Prompt = "Ref       "
+	ref.SetValue("main")
+
+	scope := textinput.New()
+	scope.Placeholder = scopeOrDefault(m.args, ".")
+	scope.Prompt = "Scope     "
+	scope.SetValue(flag(m.args, "scope", ""))
+
+	m.inputs = []textinput.Model{repo, ref, scope}
+	m.focus = 0
+	m.screen = "git-ingest-form"
 	m.errText = ""
 	return m
 }
@@ -292,12 +438,27 @@ func (m uiModel) openThinkForm() uiModel {
 
 func (m uiModel) View() string {
 	if m.screen == "model-form" {
-		return m.formView("Connect model", "Set an OpenAI-compatible embedding endpoint. Tab moves, Enter saves, Esc cancels.")
+		return m.formView("Connect model", "Set an OpenAI-compatible embedding endpoint. Leave API key blank to keep the saved key.")
+	}
+	if m.screen == "local-ingest-form" {
+		return m.formView("Ingest local source", "Index docs and optional code intelligence from a local path. Blank scope uses repo default.")
+	}
+	if m.screen == "git-ingest-form" {
+		return m.formView("Ingest remote Git", "Queue a worker refresh from a provider-neutral Git URL. Code intelligence is enabled.")
 	}
 	if m.screen == "think-form" {
 		return m.formView("Ask Abra", "Ask a source-backed question for the current repo scope. Enter runs think, Esc cancels.")
 	}
 	return m.homeView()
+}
+
+func (m uiModel) inForm() bool {
+	switch m.screen {
+	case "model-form", "local-ingest-form", "git-ingest-form", "think-form":
+		return true
+	default:
+		return false
+	}
 }
 
 func (m uiModel) homeView() string {
@@ -307,7 +468,7 @@ func (m uiModel) homeView() string {
 	nav := m.navView(leftWidth)
 	main := m.mainView(rightWidth)
 	body := lipgloss.JoinHorizontal(lipgloss.Top, nav, "  ", main)
-	footer := uiMutedStyle.Render("Keys: ↑/↓ select  enter open  r refresh  l local  c connect model  i ingest  t think  m mcp  q quit")
+	footer := uiMutedStyle.Render("Keys: up/down select  enter open  s start  x restart  c model  l local  i ingest  g git  t think  J jobs  m mcp  d doctor  q quit")
 	return strings.Join([]string{header, body, footer}, "\n\n")
 }
 
@@ -344,12 +505,52 @@ func (m uiModel) navView(width int) string {
 }
 
 func (m uiModel) mainView(width int) string {
+	if width < 50 {
+		width = 50
+	}
 	sections := []string{
-		m.runtimeCard(width),
-		m.configCard(width),
+		m.focusCard(width),
 		m.messageCard(width),
 	}
 	return uiActiveStyle.Width(width).Render(strings.Join(sections, "\n\n"))
+}
+
+func (m uiModel) focusCard(width int) string {
+	switch uiItems[m.selected].key {
+	case "setup":
+		return m.setupCard(width)
+	case "status":
+		return m.runtimeCard(width)
+	case "config":
+		return m.configCard(width)
+	case "ingest":
+		return m.localIngestCard(width)
+	case "git":
+		return m.gitIngestCard(width)
+	case "think":
+		return m.thinkCard(width)
+	case "jobs":
+		return m.jobsCard(width)
+	case "mcp":
+		return m.mcpCard(width)
+	case "doctor":
+		return m.doctorCard(width)
+	default:
+		return m.runtimeCard(width)
+	}
+}
+
+func (m uiModel) setupCard(width int) string {
+	lines := []string{
+		uiTitleStyle.Render("Setup"),
+		row("Env file", envPath(m.args)),
+		row("Runtime", boolText(m.ready(), "ready", "not running")),
+		"",
+		"Start the local stack from here, then connect a model or use local embeddings.",
+		"",
+		uiKeyStyle.Render("s") + " start stack   " + uiKeyStyle.Render("x") + " restart stack   " + uiKeyStyle.Render("d") + " doctor",
+	}
+	return lipgloss.NewStyle().Width(width - 6).Render(strings.Join(lines, "\n"))
 }
 
 func (m uiModel) runtimeCard(width int) string {
@@ -366,6 +567,8 @@ func (m uiModel) runtimeCard(width int) string {
 		row("Embedding", embedding),
 		row("Auth", auth),
 		row("Approval", approval),
+		"",
+		uiKeyStyle.Render("r") + " refresh   " + uiKeyStyle.Render("s") + " start   " + uiKeyStyle.Render("d") + " doctor",
 	}
 	return lipgloss.NewStyle().Width(width - 6).Render(strings.Join(lines, "\n"))
 }
@@ -385,6 +588,89 @@ func (m uiModel) configCard(width int) string {
 		row("Dimensions", dims),
 		row("Base URL", base),
 		row("API key", maskSecret(m.config["EMBEDDING_API_KEY"])),
+		"",
+		"Use local embeddings for offline dev, or connect any OpenAI-compatible embedding endpoint.",
+		"",
+		uiKeyStyle.Render("c") + " connect compatible   " + uiKeyStyle.Render("l") + " use local",
+	}
+	return lipgloss.NewStyle().Width(width - 6).Render(strings.Join(lines, "\n"))
+}
+
+func (m uiModel) localIngestCard(width int) string {
+	scope := flag(m.args, "scope", "")
+	if scope == "" {
+		scope = scopeOrDefault(m.args, ".")
+	}
+	lines := []string{
+		uiTitleStyle.Render("Local Ingest"),
+		row("Path", "."),
+		row("Scope", scope),
+		row("Code", "enabled"),
+		"",
+		"Indexes markdown plus deterministic code intelligence. Code creates graph context and summaries, not trusted prose claims.",
+		"",
+		uiKeyStyle.Render("i") + " configure and ingest",
+	}
+	return lipgloss.NewStyle().Width(width - 6).Render(strings.Join(lines, "\n"))
+}
+
+func (m uiModel) gitIngestCard(width int) string {
+	lines := []string{
+		uiTitleStyle.Render("Remote Git"),
+		"Queue a worker-managed source config for a Git repository.",
+		"",
+		"Use this when the source should refresh through Abra's worker instead of one manual local ingest.",
+		"",
+		uiKeyStyle.Render("g") + " configure remote Git ingest   " + uiKeyStyle.Render("J") + " view jobs",
+	}
+	return lipgloss.NewStyle().Width(width - 6).Render(strings.Join(lines, "\n"))
+}
+
+func (m uiModel) thinkCard(width int) string {
+	scope := flag(m.args, "scope", "")
+	if scope == "" {
+		scope = scopeOrDefault(m.args, ".")
+	}
+	lines := []string{
+		uiTitleStyle.Render("Think"),
+		row("Scope", scope),
+		row("Answer", "citations + decision gate"),
+		"",
+		"Ask what an agent should know before changing this project. Abra returns source-backed context, gaps, health, and proceed/review guidance.",
+		"",
+		uiKeyStyle.Render("t") + " ask a question",
+	}
+	return lipgloss.NewStyle().Width(width - 6).Render(strings.Join(lines, "\n"))
+}
+
+func (m uiModel) jobsCard(width int) string {
+	lines := []string{
+		uiTitleStyle.Render("Jobs"),
+		"Inspect worker ingestion jobs for the current scope.",
+		"",
+		uiKeyStyle.Render("J") + " refresh jobs   " + uiKeyStyle.Render("g") + " queue remote Git",
+	}
+	return lipgloss.NewStyle().Width(width - 6).Render(strings.Join(lines, "\n"))
+}
+
+func (m uiModel) mcpCard(width int) string {
+	lines := []string{
+		uiTitleStyle.Render("MCP"),
+		"Generate MCP client config for AI tools that can call Abra as a governed brain.",
+		"",
+		"Command: abra mcp > .tmp/abra.mcp.json",
+		"",
+		uiKeyStyle.Render("m") + " print MCP config",
+	}
+	return lipgloss.NewStyle().Width(width - 6).Render(strings.Join(lines, "\n"))
+}
+
+func (m uiModel) doctorCard(width int) string {
+	lines := []string{
+		uiTitleStyle.Render("Doctor"),
+		"Run local diagnostics: Docker, env file, readiness, MCP, and browser UI removal check.",
+		"",
+		uiKeyStyle.Render("d") + " run doctor   " + uiKeyStyle.Render("r") + " refresh runtime",
 	}
 	return lipgloss.NewStyle().Width(width - 6).Render(strings.Join(lines, "\n"))
 }
@@ -398,7 +684,11 @@ func (m uiModel) messageCard(width int) string {
 	if m.errText != "" {
 		message = uiDangerStyle.Render(m.errText)
 	}
-	return lipgloss.NewStyle().Width(width - 6).Render(title + "\n" + clampLines(message, 10))
+	limit := 14
+	if strings.Contains(m.lastKind, "think") || strings.Contains(m.lastKind, "mcp") || strings.Contains(m.lastKind, "doctor") {
+		limit = 22
+	}
+	return lipgloss.NewStyle().Width(width - 6).Render(title + "\n" + clampLines(message, limit))
 }
 
 func (m uiModel) formView(title, subtitle string) string {
@@ -462,6 +752,27 @@ func uiRunCmd(ctx context.Context, args cliArgs, argv []string) tea.Cmd {
 	}
 }
 
+func uiRunManyCmd(ctx context.Context, args cliArgs, commands [][]string) tea.Cmd {
+	return func() tea.Msg {
+		var outputs []string
+		for _, argv := range commands {
+			output, err := captureRun(ctx, uiChildArgs(args, argv))
+			if strings.TrimSpace(output) != "" {
+				outputs = append(outputs, strings.TrimSpace(output))
+			}
+			if err != nil {
+				return uiResult{kind: "multi", output: strings.Join(outputs, "\n\n"), err: err}
+			}
+		}
+		values := map[string]string{}
+		if ensureErr := ensureEnvQuiet(args); ensureErr == nil {
+			values, _ = readEnvValues(envPath(args))
+		}
+		status, _, _ := getJSON(ctx, args, "/readyz")
+		return uiResult{kind: "multi", output: strings.Join(outputs, "\n\n"), status: status, config: values}
+	}
+}
+
 func ensureEnvQuiet(args cliArgs) error {
 	path := envPath(args)
 	if fileExists(path) {
@@ -497,6 +808,15 @@ func hasArgFlag(argv []string, name string) bool {
 		}
 	}
 	return false
+}
+
+func yesish(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "1", "y", "yes", "true", "on", "code":
+		return true
+	default:
+		return false
+	}
 }
 
 func captureRun(ctx context.Context, argv []string) (string, error) {

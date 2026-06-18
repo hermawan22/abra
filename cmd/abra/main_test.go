@@ -106,6 +106,52 @@ func TestConfigModelCompatibleUpdatesEnv(t *testing.T) {
 	}
 }
 
+func TestConfigModelOpenAIDefaults(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+
+	stdin := os.Stdin
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdin = reader
+	t.Cleanup(func() {
+		os.Stdin = stdin
+		_ = reader.Close()
+	})
+	_, _ = writer.WriteString("openai-test-key\n")
+	_ = writer.Close()
+
+	err = run(context.Background(), []string{
+		"config",
+		"model",
+		"openai",
+		"--api-key-stdin",
+	})
+	if err != nil {
+		t.Fatalf("config model openai error = %v", err)
+	}
+	values, err := readEnvValues(filepath.Join(home, "quickstart.env"))
+	if err != nil {
+		t.Fatalf("read env: %v", err)
+	}
+	if values["EMBEDDING_BASE_URL"] != "https://api.openai.com/v1" {
+		t.Fatalf("base url = %q", values["EMBEDDING_BASE_URL"])
+	}
+	if values["EMBEDDING_MODEL"] != "text-embedding-3-small" {
+		t.Fatalf("model = %q", values["EMBEDDING_MODEL"])
+	}
+	if values["EMBEDDING_DIMENSIONS"] != "1536" {
+		t.Fatalf("dimensions = %q", values["EMBEDDING_DIMENSIONS"])
+	}
+	if values["EMBEDDING_API_KEY"] != "openai-test-key" {
+		t.Fatalf("api key = %q", values["EMBEDDING_API_KEY"])
+	}
+}
+
 func TestConfigModelLocalClearsRemoteFields(t *testing.T) {
 	root := t.TempDir()
 	home := t.TempDir()

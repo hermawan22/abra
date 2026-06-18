@@ -31,22 +31,20 @@ npm audit --audit-level=high
 
 Each release should publish:
 
-- `abra`
-- `abra-api`
-- `abra-worker`
-- `abra-migrate`
+- `abra` CLI archives for supported platforms
 - `SHA256SUMS`
-- OCI image tagged with the version and Git SHA
-- SBOM and provenance for the OCI image when supported by the registry workflow
+
+Container images, SBOMs, and provenance should only be documented in release
+notes after the workflow publishes them.
 
 ## Tagging
 
 ```sh
-git tag -s v0.1.0 -m "Abra v0.1.0"
-git push origin v0.1.0
+git tag -s vX.Y.Z -m "Abra vX.Y.Z"
+git push origin vX.Y.Z
 ```
 
-The release workflow builds binaries, uploads checksums, builds the image, and publishes to GHCR when the repository has the required permissions.
+The release workflow builds CLI archives and uploads checksums.
 
 ## Verification
 
@@ -56,7 +54,7 @@ Download release artifacts and verify checksums:
 sha256sum -c SHA256SUMS
 ```
 
-For container images, prefer digests over mutable tags in production deploy manifests. When provenance, SBOM, or image signatures are present, verify them before rollout using the tooling configured by the release workflow and registry.
+For container images published by downstream deployment workflows, prefer digests over mutable tags in production deploy manifests.
 
 ## Rollback
 
