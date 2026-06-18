@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: abra-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: abra-worker
+  template:
+    metadata:
+      labels:
+        app: abra-worker
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: worker
+          image: abra:local
+          imagePullPolicy: IfNotPresent
+          command: ["/app/abra-worker"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          envFrom:
+            - configMapRef:
+                name: abra-config
+            - secretRef:
+                name: abra-secrets
+          volumeMounts:
+            - name: git-cache
+              mountPath: /tmp/abra-git-cache
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: git-cache
+          emptyDir: {}

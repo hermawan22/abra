@@ -1,0 +1,324 @@
+package jobs
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/hermawan22/abra/internal/ingest"
+	"github.com/hermawan22/abra/internal/observability"
+	"go.opentelemetry.io/otel/attribute"
+)
+
+const (
+	DefaultMaxSourcesPerRun             = 25
+	DefaultMaxChangedDocumentsPerSource = 100
+	DefaultSourceTimeout                = 2 * time.Minute
+	DefaultLeaseTimeout                 = 5 * time.Minute
+	DefaultLeaseOwner                   = "abra-worker"
+	DefaultGitCloneDepth                = 1
+)
+
+type SourceStore interface {
+	RecoverStaleIngestionJobs(ctx context.Context, leaseTimeout time.Duration) (int64, error)
+	EnqueueScheduledSources(ctx context.Context, limit int) (int, error)
+	ClaimQueuedIngestionJobs(ctx context.Context, limit int, leaseOwner string) ([]QueuedIngestionJob, error)
+	FinishIngestionJob(ctx context.Context, jobID string, stats SourceStats, runErr error) (string, error)
+	DocumentState(ctx context.Context, doc ingest.Document) (DocumentState, error)
+	MarkSourceSuccess(ctx context.Context, sourceID string, stats SourceStats) error
+	MarkSourceError(ctx context.Context, sourceID string, err error) error
+}
+
+type DocumentState struct {
+	Found             bool
+	ContentChecksum   string
+	IngestChecksum    string
+	IngestFingerprint string
+}
+
+type DocumentIngestor interface {
+	IngestDocument(ctx context.Context, input IngestDocumentInput) (IngestDocumentResult, error)
+}
+
+type IngestDocumentInput struct {
+	SourceType      string
+	SourceURL       string
+	SourceID        string
+	Title           string
+	Scope           string
+	Content         string
+	SourceUpdatedAt string
+	Metadata        map[string]any
+}
+
+type IngestDocumentResult struct {
+	DocumentID string
+	Chunks     int
+	Claims     int
+}
+
+type Options struct {
+	MaxSourcesPerRun             int
+	MaxChangedDocumentsPerSource int
+	SourceTimeout                time.Duration
+	LeaseTimeout                 time.Duration
+	LeaseOwner                   string
+	GitCacheDir                  string
+	GitCloneDepth                int
+	Logger                       *slog.Logger
+}
+
+type Runner struct {
+	store    SourceStore
+	ingestor DocumentIngestor
+	options  Options
+}
+
+type RunStats struct {
+	Sources           int
+	SourcesSucceeded  int
+	SourcesFailed     int
+	DocumentsSeen     int
+	DocumentsChanged  int
+	DocumentsSkipped  int
+	DocumentsDeferred int
+	ChunksWritten     int
+	ClaimsWritten     int
+}
+
+type SourceStats struct {
+	DocumentsSeen     int
+	DocumentsChanged  int
+	DocumentsSkipped  int
+	DocumentsDeferred int
+	ChunksWritten     int
+	ClaimsWritten     int
+}
+
+type QueuedIngestionJob struct {
+	ID          string
+	Source      SourceConfig
+	TriggerType string
+	Attempts    int
+	MaxAttempts int
+}
+
+func NewRunner(store SourceStore, ingestor DocumentIngestor, options Options) *Runner {
+	if options.MaxSourcesPerRun <= 0 {
+		options.MaxSourcesPerRun = DefaultMaxSourcesPerRun
+	}
+	if options.MaxChangedDocumentsPerSource <= 0 {
+		options.MaxChangedDocumentsPerSource = DefaultMaxChangedDocumentsPerSource
+	}
+	if options.SourceTimeout <= 0 {
+		options.SourceTimeout = DefaultSourceTimeout
+	}
+	if options.LeaseTimeout <= 0 {
+		options.LeaseTimeout = DefaultLeaseTimeout
+	}
+	if options.LeaseOwner == "" {
+		options.LeaseOwner = DefaultLeaseOwner
+	}
+	if options.GitCacheDir == "" {
+		options.GitCacheDir = filepath.Join(os.TempDir(), "abra-git-cache")
+	}
+	if options.GitCloneDepth <= 0 {
+		options.GitCloneDepth = DefaultGitCloneDepth
+	}
+	if options.Logger == nil {
+		options.Logger = slog.Default()
+	}
+	return &Runner{store: store, ingestor: ingestor, options: options}
+}
+
+func (r *Runner) RunOnce(ctx context.Context) (RunStats, error) {
+	ctx, span := observability.Start(ctx, "abra.worker.run_once")
+	var runErr error
+	defer func() {
+		observability.End(span, runErr)
+	}()
+	if recovered, err := r.store.RecoverStaleIngestionJobs(ctx, r.options.LeaseTimeout); err != nil {
+		r.options.Logger.Error("stale ingestion job recovery failed", "error", err)
+	} else if recovered > 0 {
+		r.options.Logger.Warn("stale ingestion jobs recovered", "count", recovered)
+	}
+	if _, err := r.store.EnqueueScheduledSources(ctx, r.options.MaxSourcesPerRun); err != nil {
+		r.options.Logger.Error("scheduled source enqueue failed", "error", err)
+	}
+	queuedJobs, err := r.store.ClaimQueuedIngestionJobs(ctx, r.options.MaxSourcesPerRun, r.options.LeaseOwner)
+	if err != nil {
+		runErr = err
+		return RunStats{}, err
+	}
+	span.SetAttributes(attribute.Int("abra.worker.claimed_jobs", len(queuedJobs)))
+
+	stats := RunStats{Sources: len(queuedJobs)}
+	for _, queuedJob := range queuedJobs {
+		source := queuedJob.Source
+		jobID := queuedJob.ID
+		sourceStats, err := r.runSource(ctx, source, jobID)
+		stats.DocumentsSeen += sourceStats.DocumentsSeen
+		stats.DocumentsChanged += sourceStats.DocumentsChanged
+		stats.DocumentsSkipped += sourceStats.DocumentsSkipped
+		stats.DocumentsDeferred += sourceStats.DocumentsDeferred
+		stats.ChunksWritten += sourceStats.ChunksWritten
+		stats.ClaimsWritten += sourceStats.ClaimsWritten
+		finalStatus, finishErr := r.store.FinishIngestionJob(ctx, jobID, sourceStats, err)
+		if finishErr != nil {
+			r.options.Logger.Error("source ingestion job finish failed", "source_config_id", source.ID, "job_id", jobID, "error", finishErr)
+		}
+		if err != nil {
+			stats.SourcesFailed++
+			r.options.Logger.Error("source ingestion failed", "source_config_id", source.ID, "error", err)
+			if finalStatus == "failed" {
+				if markErr := r.store.MarkSourceError(ctx, source.ID, err); markErr != nil {
+					r.options.Logger.Error("source error update failed", "source_config_id", source.ID, "error", markErr)
+				}
+			} else if finalStatus == "retry" {
+				r.options.Logger.Warn("source ingestion queued for retry", "source_config_id", source.ID, "job_id", jobID)
+			}
+			continue
+		}
+		stats.SourcesSucceeded++
+		if finalStatus != "succeeded" {
+			r.options.Logger.Warn("source ingestion completed but job was not marked succeeded", "source_config_id", source.ID, "job_id", jobID, "status", finalStatus)
+			continue
+		}
+		if err := r.store.MarkSourceSuccess(ctx, source.ID, sourceStats); err != nil {
+			r.options.Logger.Error("source success update failed", "source_config_id", source.ID, "error", err)
+		}
+	}
+	runErr = ctx.Err()
+	span.SetAttributes(
+		attribute.Int("abra.worker.sources", stats.Sources),
+		attribute.Int("abra.worker.sources_succeeded", stats.SourcesSucceeded),
+		attribute.Int("abra.worker.sources_failed", stats.SourcesFailed),
+		attribute.Int("abra.worker.documents_seen", stats.DocumentsSeen),
+		attribute.Int("abra.worker.documents_changed", stats.DocumentsChanged),
+		attribute.Int("abra.worker.documents_skipped", stats.DocumentsSkipped),
+		attribute.Int("abra.worker.documents_deferred", stats.DocumentsDeferred),
+		attribute.Int("abra.worker.chunks_written", stats.ChunksWritten),
+		attribute.Int("abra.worker.claims_written", stats.ClaimsWritten),
+	)
+	return stats, runErr
+}
+
+func (r *Runner) runSource(ctx context.Context, source SourceConfig, jobID string) (SourceStats, error) {
+	ctx, span := observability.Start(ctx, "abra.worker.source",
+		attribute.String("abra.source.type", string(source.SourceType)),
+	)
+	var runErr error
+	defer func() {
+		observability.End(span, runErr)
+	}()
+	sourceCtx, cancel := context.WithTimeout(ctx, r.options.SourceTimeout)
+	defer cancel()
+
+	spec, err := source.IngestSpec()
+	if err != nil {
+		runErr = err
+		return SourceStats{}, err
+	}
+	spec, err = r.prepareIngestSpec(sourceCtx, spec)
+	if err != nil {
+		runErr = err
+		return SourceStats{}, err
+	}
+	localIngestor, err := ingest.NewLocalRepoMarkdownIngestor(spec)
+	if err != nil {
+		runErr = err
+		return SourceStats{}, err
+	}
+	docs, err := localIngestor.Ingest(sourceCtx)
+	if err != nil {
+		runErr = err
+		return SourceStats{}, err
+	}
+
+	stats := SourceStats{DocumentsSeen: len(docs)}
+	span.SetAttributes(attribute.Int("abra.source.documents_seen", len(docs)))
+	for _, doc := range docs {
+		if err := sourceCtx.Err(); err != nil {
+			runErr = err
+			return stats, err
+		}
+		state, err := r.store.DocumentState(sourceCtx, doc)
+		if err != nil {
+			runErr = err
+			return stats, fmt.Errorf("read document state for %s: %w", doc.SourceURL, err)
+		}
+		if unchanged(doc, state) {
+			stats.DocumentsSkipped++
+			continue
+		}
+		if stats.DocumentsChanged >= r.options.MaxChangedDocumentsPerSource {
+			stats.DocumentsDeferred++
+			continue
+		}
+		result, err := r.ingestor.IngestDocument(sourceCtx, documentInput(source, doc, jobID))
+		if err != nil {
+			runErr = err
+			return stats, fmt.Errorf("ingest %s: %w", doc.SourceURL, err)
+		}
+		stats.DocumentsChanged++
+		stats.ChunksWritten += result.Chunks
+		stats.ClaimsWritten += result.Claims
+	}
+	span.SetAttributes(
+		attribute.Int("abra.source.documents_changed", stats.DocumentsChanged),
+		attribute.Int("abra.source.documents_skipped", stats.DocumentsSkipped),
+		attribute.Int("abra.source.documents_deferred", stats.DocumentsDeferred),
+		attribute.Int("abra.source.chunks_written", stats.ChunksWritten),
+		attribute.Int("abra.source.claims_written", stats.ClaimsWritten),
+	)
+	return stats, nil
+}
+
+func unchanged(doc ingest.Document, state DocumentState) bool {
+	if !state.Found {
+		return false
+	}
+	if state.IngestFingerprint != "" {
+		return state.IngestFingerprint == doc.Fingerprint
+	}
+	if state.IngestChecksum != "" {
+		return state.IngestChecksum == doc.Checksum
+	}
+	return state.ContentChecksum == doc.Checksum
+}
+
+func documentInput(source SourceConfig, doc ingest.Document, jobID string) IngestDocumentInput {
+	metadata := map[string]any{}
+	for key, value := range source.Metadata {
+		metadata[key] = value
+	}
+	for key, value := range doc.Metadata {
+		metadata[key] = value
+	}
+	metadata["source_config_id"] = source.ID
+	metadata["source_config_name"] = source.Name
+	if jobID != "" {
+		metadata["ingestion_job_id"] = jobID
+	}
+	metadata["ingest_path"] = doc.Path
+	metadata["ingest_checksum"] = doc.Checksum
+	metadata["ingest_fingerprint"] = doc.Fingerprint
+	if source.Authority != "" {
+		metadata["authority"] = source.Authority
+	}
+	if source.AuthorityScore > 0 {
+		metadata["authority_score"] = source.AuthorityScore
+	}
+	return IngestDocumentInput{
+		SourceType: string(doc.SourceType),
+		SourceURL:  doc.SourceURL,
+		SourceID:   doc.SourceID,
+		Title:      doc.Title,
+		Scope:      doc.Scope,
+		Content:    doc.Content,
+		Metadata:   metadata,
+	}
+}

@@ -1,0 +1,53 @@
+name: Release Gate
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quick-release-gate:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.11"
+          cache: true
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Run quick managed release gate
+        run: |
+          ABRA_RELEASE_PROFILE=quick \
+          ABRA_RELEASE_MANAGE_STACK=1 \
+          ABRA_RELEASE_COMMAND_TIMEOUT_MS=300000 \
+          npm run release:gate | tee abra-release-gate.json
+
+      - name: Upload release gate report
+        uses: actions/upload-artifact@v4
+        with:
+          name: abra-release-gate
+          path: abra-release-gate.json

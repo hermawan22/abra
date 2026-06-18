@@ -1,0 +1,117 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: abra
+      POSTGRES_PASSWORD: abra
+      POSTGRES_DB: abra
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - abra-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U abra -d abra"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  migrate:
+    build: .
+    image: ${ABRA_IMAGE:-abra:local}
+    command: ["/app/abra-migrate"]
+    environment:
+      DATABASE_URL: ${ABRA_DATABASE_URL:-postgres://abra:abra@postgres:5432/abra}
+      NODE_ENV: production
+      ABRA_API_KEYS: ${ABRA_API_KEYS:?set ABRA_API_KEYS}
+      ABRA_WEBHOOK_SECRETS: ${ABRA_WEBHOOK_SECRETS:-}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-compatible}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-embedding-model-1536}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1536}
+      ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION: ${ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION:-false}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles:
+      - setup
+
+  api:
+    build: .
+    image: ${ABRA_IMAGE:-abra:local}
+    command: ["/app/abra-api"]
+    environment:
+      DATABASE_URL: ${ABRA_DATABASE_URL:-postgres://abra:abra@postgres:5432/abra}
+      PORT: ${PORT:-8080}
+      NODE_ENV: production
+      ABRA_API_KEYS: ${ABRA_API_KEYS:?set ABRA_API_KEYS}
+      ABRA_APPROVAL_MODE: ${ABRA_APPROVAL_MODE:-enforce}
+      ABRA_WEBHOOK_SECRETS: ${ABRA_WEBHOOK_SECRETS:-}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-compatible}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-embedding-model-1536}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1536}
+      ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION: ${ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION:-false}
+      REDACT_PII: ${REDACT_PII:-true}
+      RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-120}
+      RATE_LIMIT_WINDOW: ${RATE_LIMIT_WINDOW:-1 minute}
+      ABRA_COMPOSE_HEALTH_CACHE_TTL: ${ABRA_COMPOSE_HEALTH_CACHE_TTL:-2s}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      ABRA_OTEL_EXPORTER_OTLP_ENDPOINT: ${ABRA_OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      ABRA_TRACING_ENABLED: ${ABRA_TRACING_ENABLED:-false}
+      ABRA_TRACING_SAMPLE_RATIO: ${ABRA_TRACING_SAMPLE_RATIO:-1}
+      ABRA_TRACING_INSECURE: ${ABRA_TRACING_INSECURE:-false}
+      ABRA_SERVICE_NAME: ${ABRA_SERVICE_NAME:-}
+      ABRA_DEPLOYMENT_ENVIRONMENT: ${ABRA_DEPLOYMENT_ENVIRONMENT:-production}
+    ports:
+      - "${ABRA_PORT:-18080}:${PORT:-8080}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    build: .
+    image: ${ABRA_IMAGE:-abra:local}
+    command: ["/app/abra-worker"]
+    environment:
+      DATABASE_URL: ${ABRA_DATABASE_URL:-postgres://abra:abra@postgres:5432/abra}
+      NODE_ENV: production
+      ABRA_API_KEYS: ${ABRA_API_KEYS:?set ABRA_API_KEYS}
+      ABRA_APPROVAL_MODE: ${ABRA_APPROVAL_MODE:-enforce}
+      ABRA_WEBHOOK_SECRETS: ${ABRA_WEBHOOK_SECRETS:-}
+      ABRA_AUDIT_SINK_URL: ${ABRA_AUDIT_SINK_URL:-}
+      ABRA_AUDIT_SINK_TOKEN: ${ABRA_AUDIT_SINK_TOKEN:-}
+      ABRA_AUDIT_SINK_SECRET: ${ABRA_AUDIT_SINK_SECRET:-}
+      ABRA_AUDIT_SINK_SCOPE: ${ABRA_AUDIT_SINK_SCOPE:-}
+      ABRA_AUDIT_SINK_BATCH_SIZE: ${ABRA_AUDIT_SINK_BATCH_SIZE:-100}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-compatible}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-embedding-model-1536}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1536}
+      ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION: ${ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION:-false}
+      REDACT_PII: ${REDACT_PII:-true}
+      RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-120}
+      RATE_LIMIT_WINDOW: ${RATE_LIMIT_WINDOW:-1 minute}
+      WORKER_INTERVAL: ${WORKER_INTERVAL:-5m}
+      ABRA_GIT_CACHE_DIR: ${ABRA_GIT_CACHE_DIR:-/tmp/abra-git-cache}
+      ABRA_GIT_CLONE_DEPTH: ${ABRA_GIT_CLONE_DEPTH:-1}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      ABRA_OTEL_EXPORTER_OTLP_ENDPOINT: ${ABRA_OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      ABRA_TRACING_ENABLED: ${ABRA_TRACING_ENABLED:-false}
+      ABRA_TRACING_SAMPLE_RATIO: ${ABRA_TRACING_SAMPLE_RATIO:-1}
+      ABRA_TRACING_INSECURE: ${ABRA_TRACING_INSECURE:-false}
+      ABRA_SERVICE_NAME: ${ABRA_SERVICE_NAME:-}
+      ABRA_DEPLOYMENT_ENVIRONMENT: ${ABRA_DEPLOYMENT_ENVIRONMENT:-production}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - abra-git-cache:/tmp/abra-git-cache
+    restart: unless-stopped
+
+volumes:
+  abra-postgres:
+  abra-git-cache:
