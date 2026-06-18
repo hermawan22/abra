@@ -4,6 +4,13 @@ All notable changes to Abra are documented here.
 
 This project uses semantic versioning for public releases. Until v1.0.0, minor versions may include breaking changes when they are documented in this file and in the release notes.
 
+## 0.3.6 - 2026-06-19
+
+### Added
+
+- Add `abra scope` to print the exact project memory scope, ingest command, think command, and Codex prompt to prevent AI clients from querying the wrong scope.
+- Add `abra mcp install-codex` to install Abra into Codex as a streamable HTTP MCP server without manually editing Codex config.
+
 ## 0.3.5 - 2026-06-19
 
 ### Fixed

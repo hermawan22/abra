@@ -100,6 +100,25 @@ Generate MCP client config:
 abra mcp > .tmp/abra.mcp.json
 ```
 
+Install Abra into Codex as a streamable HTTP MCP server:
+
+```sh
+abra mcp install-codex
+```
+
+Restart Codex or open a new thread after installing MCP servers. To avoid scope
+mismatches, run this in each project and pass the printed scope to the agent:
+
+```sh
+abra scope
+```
+
+Prompt pattern:
+
+```text
+Use Abra MCP first. Scope: repo:<project>. Call working_memory_compose before answering or changing code.
+```
+
 Stop the stack:
 
 ```sh
@@ -192,7 +211,7 @@ Connect an MCP client:
 go run ./cmd/abra mcp > .tmp/abra.mcp.json
 ```
 
-The generated config points at `http://127.0.0.1:18080/mcp` with the quickstart token. A static example is available at [examples/mcp/remote-http.json](./examples/mcp/remote-http.json).
+The generated config points at `http://127.0.0.1:18080/mcp` with the quickstart token. A static example is available at [examples/mcp/remote-http.json](./examples/mcp/remote-http.json). For Codex, prefer `abra mcp install-codex`; it installs the same HTTP MCP endpoint with a bearer-token environment variable so the token is not stored literally in Codex config.
 
 Stop the stack:
 

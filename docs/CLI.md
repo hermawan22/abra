@@ -98,6 +98,22 @@ Connect MCP:
 abra mcp > .tmp/abra.mcp.json
 ```
 
+Connect Codex directly:
+
+```sh
+abra mcp install-codex
+```
+
+Restart Codex or open a new thread after installing MCP servers. In each
+project, ask Abra for the exact scope before prompting an AI agent:
+
+```sh
+abra scope
+```
+
+Then tell the agent: `Use Abra MCP first. Scope: repo:<project>. Call
+working_memory_compose before answering or changing code.`
+
 Stop the local stack:
 
 ```sh
@@ -172,12 +188,14 @@ From a source checkout, run the CLI as `go run ./cmd/abra <command>`. In a relea
 | list sources | `abra sources` |
 | list jobs | `abra jobs` |
 | think | `abra think "question"` |
+| print project scope for agents | `abra scope` |
 | status | `abra status` |
 | doctor | `abra doctor` |
 | version | `abra version` |
 | upgrade | `abra upgrade` |
 | uninstall CLI | `abra uninstall --yes` |
-| mcp | `abra mcp > .tmp/abra.mcp.json` |
+| mcp config JSON | `abra mcp > .tmp/abra.mcp.json` |
+| install MCP into Codex | `abra mcp install-codex` |
 | down | `abra down` |
 
 For explicit HTTP ingestion, call the underlying endpoint directly:

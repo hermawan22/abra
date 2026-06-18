@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,12 +17,84 @@ import (
 )
 
 func TestCommandHelpDoesNotRequireFlags(t *testing.T) {
-	for _, command := range []string{"config", "ingest", "setup", "models", "watch", "sources", "jobs"} {
+	for _, command := range []string{"config", "ingest", "setup", "models", "watch", "sources", "jobs", "scope", "mcp"} {
 		t.Run(command, func(t *testing.T) {
 			if err := run(context.Background(), []string{command, "--help"}); err != nil {
 				t.Fatalf("run(%s --help) error = %v", command, err)
 			}
 		})
+	}
+}
+
+func TestScopeCommandPrintsAgentGuidance(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "project with spaces")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(root, "README.md"), "# Demo\n")
+
+	output := captureStdout(t, func() {
+		if err := run(context.Background(), []string{"scope", root}); err != nil {
+			t.Fatalf("scope error = %v", err)
+		}
+	})
+	wantScope := "repo:" + slug(filepath.Base(root))
+	for _, want := range []string{wantScope, "working_memory_compose", "abra ingest " + shellQuote(root) + " --code --scope " + shellQuote(wantScope)} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("scope output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestScopeCommandJSON(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "README.md"), "# Demo\n")
+
+	output := captureStdout(t, func() {
+		if err := run(context.Background(), []string{"scope", root, "--json"}); err != nil {
+			t.Fatalf("scope json error = %v", err)
+		}
+	})
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
+		t.Fatalf("decode scope json: %v\n%s", err, output)
+	}
+	wantScope := "repo:" + slug(filepath.Base(root))
+	if payload["scope"] != wantScope {
+		t.Fatalf("scope = %v, want %s", payload["scope"], wantScope)
+	}
+	examples, _ := payload["examples"].(map[string]any)
+	if !strings.Contains(stringValue(examples["codex"], ""), "working_memory_compose") {
+		t.Fatalf("codex example = %#v", examples["codex"])
+	}
+}
+
+func TestShellQuoteEscapesSingleQuotes(t *testing.T) {
+	if got := shellQuote("dev'token"); got != "'dev'\"'\"'token'" {
+		t.Fatalf("shellQuote = %q", got)
+	}
+}
+
+func TestCfgReadsRuntimeEnvFile(t *testing.T) {
+	t.Setenv("ABRA_BASE_URL", "")
+	t.Setenv("ABRA_URL", "")
+	t.Setenv("ABRA_PORT", "")
+	t.Setenv("ABRA_API_TOKEN", "")
+	t.Setenv("ABRA_API_KEYS", "")
+	envFile := filepath.Join(t.TempDir(), "quickstart.env")
+	mustWrite(t, envFile, "ABRA_PORT=19999\nABRA_API_KEYS=file-token,other\n")
+
+	got := cfg(parseArgs([]string{"status", "--env-file", envFile}))
+	if got.BaseURL != "http://127.0.0.1:19999" {
+		t.Fatalf("BaseURL = %q", got.BaseURL)
+	}
+	if got.Token != "file-token" {
+		t.Fatalf("Token = %q", got.Token)
+	}
+
+	override := cfg(parseArgs([]string{"status", "--env-file", envFile, "--base-url", "http://127.0.0.1:18888", "--token", "flag-token"}))
+	if override.BaseURL != "http://127.0.0.1:18888" || override.Token != "flag-token" {
+		t.Fatalf("flag override = %+v", override)
 	}
 }
 
@@ -593,4 +666,23 @@ func mustWrite(t *testing.T, path, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	original := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = writer
+	fn()
+	_ = writer.Close()
+	os.Stdout = original
+	var buf bytes.Buffer
+	if _, err := io.Copy(&buf, reader); err != nil {
+		t.Fatal(err)
+	}
+	_ = reader.Close()
+	return buf.String()
 }

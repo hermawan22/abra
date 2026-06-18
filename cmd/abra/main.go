@@ -89,6 +89,8 @@ func run(ctx context.Context, argv []string) error {
 		return configCommand(args)
 	case "models", "model":
 		return models(ctx, args)
+	case "scope":
+		return scopeCommand(args)
 	case "ui", "dashboard":
 		return errors.New("abra ui was removed; use `abra setup` for guided onboarding or `abra up` for non-interactive start")
 	case "up", "start":
@@ -1159,11 +1161,50 @@ func composeMemory(ctx context.Context, args cliArgs) error {
 	}
 	verification, _ := result["verification"].(map[string]any)
 	decision, _ := result["agent_decision"].(map[string]any)
+	stats, _ := result["stats"].(map[string]any)
+	health, _ := result["memory_health"].(map[string]any)
+	scope := stringValue(result["scope"], required(args, "scope"))
 	fmt.Printf("Compose: %s / %s\n", stringValue(verification["verdict"], "unknown"), stringValue(decision["decision"], "unknown"))
+	fmt.Println("scope: " + scope)
+	if len(stats) > 0 {
+		fmt.Printf("context: facts=%d documents=%d summaries=%d graph=%d blocks=%d\n",
+			intValue(stats["facts"]),
+			intValue(stats["supporting_documents"]),
+			intValue(stats["summaries"]),
+			intValue(stats["graph_relations"]),
+			intValue(stats["context_blocks"]),
+		)
+	}
+	if len(health) > 0 {
+		fmt.Printf("health: %s score=%d signals=%d\n", stringValue(health["status"], "unknown"), intValue(health["score"]), lenSlice(health["signals"]))
+	}
+	if actions, ok := decision["required_actions"].([]any); ok && len(actions) > 0 {
+		fmt.Println("required actions:")
+		for _, action := range actions {
+			fmt.Println("- " + stringValue(action, ""))
+		}
+	}
+	if len(stats) > 0 && intValue(stats["facts"])+intValue(stats["supporting_documents"])+intValue(stats["summaries"]) == 0 {
+		fmt.Println("No source-backed context found for this scope.")
+		fmt.Println("Run: abra scope")
+		fmt.Println("Run: abra ingest . --code --scope " + scope)
+	}
 	return nil
 }
 
 func mcp(args cliArgs) error {
+	action := ""
+	if len(args.Rest) > 0 {
+		action = strings.ToLower(strings.TrimSpace(args.Rest[0]))
+		args.Rest = args.Rest[1:]
+	}
+	switch action {
+	case "install-codex", "codex":
+		return installCodexMCP(args)
+	case "":
+	default:
+		return fmt.Errorf("unknown mcp command %q\n\n%s", action, commandUsage("mcp"))
+	}
 	body := map[string]any{
 		"mcpServers": map[string]any{
 			"abra": map[string]any{
@@ -1176,6 +1217,88 @@ func mcp(args cliArgs) error {
 		},
 	}
 	return printJSON(body)
+}
+
+func scopeCommand(args cliArgs) error {
+	path := "."
+	if len(args.Rest) > 0 {
+		path = args.Rest[0]
+	}
+	scope := scopeOrDefault(args, path)
+	if boolFlag(args, "json") {
+		return printJSON(map[string]any{
+			"scope": scope,
+			"path":  path,
+			"examples": map[string]string{
+				"ingest":  "abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope),
+				"think":   "abra think \"what should I know before changing this project?\" --scope " + scope,
+				"codex":   "Use Abra MCP first. Scope: " + scope + ". Call working_memory_compose before answering or changing code.",
+				"compose": "abra compose \"ship this change\" --scope " + scope + " --agent codex",
+			},
+		})
+	}
+	fmt.Println("Scope: " + scope)
+	fmt.Println("Use this exact scope with Abra MCP and AI agents.")
+	fmt.Println("Ingest: abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope))
+	fmt.Println("Think:  abra think \"what should I know before changing this project?\" --scope " + scope)
+	fmt.Println("Codex:  Use Abra MCP first. Scope: " + scope + ". Call working_memory_compose before answering or changing code.")
+	return nil
+}
+
+func installCodexMCP(args cliArgs) error {
+	codex, err := codexCommandPath()
+	if err != nil {
+		return err
+	}
+	tokenEnv := flag(args, "token-env", "ABRA_API_TOKEN")
+	token := cfg(args).Token
+	if token == "" {
+		return errors.New("missing Abra token")
+	}
+	if runtime.GOOS == "darwin" {
+		_ = runQuiet("launchctl", "setenv", tokenEnv, token)
+	}
+	os.Setenv(tokenEnv, token)
+	_ = runQuiet(codex, "mcp", "remove", "abra")
+	if err := runQuiet(codex, "mcp", "add", "abra", "--url", strings.TrimRight(cfg(args).BaseURL, "/")+"/mcp", "--bearer-token-env-var", tokenEnv); err != nil {
+		return fmt.Errorf("codex mcp add failed: %w", err)
+	}
+	fmt.Println("Installed Abra MCP for Codex:")
+	fmt.Println("  url:       " + strings.TrimRight(cfg(args).BaseURL, "/") + "/mcp")
+	fmt.Println("  token env: " + tokenEnv)
+	if runtime.GOOS != "darwin" {
+		fmt.Println("Set this before starting Codex: export " + tokenEnv + "=" + shellQuote(token))
+	}
+	fmt.Println("Restart Codex or open a new thread so MCP tools are reloaded.")
+	fmt.Println("Scope hint: run `abra scope` in each project and pass that scope to working_memory_compose.")
+	return nil
+}
+
+func codexCommandPath() (string, error) {
+	macPath := "/Applications/Codex.app/Contents/Resources/codex"
+	if runtime.GOOS == "darwin" && fileExists(macPath) {
+		return macPath, nil
+	}
+	if path, err := exec.LookPath("codex"); err == nil {
+		return path, nil
+	}
+	return "", errors.New("missing Codex CLI; install Codex or add `codex` to PATH")
+}
+
+func runQuiet(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func shellQuote(value string) string {
+	if value == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func postJSON(ctx context.Context, args cliArgs, path string, body map[string]any) (map[string]any, error) {
@@ -1282,8 +1405,10 @@ func printReady(args cliArgs) {
 	fmt.Println("Abra is ready")
 	fmt.Println("MCP:       " + strings.TrimRight(cfg(args).BaseURL, "/") + "/mcp")
 	fmt.Println("Token:     " + cfg(args).Token)
-	fmt.Println("Next:      cd /path/to/project && abra ingest . --code")
-	fmt.Println(`Then:      abra think "What should I know before changing this project?"`)
+	fmt.Println("Codex:     abra mcp install-codex")
+	fmt.Println("Scope:     cd /path/to/project && abra scope")
+	fmt.Println("Next:      cd /path/to/project && abra ingest . --code --scope <scope>")
+	fmt.Println(`Then:      abra think "What should I know before changing this project?" --scope <scope>`)
 }
 
 func runCommand(name string, args ...string) error {
@@ -1492,11 +1617,34 @@ func extractTarGz(reader io.Reader, targetDir string) error {
 }
 
 func cfg(args cliArgs) contextConfig {
-	return contextConfig{
-		EnvFile: envPath(args),
-		BaseURL: flag(args, "base-url", envOr("ABRA_BASE_URL", envOr("ABRA_URL", defaultBaseURL))),
-		Token:   flag(args, "token", envOr("ABRA_API_TOKEN", firstCSV(os.Getenv("ABRA_API_KEYS"), defaultToken))),
+	envFile := envPath(args)
+	fileValues := map[string]string{}
+	if fileExists(envFile) {
+		if values, err := readEnvValues(envFile); err == nil {
+			fileValues = values
+		}
 	}
+	fileBaseURL := firstNonEmpty(fileValues["ABRA_BASE_URL"], fileValues["ABRA_URL"])
+	if fileBaseURL == "" {
+		fileBaseURL = baseURLFromPort(fileValues["ABRA_PORT"])
+	}
+	envBaseURL := firstNonEmpty(os.Getenv("ABRA_BASE_URL"), os.Getenv("ABRA_URL"))
+	if envBaseURL == "" {
+		envBaseURL = baseURLFromPort(os.Getenv("ABRA_PORT"))
+	}
+	return contextConfig{
+		EnvFile: envFile,
+		BaseURL: flag(args, "base-url", firstNonEmpty(envBaseURL, fileBaseURL, defaultBaseURL)),
+		Token:   flag(args, "token", firstNonEmpty(os.Getenv("ABRA_API_TOKEN"), firstCSV(os.Getenv("ABRA_API_KEYS"), ""), fileValues["ABRA_API_TOKEN"], firstCSV(fileValues["ABRA_API_KEYS"], ""), defaultToken)),
+	}
+}
+
+func baseURLFromPort(port string) string {
+	port = strings.TrimSpace(port)
+	if port == "" {
+		return ""
+	}
+	return "http://127.0.0.1:" + port
 }
 
 func flag(args cliArgs, name, fallback string) string {
@@ -1699,6 +1847,28 @@ func stringValue(value any, fallback string) string {
 	return fallback
 }
 
+func intValue(value any) int {
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	case json.Number:
+		parsed, _ := typed.Int64()
+		return int(parsed)
+	}
+	return 0
+}
+
+func lenSlice(value any) int {
+	if items, ok := value.([]any); ok {
+		return len(items)
+	}
+	return 0
+}
+
 func printJSON(value any) error {
 	encoded, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
@@ -1748,6 +1918,7 @@ Usage:
   abra quickstart
   abra init [--production]
   abra config show
+  abra scope
   abra models up
   abra models status
   abra config model local
@@ -1769,6 +1940,7 @@ Usage:
   abra recall "agent memory"
   abra compose "ship a change"
   abra mcp
+  abra mcp install-codex
 
 Common flags:
   --base-url http://127.0.0.1:18080
@@ -1816,13 +1988,13 @@ Source ingestion flags:
   abra config model compatible --base-url <url> --model <model> [--api-key-stdin] [--dimensions 1536]
 
 Config edits the Abra runtime env file used by abra up. It intentionally only
-exposes core runtime settings needed for local operation and model connection.
+exposes core runtime settings needed for local operation and embedding/reranker connection.
 After changing model config, restart with: abra down && abra up
 After changing embedding providers, re-ingest important sources for reliable vector recall.
 `
 	case "models", "model":
 		return `Usage:
-  abra models up [--recreate] [--port 8080]
+  abra models up [--recreate] [--port 8080] [--model-id Qwen/Qwen3-Embedding-0.6B-GGUF] [--model Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0]
   abra models status [--json]
   abra models logs
   abra models down
@@ -1830,6 +2002,16 @@ After changing embedding providers, re-ingest important sources for reliable vec
 Starts and manages the built-in local embedding runner for the default local
 Qwen3 setup. Abra keeps the binary lightweight: model weights stay in Docker's
 model cache, while the CLI owns startup, health checks, and lifecycle.
+
+Operational flags:
+  --model-id       Hugging Face GGUF repository, default Qwen/Qwen3-Embedding-0.6B-GGUF
+  --model          served model name, default Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0
+  --dimensions     embedding dimensions, default 1024
+  --image          llama.cpp server image
+  --cache-dir      host model cache directory
+  --container      Docker container name
+  --base-url       local OpenAI-compatible base URL
+  --port           host port for the embedding server, default 8080
 `
 	case "ui", "dashboard":
 		return `Usage:
@@ -1879,6 +2061,25 @@ Runs hybrid lexical/vector retrieval over source-backed memory.
 
 Builds a task-specific working-memory packet for AI coding agents.
 `
+	case "scope":
+		return `Usage:
+  abra scope [path] [--json]
+
+Prints the stable memory scope for a project path and shows the exact commands
+and agent prompt to use. Use this when an AI client says Abra has no context:
+the usual cause is a scope mismatch between ingest and working_memory_compose.
+`
+	case "mcp", "mcp-config":
+		return `Usage:
+  abra mcp
+  abra mcp install-codex [--token-env ABRA_API_TOKEN]
+
+` + "`abra mcp`" + ` prints generic remote HTTP MCP client JSON.
+` + "`abra mcp install-codex`" + ` installs Abra into Codex as a streamable HTTP MCP
+server using the Codex CLI, stores the bearer-token env var name, and sets the
+token for the current macOS launch environment when available. Restart Codex or
+open a new thread after installing MCP servers.
+`
 	case "setup":
 		return `Usage:
   abra setup
@@ -1892,6 +2093,19 @@ Guided first-run onboarding. It checks prerequisites, creates the runtime env,
 chooses the embedding provider, and can start the local stack. The default
 local provider uses abra models up to serve Qwen/Qwen3-Embedding-0.6B through a
 local OpenAI-compatible endpoint.
+
+Common setup flags:
+  --base-url            embedding provider base URL
+  --embedding-model     embedding model name
+  --model               provider selector or legacy embedding model alias
+  --dimensions          embedding dimensions
+  --embedding-timeout   provider timeout, default 10m for local and 30s for compatible
+  --api-key             embedding provider API key
+  --api-key-stdin       read embedding provider API key from stdin
+  --no-models           do not start the local embedding runner
+  --skip-models         alias for --no-models
+  --no-start            write config but do not start the Abra stack
+  --skip-up             alias for --no-start
 `
 	case "install", "up", "quickstart", "demo":
 		return `Usage:
