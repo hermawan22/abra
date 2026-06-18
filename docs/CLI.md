@@ -1,6 +1,6 @@
 # CLI Guide
 
-Abra is terminal-first: install the `abra` command, start the service from the terminal, and operate it through the terminal UI, CLI, HTTP, or MCP.
+Abra is terminal-first: install the `abra` command, start the service from the terminal, and operate it through the CLI, HTTP, or MCP.
 
 The quickstart path uses local deterministic embeddings for evaluation. Production deployments should use compatible external embeddings, scoped credentials, and approval enforcement.
 
@@ -20,18 +20,17 @@ curl -fsSL https://raw.githubusercontent.com/hermawan22/abra/main/scripts/instal
 
 Release downloads are verified against `SHA256SUMS` before the binary is installed. Set `ABRA_VERSION=vX.Y.Z` to install a specific release.
 
-Start the local stack:
+Run the guided first-run setup:
 
 ```sh
-abra up
+abra setup
 ```
 
-`abra up` creates an env file, starts Postgres, runs migrations, and starts the API and worker. From a source checkout it uses `.tmp/quickstart.env`; from a global CLI install it stores runtime files under your Abra config directory and can be run from any folder. `abra install` is kept as a compatibility alias for `abra up`; the curl script installs the CLI binary.
+`abra setup` checks prerequisites, creates an env file, asks which embedding provider to use, and can start Postgres, migrations, API, and worker. From a source checkout it uses `.tmp/quickstart.env`; from a global CLI install it stores runtime files under your Abra config directory and can be run from any folder. `abra install` is kept as a compatibility alias for `abra setup`; the curl script installs the CLI binary.
 
 View or change the important runtime config without opening the env file:
 
 ```sh
-abra ui
 abra config show
 abra config path
 abra config model local
@@ -39,7 +38,7 @@ abra config model openai --api-key-stdin
 abra config model compatible --base-url https://api.example.com/v1 --api-key-stdin --model embedding-model-1536
 ```
 
-`abra ui` opens the terminal cockpit for runtime health, model setup, local repo ingest, governed think, and MCP config. Use `abra ui --render` for a non-interactive preview in smoke tests.
+For non-interactive local setup, use `abra setup --yes`. For OpenAI-compatible embeddings during onboarding, use `printf '%s' "$OPENAI_API_KEY" | abra setup --openai --api-key-stdin`.
 
 After changing model config, restart the stack:
 
@@ -158,10 +157,10 @@ From a source checkout, run the CLI as `go run ./cmd/abra <command>`. In a relea
 | --- | --- |
 | install CLI from checkout | `./scripts/install.sh` |
 | install CLI from published release | `curl -fsSL https://raw.githubusercontent.com/hermawan22/abra/main/scripts/install.sh \| sh` |
+| guided first-run setup | `abra setup` |
 | start local stack | `abra up` |
-| open terminal cockpit | `abra ui` |
 | init env only | `abra init` |
-| compatibility stack alias | `abra install` |
+| compatibility setup alias | `abra install` |
 | ingest one document | `abra ingest --text "source-backed content"` |
 | ingest local repo | `abra ingest . --code` |
 | ingest remote git | `abra ingest --git https://github.com/owner/repo.git --ref main --code --wait` |

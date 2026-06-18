@@ -154,7 +154,7 @@ main() {
   if ! command -v abra >/dev/null 2>&1; then
     log "Add this to PATH if needed: export PATH=\"$dst_dir:\$PATH\""
   fi
-  log "Next: abra up"
+  log "Next: abra setup"
 }
 
 main "$@"

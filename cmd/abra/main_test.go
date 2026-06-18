@@ -15,7 +15,7 @@ import (
 )
 
 func TestCommandHelpDoesNotRequireFlags(t *testing.T) {
-	for _, command := range []string{"config", "ingest", "ui", "watch", "sources", "jobs"} {
+	for _, command := range []string{"config", "ingest", "setup", "watch", "sources", "jobs"} {
 		t.Run(command, func(t *testing.T) {
 			if err := run(context.Background(), []string{command, "--help"}); err != nil {
 				t.Fatalf("run(%s --help) error = %v", command, err)
@@ -24,47 +24,125 @@ func TestCommandHelpDoesNotRequireFlags(t *testing.T) {
 	}
 }
 
-func TestUIRenderBootstrapsWithoutInitNoise(t *testing.T) {
+func TestSetupYesNoStartDefaultsLocal(t *testing.T) {
 	root := t.TempDir()
 	home := t.TempDir()
 	t.Setenv("ABRA_HOME", home)
 	t.Chdir(root)
 
-	output, err := captureRun(context.Background(), []string{"ui", "--render"})
+	if err := run(context.Background(), []string{"setup", "--yes", "--no-start"}); err != nil {
+		t.Fatalf("setup error = %v", err)
+	}
+	values, err := readEnvValues(filepath.Join(home, "quickstart.env"))
 	if err != nil {
-		t.Fatalf("ui render error = %v", err)
+		t.Fatalf("read env: %v", err)
 	}
-	if strings.Contains(output, "Wrote ") {
-		t.Fatalf("ui render leaked init output: %q", output)
-	}
-	if !strings.Contains(output, "ABRA") || !strings.Contains(output, "CLI brain cockpit") {
-		t.Fatalf("ui render output missing cockpit content: %q", output)
+	if values["EMBEDDING_PROVIDER"] != "local" {
+		t.Fatalf("provider = %q", values["EMBEDDING_PROVIDER"])
 	}
 }
 
-func TestUIChildArgsPreservesRuntimeFlags(t *testing.T) {
-	args := parseArgs([]string{
-		"ui",
-		"--env-file", "/tmp/abra.env",
-		"--base-url", "http://127.0.0.1:9999",
-		"--token", "token",
-		"--scope", "repo:test",
-	})
-	got := strings.Join(uiChildArgs(args, []string{"think", "question"}), " ")
-	for _, want := range []string{
-		"--env-file /tmp/abra.env",
-		"--base-url http://127.0.0.1:9999",
-		"--token token",
-		"--scope repo:test",
-	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("ui child args = %q, missing %q", got, want)
-		}
-	}
+func TestSetupOpenAIStdinNoStart(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
 
-	got = strings.Join(uiChildArgs(args, []string{"config", "model", "compatible", "--base-url", "https://models.example/v1"}), " ")
-	if strings.Count(got, "--base-url") != 1 {
-		t.Fatalf("ui child args should not duplicate explicit base-url: %q", got)
+	stdin := os.Stdin
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdin = reader
+	t.Cleanup(func() {
+		os.Stdin = stdin
+		_ = reader.Close()
+	})
+	_, _ = writer.WriteString("openai-test-key\n")
+	_ = writer.Close()
+
+	if err := run(context.Background(), []string{"setup", "--openai", "--api-key-stdin", "--no-start"}); err != nil {
+		t.Fatalf("setup openai error = %v", err)
+	}
+	values, err := readEnvValues(filepath.Join(home, "quickstart.env"))
+	if err != nil {
+		t.Fatalf("read env: %v", err)
+	}
+	if values["EMBEDDING_BASE_URL"] != "https://api.openai.com/v1" {
+		t.Fatalf("base url = %q", values["EMBEDDING_BASE_URL"])
+	}
+	if values["EMBEDDING_MODEL"] != "text-embedding-3-small" {
+		t.Fatalf("model = %q", values["EMBEDDING_MODEL"])
+	}
+	if values["EMBEDDING_API_KEY"] != "openai-test-key" {
+		t.Fatalf("api key = %q", values["EMBEDDING_API_KEY"])
+	}
+}
+
+func TestSetupRejectsConflictingProviders(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+
+	err := run(context.Background(), []string{"setup", "--local", "--openai", "--no-start"})
+	if err == nil {
+		t.Fatal("expected conflicting provider error")
+	}
+	if !strings.Contains(err.Error(), "choose one embedding provider only") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestSetupOpenAIModelAliasIsEmbeddingModel(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+
+	stdin := os.Stdin
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdin = reader
+	t.Cleanup(func() {
+		os.Stdin = stdin
+		_ = reader.Close()
+	})
+	_, _ = writer.WriteString("openai-test-key\n")
+	_ = writer.Close()
+
+	if err := run(context.Background(), []string{"setup", "--openai", "--model", "custom-embedding", "--api-key-stdin", "--no-start"}); err != nil {
+		t.Fatalf("setup openai error = %v", err)
+	}
+	values, err := readEnvValues(filepath.Join(home, "quickstart.env"))
+	if err != nil {
+		t.Fatalf("read env: %v", err)
+	}
+	if values["EMBEDDING_MODEL"] != "custom-embedding" {
+		t.Fatalf("model = %q", values["EMBEDDING_MODEL"])
+	}
+}
+
+func TestUICommandRemoved(t *testing.T) {
+	for _, command := range []string{"ui", "dashboard"} {
+		t.Run(command, func(t *testing.T) {
+			err := run(context.Background(), []string{command})
+			if err == nil {
+				t.Fatal("expected removed command error")
+			}
+			if !strings.Contains(err.Error(), "was removed") {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+	help := commandUsage("ui")
+	if strings.Contains(help, "cockpit") {
+		t.Fatalf("ui help still describes cockpit: %s", help)
+	}
+	if !strings.Contains(help, "removed") {
+		t.Fatalf("ui help should explain removal: %s", help)
 	}
 }
 

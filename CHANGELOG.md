@@ -4,6 +4,14 @@ All notable changes to Abra are documented here.
 
 This project uses semantic versioning for public releases. Until v1.0.0, minor versions may include breaking changes when they are documented in this file and in the release notes.
 
+## 0.2.0 - 2026-06-18
+
+### Changed
+
+- Breaking: remove the experimental interactive UI from the active product surface.
+- Add `abra setup` guided CLI onboarding for prerequisite checks, runtime env creation, embedding provider selection, and optional stack startup.
+- Point the public installer next step at `abra setup`.
+
 ## 0.1.9 - 2026-06-18
 
 ### Changed

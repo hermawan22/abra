@@ -44,27 +44,24 @@ curl -fsSL https://raw.githubusercontent.com/hermawan22/abra/main/scripts/instal
 
 The installer downloads a platform release binary when available and verifies it against `SHA256SUMS` before installing. If no release asset exists for your platform yet, it falls back to `go install`.
 
-Then start the local Abra service:
+Then run the guided CLI onboarding:
 
 ```sh
-abra up
+abra setup
 ```
 
-`abra up` creates an env file if needed, starts Postgres, runs migrations, starts the API and worker, then prints the MCP URL and token. From a source checkout it uses `.tmp/quickstart.env`; from a global CLI install it stores runtime files under your Abra config directory and can be run from any folder. `abra install` is only a compatibility alias for `abra up`; the curl script is what installs the CLI binary.
+`abra setup` checks required commands, creates the runtime env file, asks which embedding provider to use, and can start the local stack. From a source checkout it uses `.tmp/quickstart.env`; from a global CLI install it stores runtime files under your Abra config directory and can be run from any folder. `abra install` is a compatibility alias for `abra setup`; the curl script is what installs the CLI binary.
 
-Open the terminal cockpit:
+For non-interactive local setup:
 
 ```sh
-abra ui
+abra setup --yes
 ```
 
-The cockpit keeps the product CLI-only while giving users a guided interface for runtime health, model connection, local repo ingest, governed think, and MCP config.
-
-Connect OpenAI-compatible embeddings without editing env files:
+Connect OpenAI-compatible embeddings during setup without editing env files:
 
 ```sh
-printf '%s' "$OPENAI_API_KEY" | abra config model openai --api-key-stdin
-abra down && abra up
+printf '%s' "$OPENAI_API_KEY" | abra setup --openai --api-key-stdin
 ```
 
 Try the governed brain:
@@ -148,10 +145,10 @@ When it finishes:
 - MCP endpoint: `http://localhost:18080/mcp`
 - Demo token: `dev-token`
 
-Open the terminal cockpit:
+Run the guided CLI onboarding:
 
 ```sh
-go run ./cmd/abra ui
+go run ./cmd/abra setup
 ```
 
 Ingest one source-backed demo document:
@@ -675,7 +672,7 @@ The v1 production line uses Go for the core service while keeping stable externa
 - Prometheus-compatible API metrics and ingestion job history for operators.
 - Optional OpenTelemetry traces for HTTP, MCP, smart-memory, recall, and worker ingestion latency analysis.
 
-Go is the preferred v1 stack because Abra is a long-running internal service with simple HTTP, database, worker, and policy surfaces. A static binary, predictable memory profile, straightforward concurrency, and mature Postgres/observability libraries are a better operational fit than keeping the service runtime tied to a Node dependency tree.
+Go is the preferred v1 stack because Abra is a long-running self-hosted service with simple HTTP, database, worker, and policy surfaces. A static binary, predictable memory profile, straightforward concurrency, and mature Postgres/observability libraries are a better operational fit than keeping the service runtime tied to a Node dependency tree.
 
 V1 should not add Neo4j by default. The claim graph is evidence-backed and can be represented with relational edges in Postgres. Keeping graph edges, vectors, audit events, and transactional updates in one database reduces the deployment surface and avoids consistency drift. A graph database should only be introduced later if real workloads need deep, high-volume path traversal that Postgres cannot satisfy.
 

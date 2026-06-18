@@ -74,7 +74,7 @@ func run(ctx context.Context, argv []string) error {
 	case "version":
 		return printVersion(args)
 	case "install", "setup":
-		return install(ctx, args)
+		return setup(ctx, args)
 	case "upgrade", "update":
 		return upgrade(args)
 	case "uninstall":
@@ -86,7 +86,7 @@ func run(ctx context.Context, argv []string) error {
 	case "config":
 		return configCommand(args)
 	case "ui", "dashboard":
-		return runUI(ctx, args)
+		return errors.New("abra ui was removed; use `abra setup` for guided onboarding or `abra up` for non-interactive start")
 	case "up", "start":
 		return up(ctx, args)
 	case "down", "stop":
@@ -161,22 +161,6 @@ func parseArgs(argv []string) cliArgs {
 		i++
 	}
 	return args
-}
-
-func install(ctx context.Context, args cliArgs) error {
-	if boolFlag(args, "production") {
-		args.Bools["production"] = true
-		if err := initEnv(args); err != nil {
-			return err
-		}
-		fmt.Println("Production env created. Edit credentials, then run: abra up --env-file " + envPath(args))
-		return nil
-	}
-	if err := up(ctx, args); err != nil {
-		return err
-	}
-	fmt.Println("Local stack is ready.")
-	return nil
 }
 
 func upgrade(args cliArgs) error {
@@ -1675,8 +1659,8 @@ func usage() string {
 
 Usage:
   abra version
+  abra setup
   abra up
-  abra ui
   abra upgrade [--version vX.Y.Z]
   abra uninstall --yes
   abra demo
@@ -1709,7 +1693,7 @@ Common flags:
   --token dev-token
   --json
 
-Abra is terminal UI + CLI + MCP only. No browser UI is shipped.
+Abra is CLI + MCP only. No browser UI is shipped.
 `
 }
 
@@ -1754,29 +1738,10 @@ After changing embedding providers, re-ingest important sources for reliable vec
 `
 	case "ui", "dashboard":
 		return `Usage:
-  abra ui
-  abra ui --render
+  abra setup
 
-Opens the terminal cockpit for runtime health, model config, local repo ingest,
-governed think, and MCP config. It is shipped inside the same abra binary.
-
-Keys:
-  up/down or k/j  select
-  enter           open
-  r               refresh runtime
-  s               start stack
-  x               restart stack
-  l               switch to local embeddings
-  c               connect compatible model
-  i               configure local ingest
-  g               configure remote Git ingest
-  t               ask Abra
-  J               list ingestion jobs
-  m               generate MCP config
-  d               run doctor
-  q               quit
-
---render prints a non-interactive preview for smoke tests and CI.
+The previous interactive UI command was removed. Use abra setup for guided
+onboarding, or abra up for non-interactive stack startup.
 `
 	case "watch", "source":
 		return `Usage:
@@ -1819,15 +1784,29 @@ Runs hybrid lexical/vector retrieval over source-backed memory.
 
 Builds a task-specific working-memory packet for AI coding agents.
 `
+	case "setup":
+		return `Usage:
+  abra setup
+  abra setup --local
+  abra setup --openai --api-key-stdin
+  abra setup --compatible --base-url <url> --embedding-model <model> --api-key-stdin
+  abra setup --provider openai --api-key-stdin
+  abra setup --yes --no-start
+
+Guided first-run onboarding. It checks prerequisites, creates the runtime env,
+chooses the embedding model, and can start the local stack.
+`
 	case "install", "up", "quickstart", "demo":
 		return `Usage:
+  abra setup
   abra up
   abra demo
   abra install
 
-abra up starts the local Docker Compose stack: Postgres, migrations, API, and worker.
-abra install is kept as a compatibility alias for abra up; the curl installer
-is what installs the CLI binary.
+abra setup is the guided first-run path. abra up starts the local Docker Compose
+stack non-interactively: Postgres, migrations, API, and worker. abra install is
+kept as a compatibility alias for abra setup; the curl installer is what installs
+the CLI binary.
 `
 	case "upgrade", "update":
 		return `Usage:
