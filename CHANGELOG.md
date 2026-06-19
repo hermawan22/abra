@@ -33,6 +33,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Make `abra doctor` check macOS launch-environment token visibility for Codex Desktop separately from the current shell.
 - Add `--tracked` local path ingestion for worker-visible paths while keeping direct local `abra ingest <path>` as the Docker-safe default.
 - Make setup next steps print the exact project scope for ingest and think commands.
+- Make setup and ready banners include `abra agents init` and `abra agents verify` so agent context readiness is part of the default CLI onboarding path.
 - Align runtime build version reporting across MCP server info, Prometheus metrics, and tracing resources.
 - Prefer query-form working-memory MCP resources so scopes containing slashes are preserved.
 - Make `abra upgrade` download the install script before executing it so wrong installer URLs produce actionable recovery guidance instead of a raw curl pipe failure.

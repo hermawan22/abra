@@ -2001,6 +2001,8 @@ func printReady(args cliArgs) {
 	fmt.Println("Token:     " + cfg(args).Token)
 	fmt.Println("Codex:     abra mcp install-codex")
 	fmt.Println("Scope:     cd /path/to/project && abra scope")
+	fmt.Println("Agent:     cd /path/to/project && abra agents init --agent codex")
+	fmt.Println("Check:     cd /path/to/project && abra agents verify")
 	fmt.Println("Next:      cd /path/to/project && abra ingest . --code --scope <scope>")
 	fmt.Println(`Then:      abra think "What should I know before changing this project?" --scope <scope>`)
 }
@@ -2594,6 +2596,7 @@ Usage:
   abra config model openai --api-key-stdin
   abra config model compatible --base-url <url> --model <model> [--api-key-stdin]
   abra agents init
+  abra agents verify
   abra down [--reset]
   abra status
   abra doctor

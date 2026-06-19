@@ -531,10 +531,31 @@ func TestSetupYesNoStartDefaultsLocalQwen(t *testing.T) {
 	if !strings.Contains(output, "abra models up") {
 		t.Fatalf("local setup next steps should include models up:\n%s", output)
 	}
+	for _, want := range []string{"abra agents init --agent codex", "abra agents verify"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("setup next steps missing %q:\n%s", want, output)
+		}
+	}
 	wantScope := "repo:" + slug(filepath.Base(root))
 	if !strings.Contains(output, "abra ingest . --code --scope "+shellQuote(wantScope)) ||
 		!strings.Contains(output, `abra think "What should I know before changing this project?" --scope `+shellQuote(wantScope)) {
 		t.Fatalf("setup next steps should include exact scope %s:\n%s", wantScope, output)
+	}
+}
+
+func TestPrintReadyShowsAgentVerificationFlow(t *testing.T) {
+	output := captureStdout(t, func() {
+		printReady(parseArgs([]string{"up"}))
+	})
+	for _, want := range []string{
+		"abra mcp install-codex",
+		"abra agents init --agent codex",
+		"abra agents verify",
+		"abra ingest . --code --scope <scope>",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("ready output missing %q:\n%s", want, output)
+		}
 	}
 }
 
