@@ -247,6 +247,11 @@ func TestSetupYesNoStartDefaultsLocalQwen(t *testing.T) {
 	if !strings.Contains(output, "abra models up") {
 		t.Fatalf("local setup next steps should include models up:\n%s", output)
 	}
+	wantScope := "repo:" + slug(filepath.Base(root))
+	if !strings.Contains(output, "abra ingest . --code --scope "+shellQuote(wantScope)) ||
+		!strings.Contains(output, `abra think "What should I know before changing this project?" --scope `+shellQuote(wantScope)) {
+		t.Fatalf("setup next steps should include exact scope %s:\n%s", wantScope, output)
+	}
 }
 
 func TestSetupOpenAIStdinNoStart(t *testing.T) {
@@ -749,6 +754,7 @@ func TestLocalPathIngestPostsMatchedFiles(t *testing.T) {
 		"--path", root,
 		"--include", "**/*.md",
 		"--code",
+		"--direct",
 		"--base-url", server.URL,
 		"--token", "test-token",
 	})
@@ -798,6 +804,76 @@ func TestLocalPathShortcutUsesDefaultScope(t *testing.T) {
 	wantScope := "repo:" + slug(filepath.Base(root))
 	if request["scope"] != wantScope {
 		t.Fatalf("scope = %v, want %s", request["scope"], wantScope)
+	}
+}
+
+func TestLocalPathShortcutQueuesTrackedJobWithTrackedFlag(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "README.md"), "# Local Brain\n\nAgents should use Abra.")
+
+	var sourceRequest map[string]any
+	var jobRequest map[string]any
+	paths := []string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		switch r.URL.Path {
+		case "/sources/configs":
+			if err := json.NewDecoder(r.Body).Decode(&sourceRequest); err != nil {
+				t.Fatalf("decode source body: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"source_config_id": "source-local"})
+		case "/ingestion/jobs":
+			if r.Method == http.MethodGet {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"ingestion_jobs": []map[string]any{{
+						"id":               "job-local",
+						"status":           "succeeded",
+						"source_config_id": "source-local",
+					}},
+				})
+				return
+			}
+			if err := json.NewDecoder(r.Body).Decode(&jobRequest); err != nil {
+				t.Fatalf("decode job body: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ingestion_job": map[string]any{"id": "job-local", "status": "queued"},
+			})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	err := run(context.Background(), []string{
+		"ingest",
+		root,
+		"--code",
+		"--tracked",
+		"--base-url", server.URL,
+		"--token", "test-token",
+	})
+	if err != nil {
+		t.Fatalf("tracked shortcut ingest error = %v", err)
+	}
+	wantScope := "repo:" + slug(filepath.Base(root))
+	if sourceRequest["scope"] != wantScope {
+		t.Fatalf("source scope = %v, want %s", sourceRequest["scope"], wantScope)
+	}
+	if sourceRequest["source_type"] != "local_repo" {
+		t.Fatalf("source_type = %v", sourceRequest["source_type"])
+	}
+	config, _ := sourceRequest["config"].(map[string]any)
+	if config["root"] != root || config["include_code"] != true {
+		t.Fatalf("config = %#v", config)
+	}
+	if jobRequest["source_config_id"] != "source-local" || jobRequest["trigger_type"] != "manual" {
+		t.Fatalf("job request = %#v", jobRequest)
+	}
+	for _, unexpected := range paths {
+		if unexpected == "/ingest/documents" {
+			t.Fatalf("tracked shortcut should not direct-ingest documents: paths=%v", paths)
+		}
 	}
 }
 

@@ -117,7 +117,7 @@ func BuildThinkResult(packet ComposeResult) ThinkResult {
 
 func thinkAnswer(packet ComposeResult, citationRefs map[string]string) string {
 	lines := []string{}
-	if len(packet.Facts) == 0 && len(packet.SupportingDocuments) == 0 && len(packet.GraphContext) == 0 {
+	if len(packet.Facts) == 0 && len(packet.SupportingDocuments) == 0 && len(packet.Summaries) == 0 && len(packet.GraphContext) == 0 {
 		lines = append(lines, "Abra cannot answer this with source-backed memory yet.")
 	} else {
 		lines = append(lines, "Abra's governed answer:")
@@ -141,6 +141,18 @@ func thinkAnswer(packet ComposeResult, citationRefs map[string]string) string {
 					break
 				}
 				lines = append(lines, "- Supporting source chunk: "+doc.Title+formatThinkRef(citationRefs[doc.Source])+".")
+			}
+		}
+		if len(packet.Facts) == 0 && len(packet.SupportingDocuments) == 0 && len(packet.Summaries) > 0 {
+			for i, summary := range packet.Summaries {
+				if i >= 3 {
+					break
+				}
+				ref := ""
+				if len(summary.SourceURLs) > 0 {
+					ref = citationRefs[summary.SourceURLs[0]]
+				}
+				lines = append(lines, "- "+summary.Title+": "+summary.Summary+formatThinkRef(ref)+".")
 			}
 		}
 		if len(packet.GraphContext) > 0 {
@@ -206,6 +218,11 @@ func thinkCitations(packet ComposeResult) ([]ThinkCitation, map[string]string) {
 	}
 	for _, doc := range packet.SupportingDocuments {
 		add("document", doc.Source, doc.Title, "", doc.ID)
+	}
+	for _, summary := range packet.Summaries {
+		for _, sourceURL := range summary.SourceURLs {
+			add("summary", sourceURL, summary.Title, "", summary.ID)
+		}
 	}
 	for _, relation := range packet.GraphContext {
 		if relation.SourceURL != nil {

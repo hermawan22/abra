@@ -5,7 +5,7 @@ Abra releases should be reproducible from a signed Git tag and backed by CI evid
 ## Versioning
 
 - Use semantic versions: `vMAJOR.MINOR.PATCH`.
-- Keep `package.json`, `deploy/helm/Chart.yaml`, chart `appVersion`, and `CHANGELOG.md` aligned before tagging.
+- Keep `package.json`, `package-lock.json`, `deploy/helm/Chart.yaml`, chart `appVersion`, and `CHANGELOG.md` aligned before tagging.
 - Before v1.0.0, document any breaking change in `CHANGELOG.md` and the GitHub release notes.
 
 ## Pre-Release Checklist

@@ -111,3 +111,37 @@ func TestBuildThinkResultSurfacesGovernanceGaps(t *testing.T) {
 		t.Fatalf("decision = %#v", result.AgentDecision)
 	}
 }
+
+func TestBuildThinkResultUsesSummaryOnlyContext(t *testing.T) {
+	source := "file://README.md"
+	packet := ComposeResult{
+		Task:  "What is this repo?",
+		Scope: "repo:example",
+		Summaries: []store.MemorySummaryResult{{
+			ID:         "summary-1",
+			Title:      "README.md",
+			Summary:    "Abra is a CLI-only governed brain layer for AI agents.",
+			SourceURLs: []string{source},
+		}},
+		MemoryHealth: store.MemoryHealthResult{Status: "healthy"},
+		Verification: VerificationReport{
+			Verdict:           "strong",
+			Score:             1,
+			RetrievalCoverage: RetrievalCoverage{Complete: true},
+		},
+		AgentDecision: AgentDecision{Decision: "proceed", AutonomousAllowed: true},
+		Stats:         ComposeStats{Summaries: 1},
+	}
+
+	result := BuildThinkResult(packet)
+	if strings.Contains(result.Answer, "cannot answer this with source-backed memory") {
+		t.Fatalf("summary-only answer should not refuse:\n%s", result.Answer)
+	}
+	if !strings.Contains(result.Answer, "README.md: Abra is a CLI-only governed brain layer") ||
+		!strings.Contains(result.Answer, "[C1]") {
+		t.Fatalf("summary answer missing content or citation:\n%s", result.Answer)
+	}
+	if len(result.Citations) != 1 || result.Citations[0].Kind != "summary" || result.Citations[0].SourceURL != source {
+		t.Fatalf("citations = %#v", result.Citations)
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/hermawan22/abra/internal/config"
+	"github.com/hermawan22/abra/internal/version"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -50,7 +51,7 @@ func SetupTracing(ctx context.Context, cfg config.TracingConfig, defaultServiceN
 	}
 	res, err := resource.New(ctx, resource.WithAttributes(
 		attribute.String("service.name", serviceName),
-		attribute.String("service.version", "0.1.0"),
+		attribute.String("service.version", version.Version),
 		attribute.String("deployment.environment", cfg.Environment),
 	))
 	if err != nil {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/hermawan22/abra/internal/memory"
 	"github.com/hermawan22/abra/internal/store"
+	"github.com/hermawan22/abra/internal/version"
 )
 
 type metricsCollector struct {
@@ -527,7 +528,7 @@ func (m *metricsCollector) prometheus() string {
 	var out strings.Builder
 	out.WriteString("# HELP abra_build_info Abra service build and runtime information.\n")
 	out.WriteString("# TYPE abra_build_info gauge\n")
-	out.WriteString("abra_build_info{runtime=\"go\",version=\"0.1.0\"} 1\n")
+	out.WriteString(fmt.Sprintf("abra_build_info{runtime=\"go\",version=%q} 1\n", version.Version))
 	out.WriteString("# HELP abra_uptime_seconds Seconds since this API process started.\n")
 	out.WriteString("# TYPE abra_uptime_seconds gauge\n")
 	out.WriteString(fmt.Sprintf("abra_uptime_seconds %.0f\n", time.Since(m.started).Seconds()))

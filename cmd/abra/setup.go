@@ -365,6 +365,7 @@ func printSetupNext(args cliArgs) {
 	values := setupConfiguredValues(args)
 	provider := strings.TrimSpace(values["EMBEDDING_PROVIDER"])
 	label := setupProviderLabel(values)
+	scope := scopeOrDefault(args, ".")
 	fmt.Println("Next:")
 	if provider == "local" || provider == "" {
 		fmt.Println("  abra models up")
@@ -372,8 +373,9 @@ func printSetupNext(args cliArgs) {
 		fmt.Println("  verify your " + label + " embedding endpoint is reachable from Abra")
 	}
 	fmt.Println("  abra up --env-file " + envPath(args))
-	fmt.Println("  abra ingest . --code")
-	fmt.Println(`  abra think "What should I know before changing this project?"`)
+	fmt.Println("  abra scope")
+	fmt.Println("  abra ingest . --code --scope " + shellQuote(scope))
+	fmt.Println(`  abra think "What should I know before changing this project?" --scope ` + shellQuote(scope))
 }
 
 func setupConfiguredValues(args cliArgs) map[string]string {

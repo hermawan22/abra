@@ -30,12 +30,18 @@ jobs:
 
           version="${TAG#v}"
           package_version="$(node -p "require('./package.json').version")"
+          package_lock_version="$(node -p "require('./package-lock.json').version")"
+          package_lock_root_version="$(node -p "require('./package-lock.json').packages[''].version")"
           chart_version="$(awk -F': *' '$1 == "version" {gsub(/"/, "", $2); print $2}' deploy/helm/Chart.yaml)"
           chart_app_version="$(awk -F': *' '$1 == "appVersion" {gsub(/"/, "", $2); print $2}' deploy/helm/Chart.yaml)"
           changelog_version="$(awk '/^## [0-9]+\.[0-9]+\.[0-9]+ / {print $2; exit}' CHANGELOG.md)"
 
           if [[ "$package_version" != "$version" ]]; then
             echo "package.json version $package_version does not match tag $TAG" >&2
+            exit 1
+          fi
+          if [[ "$package_lock_version" != "$version" || "$package_lock_root_version" != "$version" ]]; then
+            echo "package-lock.json version does not match tag $TAG" >&2
             exit 1
           fi
           if [[ "$chart_version" != "$version" ]]; then

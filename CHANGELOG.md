@@ -17,12 +17,16 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Add structured verifier `required_actions` so agents can respond to weak, partial, or unsafe memory packets without parsing recommendation text.
 - Add bounded Prometheus counters for verifier `required_actions` so operators can see recurring agent-blocking causes without exposing scopes, tasks, queries, or recommendation text.
 - Add configurable `--wait-timeout` / `ABRA_CLI_WAIT_TIMEOUT` for queued source ingestion waits.
+- Add release preflight checks for `package-lock.json` version alignment.
 
 ### Changed
 
 - Make `abra doctor` and `abra mcp install-codex` validate that the MCP endpoint exposes `discover_scopes` and `working_memory_compose`.
 - Improve `abra doctor`, `abra scope`, and `abra mcp install-codex` guidance for Codex token env, exact scope matching, model config, and local model readiness.
 - Make `abra doctor` check macOS launch-environment token visibility for Codex Desktop separately from the current shell.
+- Add `--tracked` local path ingestion for worker-visible paths while keeping direct local `abra ingest <path>` as the Docker-safe default.
+- Make setup next steps print the exact project scope for ingest and think commands.
+- Align runtime build version reporting across MCP server info, Prometheus metrics, and tracing resources.
 - Prefer query-form working-memory MCP resources so scopes containing slashes are preserved.
 - Improve chunk splitting and embedding batch token estimation for oversized paragraphs, minified JSON, and dense code.
 - Expand default `--code` ingestion includes to supported code files repo-wide instead of only `src` JavaScript/TypeScript paths.
@@ -36,10 +40,13 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 
 - Align the self-host smoke test with the query-form working-memory MCP resource template used to preserve scopes containing slashes.
 - Validate the Abra MCP endpoint before mutating Codex MCP config during `abra mcp install-codex`.
+- Treat summary-only and graph/context-only packets as usable source-backed context in CLI and governed think output.
+- Align stale public release metadata in lockfile, Helm examples, and supported-version docs.
 
 ### Security
 
 - Add release workflow gates for verified signed tags, version alignment, checksum verification, and GitHub Artifact Attestations for CLI release assets.
+- Replace public CI hygiene denylist wording with generic secret-pattern checks.
 - Harden the curl installer to fail closed for missing checksums, checksum mismatches, invalid archives, and missing executables; source builds now require explicit `ABRA_ALLOW_SOURCE_BUILD=1`.
 - Add optional installer-side GitHub Artifact Attestation verification for release archives and `SHA256SUMS`.
 - Reject unsigned production webhooks by default unless explicitly overridden for deployments that disable webhook ingestion or verify signatures upstream.

@@ -69,12 +69,17 @@ abra ingest --scope repo:demo \
   --text "Agents should use Abra before autonomous code changes."
 ```
 
-Ingest local docs or repo files immediately from the CLI:
+Ingest local docs or repo files directly from the CLI:
 
 ```sh
 abra scope
 abra ingest . --code --scope repo:my-app
 ```
+
+`abra ingest .` reads the checkout from the CLI process, so it works even when
+the API and worker run in Docker and cannot see your local path. Use `--tracked`
+only when the worker can read the same path and you want a durable source config
+plus ingestion job.
 
 Queue a remote Git repo through the worker:
 
@@ -200,7 +205,7 @@ From a source checkout, run the CLI as `go run ./cmd/abra <command>`. In a relea
 | init env only | `abra init` |
 | compatibility setup alias | `abra install` |
 | ingest one document | `abra ingest --text "source-backed content"` |
-| ingest local repo | `abra ingest . --code --scope repo:my-app` |
+| ingest local repo directly from the CLI | `abra ingest . --code --scope repo:my-app` |
 | ingest remote git | `abra ingest --git https://github.com/owner/repo.git --ref main --code --scope repo:owner-repo --wait --wait-timeout 10m` |
 | list sources | `abra sources` |
 | list jobs | `abra jobs` |
@@ -232,8 +237,10 @@ curl -sS -H "$auth_header" \
   "$ABRA_BASE_URL/ingest/documents"
 ```
 
-For worker-based source refreshes, use `abra watch local --path . --wait --wait-timeout 10m`
+For worker-based source refreshes, use `abra ingest . --code --tracked`, `abra watch local --path . --wait --wait-timeout 10m`,
 or `abra watch git --git https://github.com/owner/repo.git --wait --wait-timeout 10m`.
+Tracked local sources require the worker process to see the same filesystem path;
+use direct `abra ingest . --code` for ordinary Docker-backed local setup.
 When `--code` is enabled and no `--code-include` is supplied, Abra includes supported
 Go, JavaScript, TypeScript, and React code files repo-wide while skipping common
 dependency, build, cache, and vendor directories.

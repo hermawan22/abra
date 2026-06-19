@@ -887,6 +887,15 @@ func ingestCommand(ctx context.Context, args cliArgs) error {
 		}
 	}
 	if flag(args, "path", "") != "" {
+		if boolFlag(args, "tracked") || boolFlag(args, "worker") {
+			if !boolFlag(args, "no-wait") {
+				args.Bools["wait"] = true
+			}
+			return sourceIngest(ctx, args)
+		}
+		if boolFlag(args, "direct") && boolFlag(args, "wait") {
+			return errors.New("--direct cannot be combined with --wait; direct local ingest runs synchronously")
+		}
 		return localPathIngest(ctx, args)
 	}
 	if flag(args, "git", "") != "" || flag(args, "repo", "") != "" {
@@ -1064,9 +1073,9 @@ func watch(ctx context.Context, args cliArgs) error {
 }
 
 func sourceIngest(ctx context.Context, args cliArgs) error {
-	scope := scopeOrDefault(args, ".")
 	sourceType := "local_repo"
 	sourceURL := ""
+	scopeHint := "."
 	config := map[string]any{}
 	if repo := firstNonEmpty(flag(args, "git", ""), flag(args, "repo", "")); repo != "" {
 		sourceType = "git_repo"
@@ -1084,7 +1093,9 @@ func sourceIngest(ctx context.Context, args cliArgs) error {
 		}
 		sourceURL = "file://" + filepath.ToSlash(abs)
 		config["root"] = abs
+		scopeHint = abs
 	}
+	scope := scopeOrDefault(args, scopeHint)
 	if include := csv(flag(args, "include", "")); len(include) > 0 {
 		config["include"] = include
 	} else {
@@ -1156,6 +1167,9 @@ func sourceIngest(ctx context.Context, args cliArgs) error {
 	fmt.Println("Check jobs: abra jobs --scope " + scope)
 	if boolFlag(args, "wait") {
 		return waitForSourceJob(ctx, args, scope, sourceID)
+	}
+	if sourceType == "local_repo" {
+		fmt.Println("Tip: local tracked sources require the worker to see the same path. Use `abra ingest . --code` for direct local ingestion.")
 	}
 	return nil
 }
@@ -1314,7 +1328,7 @@ func composeMemory(ctx context.Context, args cliArgs) error {
 			fmt.Println("- " + stringValue(action, ""))
 		}
 	}
-	if len(stats) > 0 && intValue(stats["facts"])+intValue(stats["supporting_documents"])+intValue(stats["summaries"]) == 0 {
+	if len(stats) > 0 && intValue(stats["facts"])+intValue(stats["supporting_documents"])+intValue(stats["summaries"])+intValue(stats["graph_relations"])+intValue(stats["context_blocks"]) == 0 {
 		fmt.Println("No source-backed context found for this scope.")
 		fmt.Println("Confirm the project scope: abra scope")
 		fmt.Println("Then ingest the project with that exact scope: abra ingest . --code --scope " + scope)
@@ -2200,15 +2214,18 @@ Manual document flags:
   --source-type    default markdown
 
 Source ingestion flags:
-  --path           local repository or directory to ingest immediately from the CLI
+  --path           local repository or directory to ingest from the CLI
   --git, --repo    remote Git repository URL to clone through the worker
   --ref, --branch  Git ref for --git
   --include        comma-separated document globs, default **/*.md
   --exclude        comma-separated exclude globs
   --code           also ingest code intelligence from supported code files
-  --wait           wait for the queued worker job when using --git
+  --wait           wait for the queued worker job when using --git or watch
+  --tracked        register a local path source and queue a worker job; path must be worker-visible
+  --no-wait        return immediately after queueing a tracked local path ingestion job
   --wait-timeout   max wait for queued worker jobs, default 1m
-  --timeout        HTTP timeout for direct local ingest, default 10m
+  --direct         force direct local ingestion through /ingest/documents
+  --timeout        HTTP timeout for direct local/file/text ingest, default 10m
 `
 	case "config":
 		return `Usage:

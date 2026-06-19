@@ -14,10 +14,9 @@ import (
 	"github.com/hermawan22/abra/internal/observability"
 	"github.com/hermawan22/abra/internal/policy"
 	"github.com/hermawan22/abra/internal/store"
+	"github.com/hermawan22/abra/internal/version"
 	"go.opentelemetry.io/otel/attribute"
 )
-
-const mcpServerVersion = "0.3.7"
 
 func New(cfg config.Config, db *store.Store) (http.Handler, error) {
 	brainService, err := brain.New(cfg, db)
@@ -793,7 +792,7 @@ func (h *handler) mcp(w http.ResponseWriter, r *http.Request) {
 			"id":      rpc.ID,
 			"result": map[string]any{
 				"protocolVersion": "2025-06-18",
-				"serverInfo":      map[string]any{"name": "abra", "version": mcpServerVersion},
+				"serverInfo":      map[string]any{"name": "abra", "version": version.Version},
 				"capabilities":    mcpCapabilities(),
 			},
 		})

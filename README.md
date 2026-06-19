@@ -105,12 +105,17 @@ abra ingest --scope repo:demo \
 abra think "What should agents use before autonomous code changes?" --scope repo:demo
 ```
 
-Ingest local docs or repo files immediately from the CLI:
+Ingest local docs or repo files directly from the CLI:
 
 ```sh
 abra scope
 abra ingest . --code --scope repo:my-app
 ```
+
+`abra ingest .` reads the checkout from the CLI process, so it works even when
+the API and worker run in Docker and cannot see your local path. Use
+`--tracked` only when the worker can read the same path and you want a durable
+source config plus ingestion job.
 
 Queue a remote Git repo through the worker:
 
