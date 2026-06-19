@@ -43,6 +43,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Make `abra scope` print agent init, agent verification, MCP install, and exact-scope recovery commands when AI clients say Abra has no context.
 - Make CLI docs and generated agent instructions treat `abra scope` as the source of truth and recover empty agent context by ingesting and verifying the exact scope.
 - Lower default working-memory recall fan-out to one to reduce local embedding oversubscription and stabilize compose p95 under concurrent agents.
+- Make the self-host smoke gate require AI provider call, wait, and gauge metrics for embedding paths so provider observability cannot silently regress.
 - Make managed release-gate stacks use a non-placeholder local API token so production secret validation runs during bootstrap.
 - Point managed release-gate local embeddings at the host Qwen endpoint so containerized smoke, eval, and perf checks exercise the built-in model path.
 - Use one managed release-gate webhook secret for both the API stack and signed smoke webhook requests.
