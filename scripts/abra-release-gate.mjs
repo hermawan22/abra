@@ -1,26 +1,40 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 
 const startedAt = new Date().toISOString();
 const runId = startedAt.replace(/[^0-9A-Za-z]/g, "").slice(0, 18);
 const profile = (process.env.ABRA_RELEASE_PROFILE || "full").trim();
-const baseUrl = process.env.ABRA_BASE_URL || "http://127.0.0.1:18080";
-const defaultReleaseToken = "release-gate-local-api-token";
-const token = placeholderSecret(process.env.ABRA_API_TOKEN) ? defaultReleaseToken : process.env.ABRA_API_TOKEN;
-const defaultWebhookSecret = "release-gate-webhook-secret";
-const webhookSecret = placeholderSecret(process.env.ABRA_WEBHOOK_SECRET) ? defaultWebhookSecret : process.env.ABRA_WEBHOOK_SECRET;
 const quick = profile === "quick";
+const manageStack = boolEnv("ABRA_RELEASE_MANAGE_STACK");
+const managedHTTPPort = process.env.ABRA_RELEASE_ABRA_PORT || "18081";
+const baseUrl = process.env.ABRA_BASE_URL || (manageStack ? `http://127.0.0.1:${managedHTTPPort}` : "http://127.0.0.1:18080");
+const releaseSecretSuffix = `${runId.toLowerCase()}-${randomBytes(12).toString("hex")}`;
+const defaultReleaseToken = `release-gate-${releaseSecretSuffix}`;
+const token = placeholderSecret(process.env.ABRA_API_TOKEN) ? defaultReleaseToken : process.env.ABRA_API_TOKEN;
+const defaultWebhookSecret = `release-gate-webhook-${releaseSecretSuffix}`;
+const webhookSecret = placeholderSecret(process.env.ABRA_WEBHOOK_SECRET) ? defaultWebhookSecret : process.env.ABRA_WEBHOOK_SECRET;
 const commandTimeoutMs = numberEnv("ABRA_RELEASE_COMMAND_TIMEOUT_MS", quick ? 120_000 : 600_000);
 const outputLimit = numberEnv("ABRA_RELEASE_OUTPUT_LIMIT", 12_000);
-const manageStack = boolEnv("ABRA_RELEASE_MANAGE_STACK");
 const prepareDogfoodSource = !quick && boolEnv("ABRA_RELEASE_PREPARE_DOGFOOD_SOURCE", manageStack);
 const approvalEnforcementGate = !quick && boolEnv("ABRA_RELEASE_APPROVAL_ENFORCEMENT_GATE", manageStack);
+const cleanupManagedStack = manageStack && boolEnv("ABRA_RELEASE_CLEANUP_STACK", true);
+const managedComposeProject = process.env.ABRA_RELEASE_COMPOSE_PROJECT_NAME || `abra-release-gate-${runId.toLowerCase()}`;
+const managedComposeHTTPPort = process.env.ABRA_RELEASE_ABRA_PORT || urlPort(baseUrl, managedHTTPPort);
+const managedComposePostgresPort = process.env.ABRA_RELEASE_POSTGRES_PORT || "55433";
 const dogfoodContainerSourceRoot = process.env.ABRA_RELEASE_DOGFOOD_SOURCE_ROOT || "/tmp/abra-src";
 const checks = [];
 const managedApiKeys = placeholderSecret(process.env.ABRA_API_KEYS) ? token : process.env.ABRA_API_KEYS;
 const managedWebhookSecrets = placeholderSecret(process.env.ABRA_WEBHOOK_SECRETS) ? webhookSecret : process.env.ABRA_WEBHOOK_SECRETS;
 const managedStackEnv = {
+  ...(manageStack ? {
+    COMPOSE_PROJECT_NAME: managedComposeProject,
+    ABRA_PUBLISH_ADDR: "127.0.0.1",
+    ABRA_PORT: managedComposeHTTPPort,
+    POSTGRES_BIND_ADDR: "127.0.0.1",
+    POSTGRES_PORT: managedComposePostgresPort
+  } : {}),
   ABRA_API_KEYS: managedApiKeys,
   ABRA_WEBHOOK_SECRETS: managedWebhookSecrets,
   ABRA_APPROVAL_MODE: process.env.ABRA_APPROVAL_MODE || "advisory",
@@ -52,6 +66,24 @@ function placeholderSecret(value) {
 function numberEnv(name, fallback) {
   const value = Number(process.env[name] || fallback);
   return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function urlPort(raw, fallback) {
+  try {
+    const parsed = new URL(raw);
+    if (parsed.port) {
+      return parsed.port;
+    }
+    if (parsed.protocol === "https:") {
+      return "443";
+    }
+    if (parsed.protocol === "http:") {
+      return "80";
+    }
+  } catch {
+    return fallback;
+  }
+  return fallback;
 }
 
 function boolEnv(name, fallback = false) {
@@ -149,8 +181,18 @@ function quickPerfEnv() {
     ABRA_PERF_DOCS: process.env.ABRA_PERF_DOCS || "12",
     ABRA_PERF_ITERATIONS: process.env.ABRA_PERF_ITERATIONS || "8",
     ABRA_PERF_CAPACITY_ITERATIONS: process.env.ABRA_PERF_CAPACITY_ITERATIONS || "16",
-    ABRA_PERF_MEMORY_P95_MS: process.env.ABRA_PERF_MEMORY_P95_MS || "4000",
+    ABRA_PERF_RECALL_P95_MS: process.env.ABRA_PERF_RECALL_P95_MS || "1000",
+    ABRA_PERF_MEMORY_P95_MS: process.env.ABRA_PERF_MEMORY_P95_MS || "5000",
     ABRA_PERF_SOAK_SECONDS: process.env.ABRA_PERF_SOAK_SECONDS || "0"
+  };
+}
+
+function quickTier1Env() {
+  if (!quick) {
+    return {};
+  }
+  return {
+    ABRA_TIER1_MEMORY_MAX_MS: process.env.ABRA_TIER1_MEMORY_MAX_MS || "5000"
   };
 }
 
@@ -217,7 +259,7 @@ async function main() {
   }
 
   await runCommand("smoke_selfhost", "npm", ["run", "smoke:selfhost"]);
-  await runCommand("eval_tier1", "npm", ["run", "eval:tier1"]);
+  await runCommand("eval_tier1", "npm", ["run", "eval:tier1"], { env: quickTier1Env() });
   if (!quick) {
     await runCommand("eval_golden", "npm", ["run", "eval:golden"]);
     await runCommand("eval_provider", "npm", ["run", "eval:provider"]);
@@ -260,7 +302,20 @@ async function main() {
   await runCommand("perf_local", "npm", ["run", "perf:local"], { env: quickPerfEnv() });
 }
 
-await main();
+async function cleanup() {
+  if (!cleanupManagedStack) {
+    return;
+  }
+  await runCommand("docker_compose_down_managed_stack", "docker", ["compose", "down", "--volumes"], {
+    env: managedStackEnv
+  });
+}
+
+try {
+  await main();
+} finally {
+  await cleanup();
+}
 
 const failed = checks.filter((check) => !check.ok);
 const summary = {
@@ -281,7 +336,9 @@ const summary = {
     dogfood_included: !quick,
     docker_build_included: !quick || boolEnv("ABRA_RELEASE_DOCKER_BUILD"),
     dogfood_source_prepared: prepareDogfoodSource,
-    approval_enforcement_gate_included: approvalEnforcementGate
+    approval_enforcement_gate_included: approvalEnforcementGate,
+    managed_stack_project: manageStack ? managedComposeProject : "",
+    managed_stack_cleaned: cleanupManagedStack
   }
 };
 

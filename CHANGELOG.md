@@ -37,11 +37,13 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Make setup next steps print the exact project scope for ingest and think commands.
 - Make setup and ready banners include `abra agents init` and `abra agents verify` so agent context readiness is part of the default CLI onboarding path.
 - Make `abra scope` print agent init, agent verification, MCP install, and exact-scope recovery commands when AI clients say Abra has no context.
+- Make CLI docs and generated agent instructions treat `abra scope` as the source of truth and recover empty agent context by ingesting and verifying the exact scope.
 - Lower default working-memory recall fan-out to one to reduce local embedding oversubscription and stabilize compose p95 under concurrent agents.
 - Make managed release-gate stacks use a non-placeholder local API token so production secret validation runs during bootstrap.
 - Point managed release-gate local embeddings at the host Qwen endpoint so containerized smoke, eval, and perf checks exercise the built-in model path.
 - Use one managed release-gate webhook secret for both the API stack and signed smoke webhook requests.
-- Give the quick release profile a local-Qwen working-memory p95 threshold while keeping the full perf gate's default threshold unchanged.
+- Give the quick release profile local-Qwen Tier 1 and perf latency thresholds while keeping the full gate's default thresholds unchanged.
+- Run managed release-gate Compose stacks under an isolated project and cleanup them afterward so local Codex MCP does not inherit release-gate credentials.
 - Align runtime build version reporting across MCP server info, Prometheus metrics, and tracing resources.
 - Prefer query-form working-memory MCP resources so scopes containing slashes are preserved.
 - Make `abra upgrade` download the install script before executing it so wrong installer URLs produce actionable recovery guidance instead of a raw curl pipe failure.

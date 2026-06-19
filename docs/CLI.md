@@ -48,11 +48,10 @@ Generate repo-local AI agent instruction files after setup:
 
 ```sh
 abra agents init --agent codex
-abra agents verify
 ```
 
 This writes `AGENTS.md` with the exact Abra scope and `CLAUDE.md` as an import for tools that read Claude Code instructions.
-`abra agents verify` checks both files, validates the MCP endpoint, and calls `discover_scopes` with the exact project scope. If a coding agent says Abra has no context, run this before changing prompts or env files.
+After ingesting the project with the exact scope printed by `abra scope`, `abra agents verify` checks both files, validates the MCP endpoint, and calls `discover_scopes` with that exact project scope. If a coding agent says Abra has no context, run this before changing prompts or env files.
 For CI or release checks that should not contact a live MCP server, run
 `abra agents verify --files-only --strict`.
 
@@ -85,7 +84,8 @@ Ingest local docs or repo files directly from the CLI:
 
 ```sh
 abra scope
-abra ingest . --code --scope repo:my-app
+abra ingest . --code --scope <scope-from-abra-scope>
+abra agents verify . --scope <scope-from-abra-scope>
 ```
 
 `abra ingest .` reads the checkout from the CLI process, so it works even when
@@ -102,7 +102,7 @@ abra ingest --git https://github.com/owner/repo.git --ref main --code --scope re
 Ask Abra to think with governed memory:
 
 ```sh
-abra think "What should agents use before autonomous code changes?" --scope repo:my-app
+abra think "What should agents use before autonomous code changes?" --scope <scope-from-abra-scope>
 ```
 
 Check runtime status:
@@ -143,7 +143,8 @@ prompting an AI agent:
 
 ```sh
 abra scope
-abra agents verify
+abra ingest . --code --scope <scope-from-abra-scope>
+abra agents verify . --scope <scope-from-abra-scope>
 ```
 
 Then tell the agent: `Use Abra MCP first. Exact scope: repo:<project>. Call
@@ -231,11 +232,11 @@ From a source checkout, run the CLI as `go run ./cmd/abra <command>`. In a relea
 | init env only | `abra init` |
 | compatibility setup alias | `abra install` |
 | ingest one document | `abra ingest --text "source-backed content"` |
-| ingest local repo directly from the CLI | `abra ingest . --code --scope repo:my-app` |
+| ingest local repo directly from the CLI | `abra ingest . --code --scope <scope-from-abra-scope>` |
 | ingest remote git | `abra ingest --git https://github.com/owner/repo.git --ref main --code --scope repo:owner-repo --wait --wait-timeout 10m` |
 | list sources | `abra sources` |
 | list jobs | `abra jobs` |
-| think | `abra think "question" --scope repo:my-app` |
+| think | `abra think "question" --scope <scope-from-abra-scope>` |
 | print project scope for agents | `abra scope` |
 | status | `abra status` |
 | doctor | `abra doctor` |

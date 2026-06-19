@@ -395,8 +395,8 @@ func printSetupNext(args cliArgs) {
 	fmt.Println("  abra up --env-file " + envPath(args))
 	fmt.Println("  abra scope")
 	fmt.Println("  abra agents init --agent codex")
-	fmt.Println("  abra agents verify")
 	fmt.Println("  abra ingest . --code --scope " + shellQuote(scope))
+	fmt.Println("  abra agents verify . --scope " + shellQuote(scope))
 	fmt.Println(`  abra think "What should I know before changing this project?" --scope ` + shellQuote(scope))
 }
 

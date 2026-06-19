@@ -1460,9 +1460,9 @@ func scopeCommand(args cliArgs) error {
 				"agents_verify":   "abra agents verify " + shellQuote(path) + " --scope " + shellQuote(scope),
 				"ingest":          "abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope),
 				"think":           "abra think \"what should I know before changing this project?\" --scope " + scope,
-				"codex":           "Use Abra MCP first. Exact scope: " + scope + ". Call discover_scopes with expected_scope=\"" + scope + "\", then call working_memory_compose with that exact scope before answering or changing code. If discover_scopes does not show " + scope + ", run: abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope),
+				"codex":           "Use Abra MCP first. Exact scope: " + scope + ". Call discover_scopes with expected_scope=\"" + scope + "\", then call working_memory_compose with that exact scope before answering or changing code. If discover_scopes does not show " + scope + " or working_memory_compose returns no source-backed context, run: abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope) + " && abra agents verify " + shellQuote(path) + " --scope " + shellQuote(scope),
 				"compose":         "abra compose \"ship this change\" --scope " + scope + " --agent codex",
-				"troubleshooting": "If an AI client says Abra has no context, run agents_verify first; if scope_discovery is missing, run ingest with the exact scope above and retry.",
+				"troubleshooting": "If an AI client says Abra has no context, run the ingest example with the exact scope above, then run agents_verify and retry the agent task.",
 			},
 		})
 	}
@@ -1474,7 +1474,7 @@ func scopeCommand(args cliArgs) error {
 	fmt.Println("Ingest: abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope))
 	fmt.Println("Think:  abra think \"what should I know before changing this project?\" --scope " + scope)
 	fmt.Println("Codex:  Use Abra MCP first. Exact scope: " + scope + `. Call discover_scopes with expected_scope="` + scope + `", then call working_memory_compose.`)
-	fmt.Println("Fix:    If Codex says Abra has no context, run Check first. If scope_discovery is missing, run Ingest and retry with the exact scope.")
+	fmt.Println("Fix:    If Codex says Abra has no context, run Ingest, then Check, then retry with the exact scope.")
 	return nil
 }
 
@@ -1548,8 +1548,10 @@ func agentsCommand(ctx context.Context, args cliArgs) error {
 	for _, result := range results {
 		fmt.Println(stringValue(result["action"], "") + ": " + stringValue(result["path"], ""))
 	}
-	fmt.Println("Next: configure your MCP client with `abra mcp`; for Codex run `abra mcp install-codex`.")
-	fmt.Println("Then: tell your AI agent to read AGENTS.md or CLAUDE.md before changing code.")
+	fmt.Println("MCP:    abra mcp install-codex")
+	fmt.Println("Ingest: abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope))
+	fmt.Println("Check:  abra agents verify " + shellQuote(path) + " --scope " + shellQuote(scope))
+	fmt.Println("Then:   tell your AI agent to read AGENTS.md or CLAUDE.md before changing code.")
 	return nil
 }
 
@@ -1738,8 +1740,9 @@ Before answering architecture questions or changing code in this repository, use
 2. If discovering scopes first, call ` + "`discover_scopes`" + ` with ` + "`expected_scope: \"" + scope + "\"`" + ` so this repo is not hidden by unrelated scopes.
 3. Call ` + "`working_memory_compose`" + ` with the current task, scope ` + "`" + scope + "`" + `, and ` + "`agent: \"" + agent + "\"`" + ` before implementation work.
 4. Follow the returned ` + "`agent_decision`" + `, verification, memory health, conflicts, impact map, and validation plan.
-5. If Abra MCP is unavailable, run ` + "`abra scope`" + ` to confirm the scope and continue with normal repository inspection.
-6. Do not include secrets, API keys, local tokens, or private business context in committed files.
+5. If the packet has no source-backed context or the exact scope is missing from discovery, run ` + "`abra ingest . --code --scope " + scope + "`" + `, then ` + "`abra agents verify . --scope " + scope + "`" + `, and retry the MCP call.
+6. If Abra MCP is unavailable, run ` + "`abra scope`" + ` and ` + "`abra doctor`" + ` to confirm local setup before continuing with normal repository inspection.
+7. Do not include secrets, API keys, local tokens, or private business context in committed files.
 `
 }
 
@@ -2033,8 +2036,8 @@ func printReady(args cliArgs) {
 	fmt.Println("Codex:     abra mcp install-codex")
 	fmt.Println("Scope:     cd /path/to/project && abra scope")
 	fmt.Println("Agent:     cd /path/to/project && abra agents init --agent codex")
-	fmt.Println("Check:     cd /path/to/project && abra agents verify")
 	fmt.Println("Next:      cd /path/to/project && abra ingest . --code --scope <scope>")
+	fmt.Println("Check:     cd /path/to/project && abra agents verify . --scope <scope>")
 	fmt.Println(`Then:      abra think "What should I know before changing this project?" --scope <scope>`)
 }
 

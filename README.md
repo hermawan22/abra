@@ -92,11 +92,10 @@ Generate repo-local agent instructions for Codex, Claude Code, and other MCP-cap
 
 ```sh
 abra agents init --agent codex
-abra agents verify
 ```
 
 This writes `AGENTS.md` with the exact Abra scope and a `CLAUDE.md` import so Claude Code reads the same instructions without duplicating them.
-`abra agents verify` checks the instruction files, MCP endpoint, required agent tools, and `discover_scopes` for the exact scope, so a user can diagnose "Abra has no context" before asking an AI agent to work.
+After ingesting the project with the exact scope printed by `abra scope`, `abra agents verify` checks the instruction files, MCP endpoint, required agent tools, and `discover_scopes` for that scope, so a user can diagnose "Abra has no context" before asking an AI agent to work.
 
 Connect a custom compatible embedding provider during setup without editing env files:
 
@@ -119,7 +118,8 @@ Ingest local docs or repo files directly from the CLI:
 
 ```sh
 abra scope
-abra ingest . --code --scope repo:my-app
+abra ingest . --code --scope <scope-from-abra-scope>
+abra agents verify . --scope <scope-from-abra-scope>
 ```
 
 `abra ingest .` reads the checkout from the CLI process, so it works even when
@@ -130,7 +130,7 @@ source config plus ingestion job.
 Queue a remote Git repo through the worker:
 
 ```sh
-abra ingest --scope repo:my-app --git https://github.com/owner/repo.git --ref main --code --wait
+abra ingest --git https://github.com/owner/repo.git --ref main --code --scope repo:owner-repo --wait
 ```
 
 Generate MCP client config:
@@ -356,7 +356,7 @@ ABRA_BASE_URL=http://localhost:18080 ABRA_API_TOKEN=replace-with-token npm run r
 
 `perf:local` seeds a scoped fixture workload, then checks p95/p99 recall and working-memory latency, failure rate, and a higher-concurrency working-memory capacity probe with memory-health cache-status accounting. Set `ABRA_PERF_SOAK_SECONDS` for an opt-in sustained working-memory soak profile that reports throughput, p95/p99, failure rate, and health-cache distribution. Tune release thresholds with `ABRA_PERF_RECALL_P95_MS`, `ABRA_PERF_MEMORY_P95_MS`, `ABRA_PERF_MEMORY_CAPACITY_P95_MS`, `ABRA_PERF_MEMORY_SOAK_P95_MS`, and `ABRA_PERF_MAX_FAILURE_RATE`.
 
-`release:gate` emits one JSON report that combines script checks, Go tests, Compose/Helm render checks, smoke, quality evals, provider-quality benchmark, Tier 2/3 agent workflow traces, enforced approval-mode probes, dogfood, and performance/capacity gates. Use `ABRA_RELEASE_PROFILE=quick` for a short developer gate that skips provider/Tier 2/3, enforced approval-mode probes, dogfood, and golden evals and reduces the perf fixture; use the default `full` profile before a release. The full gate gives dogfood an isolated release scope by default so old local ingestion failures do not contaminate release evidence; set `ABRA_DOGFOOD_SCOPE` only when you intentionally want to validate a specific existing scope. Set `ABRA_RELEASE_MANAGE_STACK=1` when the runner should build the local Docker Compose image, start Postgres, run migrations, and start the API and worker itself; managed mode raises the local rate limit, uses a bounded worker interval for eval responsiveness without competing with recall latency gates, and runs a second Tier 2/3 pass under `ABRA_APPROVAL_MODE=enforce`. For containerized dogfood, set `ABRA_RELEASE_PREPARE_DOGFOOD_SOURCE=1` to copy the checkout into the worker container before running `eval:dogfood`; this is enabled automatically when `ABRA_RELEASE_MANAGE_STACK=1`. Set `ABRA_RELEASE_APPROVAL_ENFORCEMENT_GATE=1` only when the target stack is already running in enforced mode or the runner may recreate it.
+`release:gate` emits one JSON report that combines script checks, Go tests, Compose/Helm render checks, smoke, quality evals, provider-quality benchmark, Tier 2/3 agent workflow traces, enforced approval-mode probes, dogfood, and performance/capacity gates. Use `ABRA_RELEASE_PROFILE=quick` for a short developer gate that skips provider/Tier 2/3, enforced approval-mode probes, dogfood, and golden evals and reduces the perf fixture; use the default `full` profile before a release. The full gate gives dogfood an isolated release scope by default so old local ingestion failures do not contaminate release evidence; set `ABRA_DOGFOOD_SCOPE` only when you intentionally want to validate a specific existing scope. Set `ABRA_RELEASE_MANAGE_STACK=1` when the runner should build an isolated Docker Compose project, start Postgres, run migrations, and start the API and worker itself; managed mode defaults to `127.0.0.1:18081`, cleans up its Compose project afterward, raises the local rate limit, uses a bounded worker interval for eval responsiveness without competing with recall latency gates, and runs a second Tier 2/3 pass under `ABRA_APPROVAL_MODE=enforce`. Set `ABRA_RELEASE_ABRA_PORT`, `ABRA_RELEASE_POSTGRES_PORT`, or `ABRA_RELEASE_COMPOSE_PROJECT_NAME` only when those isolated defaults conflict with local ports or project names. Set `ABRA_RELEASE_CLEANUP_STACK=0` only when you intentionally want to inspect the managed gate stack after the report. For containerized dogfood, set `ABRA_RELEASE_PREPARE_DOGFOOD_SOURCE=1` to copy the checkout into the worker container before running `eval:dogfood`; this is enabled automatically when `ABRA_RELEASE_MANAGE_STACK=1`. Set `ABRA_RELEASE_APPROVAL_ENFORCEMENT_GATE=1` only when the target stack is already running in enforced mode or the runner may recreate it.
 
 ### Kubernetes
 
