@@ -141,6 +141,7 @@ prompting an AI agent:
 
 ```sh
 abra scope
+abra agents verify
 ```
 
 Then tell the agent: `Use Abra MCP first. Exact scope: repo:<project>. Call
@@ -148,6 +149,11 @@ discover_scopes with expected_scope="repo:<project>", then call
 working_memory_compose with that exact scope before answering or changing code.
 If discover_scopes does not show repo:<project>, run abra scope and ingest the
 project with that exact scope.`
+
+`abra scope` also prints the exact `abra agents init`, `abra agents verify`, and
+`abra ingest` commands for the current project. Use those printed commands when
+Codex or another AI client says Abra has no context; the usual cause is that the
+agent queried a different scope than the one used during ingestion.
 
 Stop the local stack:
 

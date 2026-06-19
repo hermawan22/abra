@@ -40,7 +40,15 @@ func TestScopeCommandPrintsAgentGuidance(t *testing.T) {
 		}
 	})
 	wantScope := "repo:" + slug(filepath.Base(root))
-	for _, want := range []string{wantScope, "working_memory_compose", "abra ingest " + shellQuote(root) + " --code --scope " + shellQuote(wantScope)} {
+	for _, want := range []string{
+		wantScope,
+		"working_memory_compose",
+		"abra mcp install-codex",
+		"abra agents init " + shellQuote(root) + " --agent codex --scope " + shellQuote(wantScope),
+		"abra agents verify " + shellQuote(root) + " --scope " + shellQuote(wantScope),
+		"abra ingest " + shellQuote(root) + " --code --scope " + shellQuote(wantScope),
+		"If Codex says Abra has no context",
+	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("scope output missing %q:\n%s", want, output)
 		}
@@ -65,6 +73,16 @@ func TestScopeCommandJSON(t *testing.T) {
 		t.Fatalf("scope = %v, want %s", payload["scope"], wantScope)
 	}
 	examples, _ := payload["examples"].(map[string]any)
+	for key, want := range map[string]string{
+		"mcp_install":   "abra mcp install-codex",
+		"agents_init":   "abra agents init",
+		"agents_verify": "abra agents verify",
+		"ingest":        "--scope " + shellQuote(wantScope),
+	} {
+		if !strings.Contains(stringValue(examples[key], ""), want) {
+			t.Fatalf("%s example = %#v, want %q", key, examples[key], want)
+		}
+	}
 	if !strings.Contains(stringValue(examples["codex"], ""), "working_memory_compose") {
 		t.Fatalf("codex example = %#v", examples["codex"])
 	}

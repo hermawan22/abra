@@ -1455,19 +1455,26 @@ func scopeCommand(args cliArgs) error {
 			"scope": scope,
 			"path":  path,
 			"examples": map[string]string{
-				"ingest":  "abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope),
-				"think":   "abra think \"what should I know before changing this project?\" --scope " + scope,
-				"codex":   "Use Abra MCP first. Exact scope: " + scope + ". Call discover_scopes with expected_scope=\"" + scope + "\", then call working_memory_compose with that exact scope before answering or changing code. If discover_scopes does not show " + scope + ", run: abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope),
-				"compose": "abra compose \"ship this change\" --scope " + scope + " --agent codex",
+				"mcp_install":     "abra mcp install-codex",
+				"agents_init":     "abra agents init " + shellQuote(path) + " --agent codex --scope " + shellQuote(scope),
+				"agents_verify":   "abra agents verify " + shellQuote(path) + " --scope " + shellQuote(scope),
+				"ingest":          "abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope),
+				"think":           "abra think \"what should I know before changing this project?\" --scope " + scope,
+				"codex":           "Use Abra MCP first. Exact scope: " + scope + ". Call discover_scopes with expected_scope=\"" + scope + "\", then call working_memory_compose with that exact scope before answering or changing code. If discover_scopes does not show " + scope + ", run: abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope),
+				"compose":         "abra compose \"ship this change\" --scope " + scope + " --agent codex",
+				"troubleshooting": "If an AI client says Abra has no context, run agents_verify first; if scope_discovery is missing, run ingest with the exact scope above and retry.",
 			},
 		})
 	}
 	fmt.Println("Scope: " + scope)
 	fmt.Println("Use this exact scope with Abra MCP and AI agents.")
+	fmt.Println("MCP:    abra mcp install-codex")
+	fmt.Println("Agent:  abra agents init " + shellQuote(path) + " --agent codex --scope " + shellQuote(scope))
+	fmt.Println("Check:  abra agents verify " + shellQuote(path) + " --scope " + shellQuote(scope))
 	fmt.Println("Ingest: abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope))
 	fmt.Println("Think:  abra think \"what should I know before changing this project?\" --scope " + scope)
 	fmt.Println("Codex:  Use Abra MCP first. Exact scope: " + scope + `. Call discover_scopes with expected_scope="` + scope + `", then call working_memory_compose.`)
-	fmt.Println("MCP:    If discover_scopes does not show " + scope + ", ingest it with the command above and retry with the exact scope.")
+	fmt.Println("Fix:    If Codex says Abra has no context, run Check first. If scope_discovery is missing, run Ingest and retry with the exact scope.")
 	return nil
 }
 
