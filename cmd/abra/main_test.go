@@ -756,10 +756,7 @@ func TestSetupYesNoStartDefaultsLocalQwen(t *testing.T) {
 	if values["RERANKER_BASE_URL"] != "" {
 		t.Fatalf("reranker base url = %q", values["RERANKER_BASE_URL"])
 	}
-	if !strings.Contains(output, "abra models up") {
-		t.Fatalf("local setup next steps should include models up:\n%s", output)
-	}
-	for _, want := range []string{"abra agents init --agent codex", "abra agents verify"} {
+	for _, want := range []string{"abra up --env-file", "abra agents init --agent codex", "abra agents verify"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("setup next steps missing %q:\n%s", want, output)
 		}
@@ -798,6 +795,117 @@ func TestUpAutoStartsLocalModelsOnlyForLocalProvider(t *testing.T) {
 	mustWrite(t, localEnv, "NODE_ENV=production\nEMBEDDING_PROVIDER=local\nALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=true\n")
 	if !shouldStartLocalModelsForUp(parseArgs([]string{"up"})) {
 		t.Fatal("up should auto-start local models in production when local embeddings are explicitly allowed")
+	}
+}
+
+func TestReadyFailureMessageIncludesLocalModelRecovery(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	mustWrite(t, filepath.Join(home, "quickstart.env"), "EMBEDDING_PROVIDER=local\n")
+
+	message := readyFailureMessage(parseArgs([]string{"up"}), map[string]any{
+		"embedding_error": "connection refused",
+	}, http.StatusServiceUnavailable, nil, "Abra did not become ready")
+	for _, want := range []string{
+		"Abra did not become ready",
+		"status: 503",
+		"detail: connection refused",
+		"Check: abra models status",
+		"Repair: abra up",
+		"Diagnose: abra doctor",
+	} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("ready failure message missing %q:\n%s", want, message)
+		}
+	}
+}
+
+func TestReadyFailureMessageIncludesNetworkError(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	mustWrite(t, filepath.Join(home, "quickstart.env"), "EMBEDDING_PROVIDER=compatible\n")
+
+	message := readyFailureMessage(parseArgs([]string{"status"}), nil, 0, errors.New("dial tcp 127.0.0.1:18080: connect: connection refused"), "")
+	for _, want := range []string{
+		"detail: dial tcp 127.0.0.1:18080: connect: connection refused",
+		"Repair: abra up",
+		"Diagnose: abra doctor",
+	} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("ready failure message missing %q:\n%s", want, message)
+		}
+	}
+	if strings.Contains(message, "abra models status") {
+		t.Fatalf("compatible provider failure should not include local model hint:\n%s", message)
+	}
+}
+
+func TestStatusPrintsReadyFailureDetail(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	mustWrite(t, filepath.Join(home, "quickstart.env"), "EMBEDDING_PROVIDER=local\n")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/readyz" || r.URL.Query().Get("deep") != "1" {
+			t.Fatalf("unexpected readiness path %s", r.URL.String())
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+		writeTestJSON(t, w, map[string]any{"embedding_error": "embedding endpoint refused connection"})
+	}))
+	defer server.Close()
+
+	output := captureStdout(t, func() {
+		if err := run(context.Background(), []string{"status", "--base-url", server.URL}); err != nil {
+			t.Fatalf("status error = %v", err)
+		}
+	})
+	for _, want := range []string{
+		"Abra: not ready (503)",
+		"detail: embedding endpoint refused connection",
+		"Check: abra models status",
+		"Repair: abra up",
+		"Diagnose: abra doctor",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("status output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestWaitReadyReturnsLastReadinessDetailOnCancel(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	mustWrite(t, filepath.Join(home, "quickstart.env"), "EMBEDDING_PROVIDER=local\n")
+	ctx, cancel := context.WithCancel(context.Background())
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		if err := json.NewEncoder(w).Encode(map[string]any{"embedding_error": "model still loading"}); err != nil {
+			t.Fatalf("write json: %v", err)
+		}
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		go func() {
+			time.Sleep(10 * time.Millisecond)
+			cancel()
+		}()
+	}))
+	defer server.Close()
+
+	err := waitReady(ctx, parseArgs([]string{"up", "--base-url", server.URL}))
+	if err == nil {
+		t.Fatal("expected waitReady error")
+	}
+	for _, want := range []string{
+		"context canceled",
+		"Abra did not become ready",
+		"status: 503",
+		"detail: model still loading",
+		"Check: abra models status",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("waitReady error missing %q:\n%s", want, err.Error())
+		}
 	}
 }
 

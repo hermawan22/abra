@@ -430,7 +430,7 @@ func configModelLocalNeural(args cliArgs, label string) error {
 		return err
 	}
 	fmt.Println("Model config updated: " + label)
-	fmt.Println("Run `abra models up` for the default local Qwen embedding runner, or point this config at any compatible custom provider.")
+	fmt.Println("Run `abra up` to start the default local Qwen embedding runner and stack, or use `abra models up` only to manage the runner directly.")
 	printRestartHint(args)
 	return nil
 }
@@ -664,7 +664,7 @@ func status(ctx context.Context, args cliArgs) error {
 	result, code, err := getJSON(ctx, args, readyzPath(args))
 	if err != nil || code < 200 || code >= 300 {
 		fmt.Printf("Abra: not ready (%d)\n", code)
-		fmt.Println("Run: abra up")
+		fmt.Print(readyFailureMessage(args, result, code, err, ""))
 		return nil
 	}
 	if boolFlag(args, "json") {
@@ -2139,14 +2139,57 @@ func doJSON(req *http.Request, timeout time.Duration) (map[string]any, error) {
 }
 
 func waitReady(ctx context.Context, args cliArgs) error {
+	var lastResult map[string]any
+	var lastCode int
+	var lastErr error
 	for i := 0; i < 60; i++ {
-		_, code, err := getJSON(ctx, args, readyzPath(args))
+		result, code, err := getJSON(ctx, args, readyzPath(args))
 		if err == nil && code >= 200 && code < 300 {
 			return nil
 		}
-		time.Sleep(time.Second)
+		lastResult = result
+		lastCode = code
+		lastErr = err
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("%s\n%s", ctx.Err(), readyFailureMessage(args, lastResult, lastCode, lastErr, "Abra did not become ready"))
+		case <-time.After(time.Second):
+		}
 	}
-	return errors.New("Abra did not become ready")
+	return errors.New(readyFailureMessage(args, lastResult, lastCode, lastErr, "Abra did not become ready"))
+}
+
+func readyFailureMessage(args cliArgs, result map[string]any, code int, err error, prefix string) string {
+	lines := []string{}
+	if strings.TrimSpace(prefix) != "" {
+		lines = append(lines, prefix)
+	}
+	if code > 0 {
+		lines = append(lines, fmt.Sprintf("status: %d", code))
+	}
+	if detail := readyFailureDetail(result, err); detail != "" {
+		lines = append(lines, "detail: "+detail)
+	}
+	if setupUsesLocalEmbeddings(args) {
+		lines = append(lines, "Check: abra models status")
+		lines = append(lines, "Repair: abra up")
+	} else {
+		lines = append(lines, "Repair: abra up")
+	}
+	lines = append(lines, "Diagnose: abra doctor")
+	return strings.Join(lines, "\n") + "\n"
+}
+
+func readyFailureDetail(result map[string]any, err error) string {
+	for _, key := range []string{"embedding_error", "error"} {
+		if value := strings.TrimSpace(stringValue(result[key], "")); value != "" {
+			return value
+		}
+	}
+	if err != nil {
+		return err.Error()
+	}
+	return ""
 }
 
 func readyzPath(args cliArgs) string {
@@ -2987,8 +3030,8 @@ abra mcp install-codex when Codex cannot connect.
 
 Guided first-run onboarding. It checks prerequisites, creates the runtime env,
 chooses the embedding provider, and can start the local stack. The default
-local provider uses abra models up to serve Qwen/Qwen3-Embedding-0.6B through a
-local OpenAI-compatible endpoint.
+local provider uses the built-in Qwen/Qwen3-Embedding-0.6B runner, which
+abra up starts automatically and abra models up/status manages directly.
 
 If setup writes config but later commands cannot embed, run abra doctor first.
 For the default local provider, abra up starts the model runner automatically;

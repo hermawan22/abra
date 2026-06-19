@@ -2,7 +2,7 @@
 
 Abra is terminal-first: install the `abra` command, start the service from the terminal, and operate it through the CLI, HTTP, or MCP.
 
-The quickstart path defaults to local neural embeddings: Qwen/Qwen3-Embedding-0.6B-GGUF served by a local llama.cpp OpenAI-compatible endpoint managed by `abra models up`. Qwen/Qwen3-Reranker-0.6B can be configured when a compatible rerank endpoint is available. Custom providers are supported and replace the local defaults when configured.
+The quickstart path defaults to local neural embeddings: Qwen/Qwen3-Embedding-0.6B-GGUF served by a local llama.cpp OpenAI-compatible endpoint started automatically by `abra up` and managed directly with `abra models up/status` when troubleshooting. Qwen/Qwen3-Reranker-0.6B can be configured when a compatible rerank endpoint is available. Custom providers are supported and replace the local defaults when configured.
 
 Local embedding calls default to a 10-minute provider timeout because CPU-backed model requests can be slower than normal API calls on large files. Custom providers default to 30 seconds and can be changed with `EMBEDDING_TIMEOUT`. Local neural setup writes `ABRA_AI_PROVIDER_CONCURRENCY=1`; compatible providers write `ABRA_AI_PROVIDER_CONCURRENCY=4`. `abra doctor` warns when this value is invalid or when a single local model runner is configured for multiple concurrent provider calls.
 
@@ -59,11 +59,12 @@ For CI or release checks that should not contact a live MCP server, run
 After changing model config, restart the stack:
 
 ```sh
-abra models up
 abra down
 abra up
 abra status
 ```
+
+For local-runner troubleshooting, use `abra models status` and `abra models up` directly.
 
 Use these defaults for the remaining commands:
 

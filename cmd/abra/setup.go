@@ -66,8 +66,8 @@ func setup(ctx context.Context, args cliArgs) error {
 			}
 			args.Bools["skip-models"] = true
 		} else {
-			fmt.Println("Skipped local model runner.")
-			fmt.Println("Run before ingest: abra models up")
+			fmt.Println("Skipped separate model start.")
+			fmt.Println("abra up starts it automatically for provider=local; use abra models up only to repair it directly.")
 		}
 	}
 	if interactive && !boolFlag(args, "yes") {
@@ -285,7 +285,7 @@ func setupLocalNeuralEmbeddings(args cliArgs, reader *bufio.Reader, interactive 
 		return err
 	}
 	fmt.Println("Embedding: local neural default (Qwen3-compatible)")
-	fmt.Println("Local model runner: abra models up")
+	fmt.Println("Local model runner: started automatically by abra up; inspect with abra models status")
 	fmt.Println("Host endpoint: embedding http://127.0.0.1:8080/v1")
 	fmt.Println("Compose endpoints are written as host.docker.internal so Abra containers can reach those host services.")
 	fmt.Println("After changing embedding providers, re-ingest important sources so vector recall uses the new embedding space.")
@@ -390,12 +390,10 @@ func printSetupNext(args cliArgs) {
 	label := setupProviderLabel(values)
 	scope := scopeOrDefault(args, ".")
 	fmt.Println("Next:")
-	if provider == "local" || provider == "" {
-		fmt.Println("  abra models up")
-	} else {
+	fmt.Println("  abra up --env-file " + envPath(args))
+	if provider != "local" && provider != "" {
 		fmt.Println("  verify your " + label + " embedding endpoint is reachable from Abra")
 	}
-	fmt.Println("  abra up --env-file " + envPath(args))
 	fmt.Println("  abra scope")
 	fmt.Println("  abra agents init --agent codex")
 	fmt.Println("  abra ingest . --code --scope " + shellQuote(scope))

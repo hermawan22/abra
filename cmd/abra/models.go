@@ -328,7 +328,7 @@ func friendlyProviderError(err error) error {
 	}
 	text := strings.ToLower(err.Error())
 	if strings.Contains(text, "/embeddings") || strings.Contains(text, "embedding") || strings.Contains(text, "host.docker.internal:8080") || strings.Contains(text, "connection refused") {
-		return fmt.Errorf("embedding provider is not ready. Run `abra models up`, then `abra up`, then retry ingest. Original error: %w", err)
+		return fmt.Errorf("embedding provider is not ready. Run `abra models status`; if it is not ready, run `abra models up`, then retry ingest. If the stack is down, run `abra up`. Original error: %w", err)
 	}
 	return err
 }

@@ -81,7 +81,7 @@ For non-interactive local setup:
 abra setup --yes
 ```
 
-Use `abra setup --yes --no-models` only when you intentionally manage the embedding endpoint yourself. If you skipped startup or need to recover a stopped local model, start the default self-hosted embedding runner directly:
+Use `abra setup --yes --no-models` only when you intentionally manage the embedding endpoint yourself. If you skipped startup, run `abra up`; it starts the default self-hosted embedding runner automatically for local configs. To inspect or repair the runner directly:
 
 ```sh
 abra models up
