@@ -1313,7 +1313,7 @@ if (!approvalDecision.approval || approvalDecision.approval.status !== "approved
 	if (!mcpResources.result || !Array.isArray(mcpResources.result.resources) || !mcpResources.result.resources.some((resource) => resource.uri === "abra://guide/agent-workflow")) {
 	  throw new Error("mcp resources list did not expose the agent workflow guide");
 	}
-	if (!mcpResourceTemplates.result || !Array.isArray(mcpResourceTemplates.result.resourceTemplates) || !mcpResourceTemplates.result.resourceTemplates.some((template) => template.uriTemplate === "abra://memory/health/{scope}") || !mcpResourceTemplates.result.resourceTemplates.some((template) => template.uriTemplate === "abra://working-memory/{scope}/{task}")) {
+if (!mcpResourceTemplates.result || !Array.isArray(mcpResourceTemplates.result.resourceTemplates) || !mcpResourceTemplates.result.resourceTemplates.some((template) => template.uriTemplate === "abra://memory/health/{scope}") || !mcpResourceTemplates.result.resourceTemplates.some((template) => template.uriTemplate === "abra://working-memory?scope={scope}&task={task}")) {
 	  throw new Error("mcp resource templates did not expose scoped health and working-memory resources");
 	}
 	if (!mcpResourceGuide.result || !Array.isArray(mcpResourceGuide.result.contents) || !String(mcpResourceGuide.result.contents[0] && mcpResourceGuide.result.contents[0].text).includes("working_memory_compose")) {

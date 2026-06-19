@@ -14,6 +14,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Add optional MCP `ingest_documents` partial batch results with `continue_on_error` for connector overlays that need per-document status.
 - Add retrieval reason explainability to recall, working-memory composition, context windows, and governed think results.
 - Add retrieval source-diversity scoring so working-memory verification can flag packets dominated by one source.
+- Add structured verifier `required_actions` so agents can respond to weak, partial, or unsafe memory packets without parsing recommendation text.
 
 ### Changed
 
@@ -23,6 +24,10 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Improve chunk splitting and embedding batch token estimation for oversized paragraphs, minified JSON, and dense code.
 - Harden production Compose and Helm defaults around compatible embeddings, loopback publish defaults, webhook signing, bind address, and request sizing.
 - Make the release gate provide production-valid placeholder embedding and webhook settings for Docker Compose config validation.
+
+### Fixed
+
+- Align the self-host smoke test with the query-form working-memory MCP resource template used to preserve scopes containing slashes.
 
 ### Security
 

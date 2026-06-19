@@ -26,6 +26,7 @@ type VerificationReport struct {
 	RetrievalWarnings     []RetrievalWarning     `json:"retrieval_warnings,omitempty"`
 	GraphWarnings         []GraphWarning         `json:"graph_warnings,omitempty"`
 	MissingEvidenceClaims []string               `json:"missing_evidence_claims,omitempty"`
+	RequiredActions       []string               `json:"required_actions,omitempty"`
 	Recommendations       []string               `json:"recommendations"`
 }
 
@@ -135,6 +136,7 @@ func verifyPacket(summaries []store.MemorySummaryResult, facts []store.ClaimResu
 	report.Score = round2(score)
 	report.ActionRequired = len(report.ActiveConflicts) > 0 || len(report.ChallengedClaims) > 0 || len(report.StaleClaims) > 0 || len(report.RetrievalWarnings) > 0 || len(report.GraphWarnings) > 0 || len(report.MissingEvidenceClaims) > 0 || report.RetrievalQuality.LowConfidence || report.RetrievalQuality.LowSourceDiversity || !report.RetrievalCoverage.Complete
 	report.Verdict = verificationVerdict(report)
+	report.RequiredActions = verificationRequiredActions(report, len(facts), len(graph))
 	report.Recommendations = verificationRecommendations(report, len(facts), len(graph))
 
 	sort.Strings(report.UnverifiedClaims)
@@ -380,6 +382,75 @@ func verificationVerdict(report VerificationReport) string {
 	default:
 		return "weak"
 	}
+}
+
+func verificationRequiredActions(report VerificationReport, facts, graph int) []string {
+	actions := []string{}
+	if facts == 0 {
+		if report.RetrievalCoverage.Targets.Facts > 0 {
+			actions = appendUnique(actions, "ingest_source_backed_memory", "rerun_working_memory_compose")
+		} else {
+			actions = appendUnique(actions, "cite_source_chunks_and_graph")
+		}
+	}
+	if !report.RetrievalCoverage.Complete {
+		actions = appendUnique(actions, "fill_missing_retrieval_layers")
+		for _, layer := range report.RetrievalCoverage.Missing {
+			actions = appendUnique(actions, "retrieve_"+safeActionName(layer))
+		}
+	}
+	if len(report.MissingEvidenceClaims) > 0 {
+		actions = appendUnique(actions, "attach_missing_evidence")
+	}
+	if len(report.ChallengedClaims) > 0 {
+		actions = appendUnique(actions, "resolve_challenged_claims")
+	}
+	if len(report.ActiveConflicts) > 0 {
+		actions = appendUnique(actions, "resolve_active_conflicts", "review_conflict_evidence")
+	}
+	if len(report.RetrievalWarnings) > 0 {
+		actions = appendUnique(actions, "rerun_degraded_retrieval")
+	}
+	if report.RetrievalQuality.LowConfidence {
+		actions = appendUnique(actions, "rerun_with_more_specific_query", "check_embeddings_or_reindex")
+	}
+	if report.RetrievalQuality.LowSourceDiversity {
+		actions = appendUnique(actions, "corroborate_with_additional_source")
+	}
+	if len(report.GraphWarnings) > 0 {
+		actions = appendUnique(actions, "review_graph_warnings")
+	}
+	if len(report.StaleClaims) > 0 {
+		actions = appendUnique(actions, "refresh_stale_sources")
+	}
+	if len(report.UnverifiedClaims) > 0 {
+		actions = appendUnique(actions, "verify_unverified_claims")
+	}
+	if graph == 0 && report.RetrievalCoverage.Targets.GraphRelations > 0 {
+		actions = appendUnique(actions, "expand_graph_context")
+	}
+	if len(actions) == 0 {
+		actions = append(actions, "cite_evidence")
+	}
+	return actions
+}
+
+func safeActionName(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var b strings.Builder
+	lastUnderscore := false
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastUnderscore = false
+			continue
+		}
+		if !lastUnderscore {
+			b.WriteByte('_')
+			lastUnderscore = true
+		}
+	}
+	return strings.Trim(b.String(), "_")
 }
 
 func verificationRecommendations(report VerificationReport, facts, graph int) []string {

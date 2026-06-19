@@ -293,6 +293,7 @@ func thinkGraphPaths(relations []store.RelationResult, citationRefs map[string]s
 
 func thinkNextActions(packet ComposeResult) []string {
 	actions := []string{}
+	actions = appendUnique(actions, packet.Verification.RequiredActions...)
 	actions = appendUnique(actions, packet.AgentDecision.RequiredActions...)
 	actions = appendUnique(actions, packet.AgentDecision.AllowedNextActions...)
 	for _, recommendation := range packet.Verification.Recommendations {

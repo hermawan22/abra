@@ -99,7 +99,7 @@ func contextCandidates(input ComposeInput, result ComposeResult) []contextCandid
 		Title:    "Task and Memory Gate",
 		Priority: 1,
 		Content: fmt.Sprintf(
-			"Task: %s\nScope: %s\nIntent: %s\nMemory health: %s (score %d; signals: %s)\nVerification: %s (score %.2f)\nRetrieval quality: results=%d sources=%d dominant_source_share=%.2f low_confidence=%t low_source_diversity=%t\nAgent decision: %s; autonomous_allowed=%t",
+			"Task: %s\nScope: %s\nIntent: %s\nMemory health: %s (score %d; signals: %s)\nVerification: %s (score %.2f)\nRetrieval quality: results=%d sources=%d dominant_source_share=%.2f low_confidence=%t low_source_diversity=%t\nRequired actions: %s\nAgent decision: %s; autonomous_allowed=%t",
 			result.Task,
 			result.Scope,
 			result.Intent,
@@ -113,6 +113,7 @@ func contextCandidates(input ComposeInput, result ComposeResult) []contextCandid
 			result.Verification.RetrievalQuality.DominantSourceShare,
 			result.Verification.RetrievalQuality.LowConfidence,
 			result.Verification.RetrievalQuality.LowSourceDiversity,
+			actionListOrDefault(result.Verification.RequiredActions),
 			result.AgentDecision.Decision,
 			result.AgentDecision.AutonomousAllowed,
 		),
@@ -216,6 +217,26 @@ func healthSignalCodes(signals []store.MemoryHealthSignal) string {
 		codes = append(codes, fmt.Sprintf("+%d more", len(signals)-len(codes)))
 	}
 	return strings.Join(codes, ", ")
+}
+
+func actionListOrDefault(actions []string) string {
+	if len(actions) == 0 {
+		return "none"
+	}
+	limit := minInt(len(actions), 6)
+	out := make([]string, 0, limit+1)
+	for _, action := range actions[:limit] {
+		if strings.TrimSpace(action) != "" {
+			out = append(out, action)
+		}
+	}
+	if len(out) == 0 {
+		return "none"
+	}
+	if len(actions) > limit {
+		out = append(out, fmt.Sprintf("+%d more", len(actions)-limit))
+	}
+	return strings.Join(out, ", ")
 }
 
 func textOrDefault(value, fallback string) string {

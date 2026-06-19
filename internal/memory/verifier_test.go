@@ -50,6 +50,9 @@ func TestVerifyPacketStrongWhenSourceBackedAndFresh(t *testing.T) {
 	if !containsCheck(report.Checks, "retrieval_coverage") || !report.RetrievalCoverage.Complete {
 		t.Fatalf("retrieval coverage check missing or incomplete: %#v", report)
 	}
+	if len(report.RequiredActions) != 1 || report.RequiredActions[0] != "cite_evidence" {
+		t.Fatalf("strong packet should expose cite action only: %#v", report.RequiredActions)
+	}
 }
 
 func TestVerifyPacketUnsafeWhenClaimHasNoEvidence(t *testing.T) {
@@ -71,6 +74,9 @@ func TestVerifyPacketUnsafeWhenClaimHasNoEvidence(t *testing.T) {
 	}
 	if !report.ActionRequired || len(report.MissingEvidenceClaims) != 1 {
 		t.Fatalf("missing evidence was not gated: %#v", report)
+	}
+	if !contains(report.RequiredActions, "attach_missing_evidence") {
+		t.Fatalf("missing-evidence required action missing: %#v", report.RequiredActions)
 	}
 }
 
@@ -107,6 +113,9 @@ func TestVerifyPacketUnsafeWhenActiveConflictExists(t *testing.T) {
 	if !containsRecommendation(report.Recommendations, "Resolve active memory conflicts") {
 		t.Fatalf("conflict recommendation missing: %#v", report.Recommendations)
 	}
+	if !contains(report.RequiredActions, "resolve_active_conflicts") || !contains(report.RequiredActions, "review_conflict_evidence") {
+		t.Fatalf("conflict required actions missing: %#v", report.RequiredActions)
+	}
 }
 
 func TestVerifyPacketPartialWhenRetrievalDegraded(t *testing.T) {
@@ -133,6 +142,9 @@ func TestVerifyPacketPartialWhenRetrievalDegraded(t *testing.T) {
 	if !containsRecommendation(report.Recommendations, "Rerun degraded retrieval") {
 		t.Fatalf("degraded retrieval recommendation missing: %#v", report.Recommendations)
 	}
+	if !contains(report.RequiredActions, "rerun_degraded_retrieval") {
+		t.Fatalf("degraded retrieval required action missing: %#v", report.RequiredActions)
+	}
 }
 
 func TestVerifyPacketStrongForCodeContextWhenClaimsAreNotRequired(t *testing.T) {
@@ -156,6 +168,9 @@ func TestVerifyPacketStrongForCodeContextWhenClaimsAreNotRequired(t *testing.T) 
 	}
 	if !containsRecommendation(report.Recommendations, "no claim facts by design") {
 		t.Fatalf("code-context recommendation missing: %#v", report.Recommendations)
+	}
+	if !contains(report.RequiredActions, "cite_source_chunks_and_graph") {
+		t.Fatalf("code-context required action missing: %#v", report.RequiredActions)
 	}
 }
 
@@ -182,6 +197,9 @@ func TestVerifyPacketWeakWhenCoverageContractIsMissing(t *testing.T) {
 	}
 	if !containsRecommendation(report.Recommendations, "missing layers") {
 		t.Fatalf("coverage recommendation missing: %#v", report.Recommendations)
+	}
+	if !contains(report.RequiredActions, "fill_missing_retrieval_layers") || !contains(report.RequiredActions, "retrieve_graph_relations") {
+		t.Fatalf("coverage required actions missing: %#v", report.RequiredActions)
 	}
 }
 
@@ -216,6 +234,9 @@ func TestVerifyPacketPartialWhenGraphWarningExists(t *testing.T) {
 	if !containsRecommendation(report.Recommendations, "Review graph warnings") {
 		t.Fatalf("graph warning recommendation missing: %#v", report.Recommendations)
 	}
+	if !contains(report.RequiredActions, "review_graph_warnings") {
+		t.Fatalf("graph warning required action missing: %#v", report.RequiredActions)
+	}
 }
 
 func TestVerifyPacketWeakWhenRetrievalSignalIsLow(t *testing.T) {
@@ -238,6 +259,9 @@ func TestVerifyPacketWeakWhenRetrievalSignalIsLow(t *testing.T) {
 	}
 	if !containsRecommendation(report.Recommendations, "Rerun retrieval with a more specific query") {
 		t.Fatalf("low-signal recommendation missing: %#v", report.Recommendations)
+	}
+	if !contains(report.RequiredActions, "rerun_with_more_specific_query") || !contains(report.RequiredActions, "check_embeddings_or_reindex") {
+		t.Fatalf("low-signal required actions missing: %#v", report.RequiredActions)
 	}
 }
 
@@ -268,6 +292,9 @@ func TestVerifyPacketPartialWhenManyResultsComeFromOneSource(t *testing.T) {
 	}
 	if !containsRecommendation(report.Recommendations, "Corroborate this packet with another source") {
 		t.Fatalf("source diversity recommendation missing: %#v", report.Recommendations)
+	}
+	if !contains(report.RequiredActions, "corroborate_with_additional_source") {
+		t.Fatalf("source diversity required action missing: %#v", report.RequiredActions)
 	}
 }
 

@@ -54,14 +54,16 @@ func decideAgentAction(input ComposeInput, result ComposeResult) AgentDecision {
 		decision.AutonomousAllowed = false
 		decision.ReviewRequired = true
 		decision.Reasons = append([]string{"Verification marked this packet unsafe."}, result.Verification.Recommendations...)
-		decision.RequiredActions = append(decision.RequiredActions, "resolve_unsafe_claims", "refresh_or_challenge_memory")
+		decision.RequiredActions = appendUnique(decision.RequiredActions, result.Verification.RequiredActions...)
+		decision.RequiredActions = appendUnique(decision.RequiredActions, "resolve_unsafe_claims", "refresh_or_challenge_memory")
 		decision.AllowedNextActions = []string{"propose_learning", "request_approval", "cite_uncertainty"}
 	case "weak":
 		decision.Decision = "needs_review"
 		decision.AutonomousAllowed = false
 		decision.ReviewRequired = true
 		decision.Reasons = append([]string{"Verification confidence is too weak for autonomous work."}, result.Verification.Recommendations...)
-		decision.RequiredActions = append(decision.RequiredActions, "add_evidence", "rerun_retrieval")
+		decision.RequiredActions = appendUnique(decision.RequiredActions, result.Verification.RequiredActions...)
+		decision.RequiredActions = appendUnique(decision.RequiredActions, "add_evidence", "rerun_retrieval")
 		if result.Verification.RetrievalQuality.LowConfidence {
 			decision.RequiredActions = appendUnique(decision.RequiredActions, "rerun_with_more_specific_query")
 		}
@@ -71,7 +73,7 @@ func decideAgentAction(input ComposeInput, result ComposeResult) AgentDecision {
 		decision.AutonomousAllowed = !result.Verification.ActionRequired
 		decision.ReviewRequired = result.Verification.ActionRequired
 		decision.Reasons = append([]string{"Verification is partial; use the packet as guidance, not final truth."}, result.Verification.Recommendations...)
-		decision.RequiredActions = reviewActions(result)
+		decision.RequiredActions = appendUnique(decision.RequiredActions, result.Verification.RequiredActions...)
 		decision.AllowedNextActions = []string{"inspect_relevant_files", "cite_evidence", "propose_learning", "run_validation"}
 	case "strong":
 		decision.Reasons = []string{"Verification is strong and the packet has source evidence."}

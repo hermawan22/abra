@@ -438,6 +438,9 @@ func TestComposeBuildsMigrationWorkingMemory(t *testing.T) {
 	if !strings.Contains(result.ContextWindow.Prompt, "text (hybrid") || !strings.Contains(result.ContextWindow.Prompt, "vector (hybrid") || !strings.Contains(result.ContextWindow.Prompt, "graph (entity_local") {
 		t.Fatalf("context window did not explain retrieval signals: %s", result.ContextWindow.Prompt)
 	}
+	if !strings.Contains(result.ContextWindow.Prompt, "Required actions:") {
+		t.Fatalf("context window did not include required actions: %s", result.ContextWindow.Prompt)
+	}
 	if len(result.RetrievalTrace) < 8 || result.Stats.RetrievalTraceItems != len(result.RetrievalTrace) {
 		t.Fatalf("retrieval trace missing or stats mismatch: trace=%#v stats=%+v", result.RetrievalTrace, result.Stats)
 	}
