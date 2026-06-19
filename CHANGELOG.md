@@ -42,6 +42,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Make setup and ready banners include `abra agents init` and `abra agents verify` so agent context readiness is part of the default CLI onboarding path.
 - Make `abra scope` print agent init, agent verification, MCP install, and exact-scope recovery commands when AI clients say Abra has no context.
 - Make CLI docs and generated agent instructions treat `abra scope` as the source of truth and recover empty agent context by ingesting and verifying the exact scope.
+- Make `abra agents verify` call `working_memory_compose` and fail when the exact scope returns no source-backed context.
 - Lower default working-memory recall fan-out to one to reduce local embedding oversubscription and stabilize compose p95 under concurrent agents.
 - Make the self-host smoke gate require AI provider call, wait, and gauge metrics for embedding paths so provider observability cannot silently regress.
 - Make managed release-gate stacks use a non-placeholder local API token so production secret validation runs during bootstrap.

@@ -95,7 +95,7 @@ abra agents init --agent codex
 ```
 
 This writes `AGENTS.md` with the exact Abra scope and a `CLAUDE.md` import so Claude Code reads the same instructions without duplicating them.
-After ingesting the project with the exact scope printed by `abra scope`, `abra agents verify` checks the instruction files, MCP endpoint, required agent tools, and `discover_scopes` for that scope, so a user can diagnose "Abra has no context" before asking an AI agent to work.
+After ingesting the project with the exact scope printed by `abra scope`, `abra agents verify` checks the instruction files, MCP endpoint, required agent tools, `discover_scopes`, and a lightweight `working_memory_compose` packet for that scope, so a user can diagnose "Abra has no context" before asking an AI agent to work.
 
 Connect a custom compatible embedding provider during setup without editing env files:
 

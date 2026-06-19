@@ -1649,7 +1649,11 @@ func verifyAgentContext(ctx context.Context, args cliArgs, path, scope string) e
 			"ok":     true,
 			"detail": fmt.Sprintf("tools=%d required=discover_scopes,working_memory_compose", toolCount),
 		})
-		checks = append(checks, discoverScopeCheck(ctx, args, scope))
+		scopeCheck := discoverScopeCheck(ctx, args, scope)
+		checks = append(checks, scopeCheck)
+		if boolValue(scopeCheck["ok"], false) {
+			checks = append(checks, workingMemoryContextCheck(ctx, args, scope))
+		}
 	}
 	ok := checksOK(checks, strict)
 	if boolFlag(args, "json") {
@@ -1779,6 +1783,61 @@ func discoverScopeCheck(ctx context.Context, args cliArgs, scope string) map[str
 		"detail": "discover_scopes did not return " + scope,
 		"hint":   hint,
 	}
+}
+
+func workingMemoryContextCheck(ctx context.Context, args cliArgs, scope string) map[string]any {
+	result, err := callMCPTool(ctx, args, "working_memory_compose", map[string]any{
+		"task":         "verify agent context for " + scope,
+		"scope":        scope,
+		"agent":        "abra-agent-verify",
+		"limit":        3,
+		"max_queries":  3,
+		"token_budget": 600,
+	})
+	if err != nil {
+		return map[string]any{
+			"name":  "working_memory",
+			"ok":    false,
+			"hint":  "run `abra ingest . --code --scope " + scope + "`, then retry `abra agents verify . --scope " + scope + "`",
+			"error": err.Error(),
+		}
+	}
+	facts, documents, summaries, graph := memoryContextCounts(result)
+	if facts+documents+summaries+graph > 0 {
+		return map[string]any{
+			"name":   "working_memory",
+			"ok":     true,
+			"detail": fmt.Sprintf("facts=%d documents=%d summaries=%d graph=%d", facts, documents, summaries, graph),
+		}
+	}
+	return map[string]any{
+		"name":   "working_memory",
+		"ok":     false,
+		"detail": fmt.Sprintf("facts=%d documents=%d summaries=%d graph=%d", facts, documents, summaries, graph),
+		"hint":   "run `abra ingest . --code --scope " + scope + "`, then retry `abra agents verify . --scope " + scope + "`",
+	}
+}
+
+func memoryContextCounts(result map[string]any) (facts, documents, summaries, graph int) {
+	if stats, ok := result["stats"].(map[string]any); ok {
+		facts = intValue(stats["facts"])
+		documents = intValue(stats["supporting_documents"])
+		summaries = intValue(stats["summaries"])
+		graph = intValue(stats["graph_relations"])
+	}
+	if facts == 0 {
+		facts = lenSlice(result["facts"])
+	}
+	if documents == 0 {
+		documents = lenSlice(result["supporting_documents"])
+	}
+	if summaries == 0 {
+		summaries = lenSlice(result["summaries"])
+	}
+	if graph == 0 {
+		graph = lenSlice(result["graph_context"])
+	}
+	return facts, documents, summaries, graph
 }
 
 func checksOK(checks []map[string]any, strict bool) bool {
@@ -2861,7 +2920,8 @@ CLAUDE.md importing AGENTS.md so Claude Code reads the same guidance without
 duplicating content. Existing files are skipped unless --force is set.
 
 ` + "`abra agents verify`" + ` checks AGENTS.md, CLAUDE.md, the MCP endpoint, required
-agent tools, and discover_scopes for the exact project scope. Use it when an AI
+agent tools, discover_scopes for the exact project scope, and a lightweight
+working_memory_compose packet with source-backed context. Use it when an AI
 client says Abra has no context. Use --files-only for CI checks that should not
 contact a live Abra MCP server. Use --strict when warning-level compatibility
 checks should fail the command.

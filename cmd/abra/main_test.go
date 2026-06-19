@@ -181,10 +181,26 @@ func TestAgentsVerifyChecksMCPAndScopeDiscovery(t *testing.T) {
 				}},
 			})
 		case "tools/call":
-			payload, _ := json.Marshal(map[string]any{
-				"recommended_scope": wantScope,
-				"matches":           []map[string]any{{"scope": wantScope}},
-			})
+			params, _ := rpc["params"].(map[string]any)
+			var payload []byte
+			switch params["name"] {
+			case "discover_scopes":
+				payload, _ = json.Marshal(map[string]any{
+					"recommended_scope": wantScope,
+					"matches":           []map[string]any{{"scope": wantScope}},
+				})
+			case "working_memory_compose":
+				payload, _ = json.Marshal(map[string]any{
+					"stats": map[string]any{
+						"facts":                1,
+						"supporting_documents": 1,
+						"summaries":            1,
+						"graph_relations":      1,
+					},
+				})
+			default:
+				t.Fatalf("unexpected tool %v", params["name"])
+			}
 			writeTestJSON(t, w, map[string]any{
 				"jsonrpc": "2.0",
 				"id":      rpc["id"],
@@ -201,7 +217,7 @@ func TestAgentsVerifyChecksMCPAndScopeDiscovery(t *testing.T) {
 			t.Fatalf("agents verify error = %v", err)
 		}
 	})
-	for _, want := range []string{"AGENTS.md", "warn  CLAUDE.md", "scope_discovery", "Ready", wantScope} {
+	for _, want := range []string{"AGENTS.md", "warn  CLAUDE.md", "scope_discovery", "working_memory", "Ready", wantScope} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("verify output missing %q:\n%s", want, output)
 		}
@@ -296,6 +312,76 @@ func TestAgentsVerifyFailsWhenScopeIsMissing(t *testing.T) {
 	})
 	if !strings.Contains(output, "fail  scope_discovery") || !strings.Contains(output, "abra ingest . --code --scope") {
 		t.Fatalf("verify output did not explain missing scope:\n%s", output)
+	}
+}
+
+func TestAgentsVerifyFailsWhenWorkingMemoryIsEmpty(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "demo project")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wantScope := "repo:" + slug(filepath.Base(root))
+	if err := run(context.Background(), []string{"agents", "init", root, "--agent", "codex"}); err != nil {
+		t.Fatalf("agents init error = %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var rpc map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&rpc); err != nil {
+			t.Fatalf("decode rpc: %v", err)
+		}
+		switch rpc["method"] {
+		case "tools/list":
+			writeTestJSON(t, w, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      rpc["id"],
+				"result": map[string]any{"tools": []map[string]any{
+					{"name": "discover_scopes"},
+					{"name": "working_memory_compose"},
+				}},
+			})
+		case "tools/call":
+			params, _ := rpc["params"].(map[string]any)
+			var payload []byte
+			switch params["name"] {
+			case "discover_scopes":
+				payload, _ = json.Marshal(map[string]any{
+					"recommended_scope": wantScope,
+					"matches":           []map[string]any{{"scope": wantScope}},
+				})
+			case "working_memory_compose":
+				payload, _ = json.Marshal(map[string]any{
+					"stats": map[string]any{
+						"facts":                0,
+						"supporting_documents": 0,
+						"summaries":            0,
+						"graph_relations":      0,
+						"context_blocks":       1,
+					},
+				})
+			default:
+				t.Fatalf("unexpected tool %v", params["name"])
+			}
+			writeTestJSON(t, w, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      rpc["id"],
+				"result":  map[string]any{"content": []map[string]any{{"type": "text", "text": string(payload)}}},
+			})
+		default:
+			t.Fatalf("unexpected method %v", rpc["method"])
+		}
+	}))
+	defer server.Close()
+
+	output := captureStdout(t, func() {
+		err := run(context.Background(), []string{"agents", "verify", root, "--base-url", server.URL, "--token", "test-token"})
+		if err == nil || !strings.Contains(err.Error(), "agent context verification failed") {
+			t.Fatalf("agents verify error = %v", err)
+		}
+	})
+	for _, want := range []string{"ok  scope_discovery", "fail  working_memory", "facts=0 documents=0 summaries=0 graph=0", "abra ingest . --code --scope " + wantScope} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("verify output missing %q:\n%s", want, output)
+		}
 	}
 }
 
