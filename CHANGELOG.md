@@ -12,6 +12,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Add deep readiness checks through `/readyz?deep=1` and have the CLI use them for local embedding setups.
 - Add configurable API read timeout and request-body limits for large local ingestion workloads.
 - Add optional MCP `ingest_documents` partial batch results with `continue_on_error` for connector overlays that need per-document status.
+- Add retrieval reason explainability to recall, working-memory composition, context windows, and governed think results.
 
 ### Changed
 

@@ -29,6 +29,10 @@ func TestBuildThinkResultIncludesCitationsGapsAndDecision(t *testing.T) {
 		GraphContext: []store.RelationResult{
 			{ID: "rel-1", FromEntity: "Agent", Type: "uses", ToEntity: "Abra", Confidence: 0.91, SourceURL: &source},
 		},
+		RetrievalReasons: []store.RetrievalReason{
+			{Mode: "hybrid", Signal: "text", Message: "Full-text matches contributed.", Count: 1},
+			{Mode: "hybrid", Signal: "vector", Message: "Semantic matches contributed.", Count: 1},
+		},
 		MemoryHealth: store.MemoryHealthResult{Status: "healthy"},
 		Verification: VerificationReport{
 			Verdict:           "strong",
@@ -63,6 +67,9 @@ func TestBuildThinkResultIncludesCitationsGapsAndDecision(t *testing.T) {
 	}
 	if result.AgentDecision.Decision != "proceed" {
 		t.Fatalf("decision = %#v", result.AgentDecision)
+	}
+	if len(result.RetrievalReasons) != 2 || result.RetrievalReasons[0].Signal != "text" {
+		t.Fatalf("retrieval reasons = %#v", result.RetrievalReasons)
 	}
 }
 

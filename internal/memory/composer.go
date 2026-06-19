@@ -80,6 +80,7 @@ type ComposeResult struct {
 	SupportingDocuments  []store.DocumentResult      `json:"supporting_documents"`
 	GraphContext         []store.RelationResult      `json:"graph_context"`
 	GraphWarnings        []GraphWarning              `json:"graph_warnings,omitempty"`
+	RetrievalReasons     []store.RetrievalReason     `json:"retrieval_reasons,omitempty"`
 	Conflicts            []store.ConflictResult      `json:"conflicts,omitempty"`
 	MemoryHealth         store.MemoryHealthResult    `json:"memory_health"`
 	RelevantFiles        []string                    `json:"relevant_files"`
@@ -115,6 +116,7 @@ type ComposeStats struct {
 	ImpactItems          int `json:"impact_items"`
 	ValidationSteps      int `json:"validation_steps"`
 	RetrievalTraceItems  int `json:"retrieval_trace_items"`
+	RetrievalReasons     int `json:"retrieval_reasons"`
 	RetrievalWarnings    int `json:"retrieval_warnings"`
 	HealthSignals        int `json:"health_signals"`
 	ContextBlocks        int `json:"context_blocks"`
@@ -240,6 +242,7 @@ func (c *Composer) Compose(ctx context.Context, input ComposeInput) (ComposeResu
 	docs := map[string]store.DocumentResult{}
 	graph := map[string]store.RelationResult{}
 	summaries := map[string]store.MemorySummaryResult{}
+	retrievalReasons := map[string]store.RetrievalReason{}
 	stageStart = time.Now()
 	taskSummaries, err := c.store.ListMemorySummaries(ctx, input.Task, input.Scope, input.Limit)
 	if err != nil {
@@ -286,6 +289,7 @@ func (c *Composer) Compose(ctx context.Context, input ComposeInput) (ComposeResu
 		for _, relation := range queryResult.recall.GraphContext {
 			graph[relationKey(relation)] = relation
 		}
+		mergeRetrievalReasons(retrievalReasons, queryResult.recall.RetrievalReasons)
 	}
 
 	stageStart = time.Now()
@@ -336,6 +340,7 @@ func (c *Composer) Compose(ctx context.Context, input ComposeInput) (ComposeResu
 		Facts:               sortClaims(facts),
 		SupportingDocuments: sortDocuments(docs),
 		GraphContext:        sortRelations(graph),
+		RetrievalReasons:    sortRetrievalReasons(retrievalReasons),
 		AgentProfile:        input.AgentProfile,
 	}
 	result.RetrievalPlan = buildRetrievalPlan(input, intent, plan.Queries, graphQueries)
@@ -391,6 +396,7 @@ func (c *Composer) Compose(ctx context.Context, input ComposeInput) (ComposeResu
 		ImpactItems:          len(result.ImpactMap),
 		ValidationSteps:      len(result.ValidationPlan),
 		RetrievalTraceItems:  len(result.RetrievalTrace),
+		RetrievalReasons:     len(result.RetrievalReasons),
 		RetrievalWarnings:    len(result.RetrievalWarnings),
 		HealthSignals:        len(result.MemoryHealth.Signals),
 		ContextBlocks:        len(result.ContextWindow.Blocks),
@@ -402,31 +408,32 @@ func (c *Composer) Compose(ctx context.Context, input ComposeInput) (ComposeResu
 	}
 
 	_ = c.store.InsertAuditEvent(ctx, "memory.composed", "memory_packet", input.Scope+"\x00"+input.Task, input.Scope, "", map[string]any{
-		"intent":          intent,
-		"agent":           input.Agent,
-		"queries":         len(plan.Queries),
-		"summaries":       len(result.Summaries),
-		"facts":           len(result.Facts),
-		"documents":       len(result.SupportingDocuments),
-		"relations":       len(result.GraphContext),
-		"graph_warnings":  len(result.GraphWarnings),
-		"conflicts":       len(result.Conflicts),
-		"files":           len(result.RelevantFiles),
-		"impact":          len(result.ImpactMap),
-		"validation":      len(result.ValidationPlan),
-		"context_blocks":  len(result.ContextWindow.Blocks),
-		"context_tokens":  result.ContextWindow.EstimatedTokens,
-		"context_dropped": len(result.ContextWindow.DroppedBlocks),
-		"risk_count":      len(result.Risks),
-		"memory_health":   result.MemoryHealth.Status,
-		"health_signals":  len(result.MemoryHealth.Signals),
-		"verdict":         result.Verification.Verdict,
-		"decision":        result.AgentDecision.Decision,
-		"score":           result.Verification.Score,
-		"learning":        len(result.LearningSuggestions),
-		"policy":          len(result.AgentPolicyDecisions),
-		"duration_ms":     result.Stats.TotalDurationMS,
-		"warnings":        len(result.RetrievalWarnings),
+		"intent":            intent,
+		"agent":             input.Agent,
+		"queries":           len(plan.Queries),
+		"summaries":         len(result.Summaries),
+		"facts":             len(result.Facts),
+		"documents":         len(result.SupportingDocuments),
+		"relations":         len(result.GraphContext),
+		"graph_warnings":    len(result.GraphWarnings),
+		"retrieval_reasons": len(result.RetrievalReasons),
+		"conflicts":         len(result.Conflicts),
+		"files":             len(result.RelevantFiles),
+		"impact":            len(result.ImpactMap),
+		"validation":        len(result.ValidationPlan),
+		"context_blocks":    len(result.ContextWindow.Blocks),
+		"context_tokens":    result.ContextWindow.EstimatedTokens,
+		"context_dropped":   len(result.ContextWindow.DroppedBlocks),
+		"risk_count":        len(result.Risks),
+		"memory_health":     result.MemoryHealth.Status,
+		"health_signals":    len(result.MemoryHealth.Signals),
+		"verdict":           result.Verification.Verdict,
+		"decision":          result.AgentDecision.Decision,
+		"score":             result.Verification.Score,
+		"learning":          len(result.LearningSuggestions),
+		"policy":            len(result.AgentPolicyDecisions),
+		"duration_ms":       result.Stats.TotalDurationMS,
+		"warnings":          len(result.RetrievalWarnings),
 	})
 	return result, nil
 }
@@ -964,6 +971,38 @@ func sortRelations(in map[string]store.RelationResult) []store.RelationResult {
 			return relationKey(out[i]) < relationKey(out[j])
 		}
 		return out[i].Confidence > out[j].Confidence
+	})
+	return out
+}
+
+func mergeRetrievalReasons(target map[string]store.RetrievalReason, reasons []store.RetrievalReason) {
+	for _, reason := range reasons {
+		key := strings.ToLower(strings.TrimSpace(reason.Mode) + "\x00" + strings.TrimSpace(reason.Signal) + "\x00" + strings.TrimSpace(reason.Message))
+		if key == "\x00\x00" {
+			continue
+		}
+		if existing, ok := target[key]; ok {
+			existing.Count += reason.Count
+			target[key] = existing
+			continue
+		}
+		target[key] = reason
+	}
+}
+
+func sortRetrievalReasons(in map[string]store.RetrievalReason) []store.RetrievalReason {
+	out := make([]store.RetrievalReason, 0, len(in))
+	for _, reason := range in {
+		out = append(out, reason)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Count == out[j].Count {
+			if out[i].Signal == out[j].Signal {
+				return out[i].Mode < out[j].Mode
+			}
+			return out[i].Signal < out[j].Signal
+		}
+		return out[i].Count > out[j].Count
 	})
 	return out
 }

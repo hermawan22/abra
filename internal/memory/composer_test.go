@@ -48,15 +48,21 @@ func (f *fakeStore) Recall(ctx context.Context, query, scope string, limit int, 
 		}, nil
 	}
 	return store.RecallResult{
+		RetrievalMode: "hybrid",
 		Claims: []store.ClaimResult{
-			{ID: "claim-1", Claim: "Next.js framework uses src/server/index.js and package.json scripts.", Scope: scope, Status: "verified", Source: &source, Rank: 1.4, Freshness: "fresh"},
-			{ID: "claim-2", Claim: "Legacy runtime note in src/pages/_app.js needs verification.", Scope: scope, Status: "unverified", Source: &source, Rank: 1.1, Freshness: "stale"},
+			{ID: "claim-1", Claim: "Next.js framework uses src/server/index.js and package.json scripts.", Scope: scope, Status: "verified", Source: &source, Rank: 1.4, TextScore: 0.8, VectorScore: 0.6, Freshness: "fresh"},
+			{ID: "claim-2", Claim: "Legacy runtime note in src/pages/_app.js needs verification.", Scope: scope, Status: "unverified", Source: &source, Rank: 1.1, TextScore: 0.4, Freshness: "stale"},
 		},
 		SupportingDocuments: []store.DocumentResult{
-			{ID: "doc-1", Title: "package ops", Source: source, Content: "build: next build\nsrc/server/index.js", Rank: 0.4},
+			{ID: "doc-1", Title: "package ops", Source: source, Content: "build: next build\nsrc/server/index.js", Rank: 0.4, VectorScore: 0.5},
 		},
 		GraphContext: []store.RelationResult{
 			{FromEntity: "src/server/index.js", ToEntity: "next", Type: "depends_on", Confidence: 0.8, SourceURL: &source},
+		},
+		RetrievalReasons: []store.RetrievalReason{
+			{Mode: "hybrid", Signal: "text", Message: "Full-text/BM25-style matches contributed to recalled claims or documents.", Count: 2},
+			{Mode: "hybrid", Signal: "vector", Message: "Semantic vector similarity contributed to recalled claims or documents.", Count: 2},
+			{Mode: "entity_local", Signal: "graph", Message: "Entity-neighborhood graph relations expanded the packet beyond lexical matches.", Count: 1},
 		},
 	}, nil
 }
@@ -422,6 +428,15 @@ func TestComposeBuildsMigrationWorkingMemory(t *testing.T) {
 	}
 	if !strings.Contains(result.ContextWindow.Prompt, "Memory health: healthy") {
 		t.Fatalf("context window did not include memory health gate: %s", result.ContextWindow.Prompt)
+	}
+	if result.Stats.RetrievalReasons != len(result.RetrievalReasons) || result.Stats.RetrievalReasons < 3 {
+		t.Fatalf("retrieval reasons missing or stats mismatch: reasons=%#v stats=%+v", result.RetrievalReasons, result.Stats)
+	}
+	if !containsContextBlock(result.ContextWindow.Blocks, "retrieval") || !strings.Contains(result.ContextWindow.Prompt, "[RETRIEVAL] Retrieval Reasons") {
+		t.Fatalf("context window missing retrieval reasons: %s", result.ContextWindow.Prompt)
+	}
+	if !strings.Contains(result.ContextWindow.Prompt, "text (hybrid") || !strings.Contains(result.ContextWindow.Prompt, "vector (hybrid") || !strings.Contains(result.ContextWindow.Prompt, "graph (entity_local") {
+		t.Fatalf("context window did not explain retrieval signals: %s", result.ContextWindow.Prompt)
 	}
 	if len(result.RetrievalTrace) < 8 || result.Stats.RetrievalTraceItems != len(result.RetrievalTrace) {
 		t.Fatalf("retrieval trace missing or stats mismatch: trace=%#v stats=%+v", result.RetrievalTrace, result.Stats)

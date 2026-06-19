@@ -128,6 +128,14 @@ func contextCandidates(input ComposeInput, result ComposeResult) []contextCandid
 			Content:  validationContext(result.ValidationPlan),
 		})
 	}
+	if len(result.RetrievalReasons) > 0 {
+		add(ContextBlock{
+			Type:     "retrieval",
+			Title:    "Retrieval Reasons",
+			Priority: 0.97,
+			Content:  retrievalReasonsContext(result.RetrievalReasons),
+		})
+	}
 	for _, summary := range result.Summaries {
 		add(ContextBlock{
 			Type:       "summary",
@@ -342,6 +350,30 @@ func sourceContext(doc store.DocumentResult) string {
 		content = truncateForTokens(content, 120)
 	}
 	return "source=" + doc.Source + "\n" + content
+}
+
+func retrievalReasonsContext(reasons []store.RetrievalReason) string {
+	lines := []string{}
+	for _, reason := range reasons {
+		signal := strings.TrimSpace(reason.Signal)
+		if signal == "" {
+			signal = "retrieval"
+		}
+		mode := strings.TrimSpace(reason.Mode)
+		if mode == "" {
+			mode = "unknown"
+		}
+		message := strings.Join(strings.Fields(reason.Message), " ")
+		if message == "" {
+			message = "Retrieval contributed context for this packet."
+		}
+		count := ""
+		if reason.Count > 0 {
+			count = fmt.Sprintf(", n=%d", reason.Count)
+		}
+		lines = append(lines, fmt.Sprintf("%s (%s%s): %s", signal, mode, count, message))
+	}
+	return bulletList(lines, 6)
 }
 
 func validationContext(steps []ValidationStep) string {

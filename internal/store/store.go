@@ -2441,10 +2441,18 @@ func vectorLiteral(values []float64) string {
 }
 
 type RecallResult struct {
-	Claims              []ClaimResult    `json:"claims"`
-	SupportingDocuments []DocumentResult `json:"supporting_documents"`
-	GraphContext        []RelationResult `json:"graph_context,omitempty"`
-	RetrievalMode       string           `json:"retrieval_mode,omitempty"`
+	Claims              []ClaimResult     `json:"claims"`
+	SupportingDocuments []DocumentResult  `json:"supporting_documents"`
+	GraphContext        []RelationResult  `json:"graph_context,omitempty"`
+	RetrievalMode       string            `json:"retrieval_mode,omitempty"`
+	RetrievalReasons    []RetrievalReason `json:"retrieval_reasons,omitempty"`
+}
+
+type RetrievalReason struct {
+	Mode    string `json:"mode"`
+	Signal  string `json:"signal"`
+	Message string `json:"message"`
+	Count   int    `json:"count,omitempty"`
 }
 
 type ClaimResult struct {
@@ -2627,6 +2635,7 @@ func (s *Store) Recall(ctx context.Context, query, scope string, limit int, incl
 		return RecallResult{}, err
 	}
 	result.GraphContext = relations
+	result.RetrievalReasons = recallRetrievalReasons(result)
 	return result, nil
 }
 
@@ -2688,7 +2697,63 @@ func (s *Store) RecallHybrid(ctx context.Context, query, scope string, limit int
 		return RecallResult{}, err
 	}
 	result.GraphContext = relations
+	result.RetrievalReasons = recallRetrievalReasons(result)
 	return result, nil
+}
+
+func recallRetrievalReasons(result RecallResult) []RetrievalReason {
+	reasons := []RetrievalReason{}
+	textCount := 0
+	vectorCount := 0
+	for _, claim := range result.Claims {
+		if claim.TextScore > 0 {
+			textCount++
+		}
+		if claim.VectorScore > 0 {
+			vectorCount++
+		}
+	}
+	for _, doc := range result.SupportingDocuments {
+		if doc.TextScore > 0 {
+			textCount++
+		}
+		if doc.VectorScore > 0 {
+			vectorCount++
+		}
+	}
+	if textCount > 0 {
+		reasons = append(reasons, RetrievalReason{
+			Mode:    result.RetrievalMode,
+			Signal:  "text",
+			Message: "Full-text/BM25-style matches contributed to recalled claims or documents.",
+			Count:   textCount,
+		})
+	}
+	if vectorCount > 0 {
+		reasons = append(reasons, RetrievalReason{
+			Mode:    result.RetrievalMode,
+			Signal:  "vector",
+			Message: "Semantic vector similarity contributed to recalled claims or documents.",
+			Count:   vectorCount,
+		})
+	}
+	if len(result.GraphContext) > 0 {
+		reasons = append(reasons, RetrievalReason{
+			Mode:    "entity_local",
+			Signal:  "graph",
+			Message: "Entity-neighborhood graph relations expanded the packet beyond lexical matches.",
+			Count:   len(result.GraphContext),
+		})
+	}
+	if len(reasons) == 0 && (len(result.Claims) > 0 || len(result.SupportingDocuments) > 0) {
+		reasons = append(reasons, RetrievalReason{
+			Mode:    result.RetrievalMode,
+			Signal:  "rank",
+			Message: "Ranked recall returned context without exposed text/vector sub-scores.",
+			Count:   len(result.Claims) + len(result.SupportingDocuments),
+		})
+	}
+	return reasons
 }
 
 func hybridRecallClaimsSQL(statusFilter string, dimensions int) string {

@@ -33,6 +33,7 @@ type ThinkResult struct {
 	AgentDecision         AgentDecision            `json:"agent_decision"`
 	NextActions           []string                 `json:"next_actions"`
 	RetrievalTrace        []RetrievalTraceItem     `json:"retrieval_trace"`
+	RetrievalReasons      []store.RetrievalReason  `json:"retrieval_reasons,omitempty"`
 	RetrievalWarnings     []RetrievalWarning       `json:"retrieval_warnings,omitempty"`
 	GraphWarnings         []GraphWarning           `json:"graph_warnings,omitempty"`
 	Stats                 ComposeStats             `json:"stats"`
@@ -103,6 +104,7 @@ func BuildThinkResult(packet ComposeResult) ThinkResult {
 		AgentDecision:         packet.AgentDecision,
 		NextActions:           thinkNextActions(packet),
 		RetrievalTrace:        packet.RetrievalTrace,
+		RetrievalReasons:      packet.RetrievalReasons,
 		RetrievalWarnings:     packet.RetrievalWarnings,
 		GraphWarnings:         packet.GraphWarnings,
 		Stats:                 packet.Stats,

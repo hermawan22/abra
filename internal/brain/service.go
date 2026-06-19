@@ -208,6 +208,7 @@ func (s *Service) rerankRecall(ctx context.Context, query string, result store.R
 	if s.reranker == nil || strings.TrimSpace(query) == "" {
 		return result
 	}
+	reranked := false
 	claimTexts := make([]string, 0, len(result.Claims))
 	for _, claim := range result.Claims {
 		claimTexts = append(claimTexts, claim.Claim)
@@ -215,6 +216,7 @@ func (s *Service) rerankRecall(ctx context.Context, query string, result store.R
 	if len(claimTexts) > 0 {
 		if response, err := s.reranker.Rerank(ctx, ai.RerankRequest{Query: query, Documents: claimTexts, Model: s.cfg.Reranker.Model, TopN: len(claimTexts)}); err == nil {
 			applyClaimRerank(result.Claims, response.Results)
+			reranked = true
 			if !strings.Contains(result.RetrievalMode, "reranked") {
 				result.RetrievalMode += "_reranked"
 			}
@@ -227,10 +229,19 @@ func (s *Service) rerankRecall(ctx context.Context, query string, result store.R
 	if len(docTexts) > 0 {
 		if response, err := s.reranker.Rerank(ctx, ai.RerankRequest{Query: query, Documents: docTexts, Model: s.cfg.Reranker.Model, TopN: len(docTexts)}); err == nil {
 			applyDocumentRerank(result.SupportingDocuments, response.Results)
+			reranked = true
 			if !strings.Contains(result.RetrievalMode, "reranked") {
 				result.RetrievalMode += "_reranked"
 			}
 		}
+	}
+	if reranked {
+		result.RetrievalReasons = append(result.RetrievalReasons, store.RetrievalReason{
+			Mode:    result.RetrievalMode,
+			Signal:  "rerank",
+			Message: "Configured reranker adjusted candidate ordering after hybrid retrieval.",
+			Count:   len(result.Claims) + len(result.SupportingDocuments),
+		})
 	}
 	return result
 }

@@ -214,6 +214,52 @@ func TestHybridRecallQueriesUseVectorAndTextCandidates(t *testing.T) {
 	}
 }
 
+func TestRecallRetrievalReasonsExplainSignals(t *testing.T) {
+	result := RecallResult{
+		RetrievalMode: "hybrid",
+		Claims: []ClaimResult{
+			{ID: "claim-text", TextScore: 0.8},
+			{ID: "claim-vector", VectorScore: 0.7},
+		},
+		SupportingDocuments: []DocumentResult{
+			{ID: "doc-both", TextScore: 0.4, VectorScore: 0.6},
+		},
+		GraphContext: []RelationResult{
+			{ID: "relation-1", FromEntity: "A", Type: "depends_on", ToEntity: "B"},
+		},
+	}
+
+	reasons := recallRetrievalReasons(result)
+	if !hasRetrievalReason(reasons, "text", "hybrid", 2) {
+		t.Fatalf("text retrieval reason missing: %#v", reasons)
+	}
+	if !hasRetrievalReason(reasons, "vector", "hybrid", 2) {
+		t.Fatalf("vector retrieval reason missing: %#v", reasons)
+	}
+	if !hasRetrievalReason(reasons, "graph", "entity_local", 1) {
+		t.Fatalf("graph retrieval reason missing: %#v", reasons)
+	}
+}
+
+func TestRecallRetrievalReasonsFallbackWhenScoresHidden(t *testing.T) {
+	reasons := recallRetrievalReasons(RecallResult{
+		RetrievalMode: "full_text",
+		Claims:        []ClaimResult{{ID: "claim-1"}},
+	})
+	if len(reasons) != 1 || reasons[0].Signal != "rank" || reasons[0].Count != 1 {
+		t.Fatalf("fallback retrieval reason = %#v", reasons)
+	}
+}
+
+func hasRetrievalReason(reasons []RetrievalReason, signal, mode string, count int) bool {
+	for _, reason := range reasons {
+		if reason.Signal == signal && reason.Mode == mode && reason.Count == count {
+			return true
+		}
+	}
+	return false
+}
+
 func TestMemorySummaryRankingBoostsCodeIntelligenceLevels(t *testing.T) {
 	query := memorySummarySelectSQL()
 	for _, fragment := range []string{
