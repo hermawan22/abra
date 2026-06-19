@@ -44,6 +44,14 @@ abra config model compatible --base-url https://api.example.com/v1 --model embed
 
 For non-interactive local setup, use `abra setup --yes`. For authenticated compatible providers during onboarding, use `printf '%s' "$PROVIDER_API_KEY" | abra setup --compatible --base-url https://api.example.com/v1 --embedding-model embedding-model --api-key-stdin`.
 
+Generate repo-local AI agent instruction files after setup:
+
+```sh
+abra agents init --agent codex
+```
+
+This writes `AGENTS.md` with the exact Abra scope and `CLAUDE.md` as an import for tools that read Claude Code instructions.
+
 After changing model config, restart the stack:
 
 ```sh
@@ -204,6 +212,7 @@ From a source checkout, run the CLI as `go run ./cmd/abra <command>`. In a relea
 | install CLI from checkout | `./scripts/install.sh` |
 | install CLI from published release | `curl -fsSL https://raw.githubusercontent.com/hermawan22/abra/main/scripts/install.sh \| sh` |
 | guided first-run setup | `abra setup` |
+| generate agent instruction files | `abra agents init --agent codex` |
 | start local Qwen embedding runner | `abra models up` |
 | check local embedding runner | `abra models status` |
 | start local stack | `abra up` |

@@ -88,6 +88,14 @@ abra models up
 abra models status
 ```
 
+Generate repo-local agent instructions for Codex, Claude Code, and other MCP-capable coding agents:
+
+```sh
+abra agents init --agent codex
+```
+
+This writes `AGENTS.md` with the exact Abra scope and a `CLAUDE.md` import so Claude Code reads the same instructions without duplicating them.
+
 Connect a custom compatible embedding provider during setup without editing env files:
 
 ```sh

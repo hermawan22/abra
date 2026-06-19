@@ -18,7 +18,7 @@ import (
 )
 
 func TestCommandHelpDoesNotRequireFlags(t *testing.T) {
-	for _, command := range []string{"config", "ingest", "setup", "models", "watch", "sources", "jobs", "scope", "mcp"} {
+	for _, command := range []string{"config", "ingest", "setup", "models", "watch", "sources", "jobs", "scope", "agents", "mcp"} {
 		t.Run(command, func(t *testing.T) {
 			if err := run(context.Background(), []string{command, "--help"}); err != nil {
 				t.Fatalf("run(%s --help) error = %v", command, err)
@@ -67,6 +67,71 @@ func TestScopeCommandJSON(t *testing.T) {
 	examples, _ := payload["examples"].(map[string]any)
 	if !strings.Contains(stringValue(examples["codex"], ""), "working_memory_compose") {
 		t.Fatalf("codex example = %#v", examples["codex"])
+	}
+}
+
+func TestAgentsInitCreatesCrossAgentInstructionFiles(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "demo project")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	output := captureStdout(t, func() {
+		if err := run(context.Background(), []string{"agents", "init", root, "--agent", "claude"}); err != nil {
+			t.Fatalf("agents init error = %v", err)
+		}
+	})
+	wantScope := "repo:" + slug(filepath.Base(root))
+	agents, err := os.ReadFile(filepath.Join(root, "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("read AGENTS.md: %v", err)
+	}
+	claude, err := os.ReadFile(filepath.Join(root, "CLAUDE.md"))
+	if err != nil {
+		t.Fatalf("read CLAUDE.md: %v", err)
+	}
+	for _, want := range []string{
+		"Use exact scope `" + wantScope + "`",
+		"working_memory_compose",
+		`agent: "claude"`,
+		"Do not include secrets",
+	} {
+		if !strings.Contains(string(agents), want) {
+			t.Fatalf("AGENTS.md missing %q:\n%s", want, string(agents))
+		}
+	}
+	if string(claude) != "@AGENTS.md\n" {
+		t.Fatalf("CLAUDE.md = %q", string(claude))
+	}
+	if !strings.Contains(output, wantScope) || !strings.Contains(output, "CLAUDE.md") {
+		t.Fatalf("output = %s", output)
+	}
+}
+
+func TestAgentsInitSkipsExistingFilesUnlessForced(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "AGENTS.md"), "custom\n")
+
+	if err := run(context.Background(), []string{"agents", "init", root}); err != nil {
+		t.Fatalf("agents init error = %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(root, "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("read AGENTS.md: %v", err)
+	}
+	if string(content) != "custom\n" {
+		t.Fatalf("AGENTS.md overwritten without --force:\n%s", string(content))
+	}
+
+	if err := run(context.Background(), []string{"agents", "init", root, "--force"}); err != nil {
+		t.Fatalf("agents init --force error = %v", err)
+	}
+	content, err = os.ReadFile(filepath.Join(root, "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("read forced AGENTS.md: %v", err)
+	}
+	if !strings.Contains(string(content), "working_memory_compose") {
+		t.Fatalf("AGENTS.md not updated with --force:\n%s", string(content))
 	}
 }
 

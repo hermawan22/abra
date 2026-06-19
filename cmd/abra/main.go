@@ -93,6 +93,8 @@ func run(ctx context.Context, argv []string) error {
 		return models(ctx, args)
 	case "scope":
 		return scopeCommand(args)
+	case "agents", "agent":
+		return agentsCommand(args)
 	case "ui", "dashboard":
 		return errors.New("abra ui was removed; use `abra setup` for guided onboarding or `abra up` for non-interactive start")
 	case "up", "start":
@@ -1469,6 +1471,97 @@ func scopeCommand(args cliArgs) error {
 	return nil
 }
 
+func agentsCommand(args cliArgs) error {
+	action := "init"
+	if len(args.Rest) > 0 {
+		action = strings.ToLower(strings.TrimSpace(args.Rest[0]))
+		args.Rest = args.Rest[1:]
+	}
+	if action != "init" {
+		return fmt.Errorf("unknown agents command %q\n\n%s", action, commandUsage("agents"))
+	}
+	path := flag(args, "path", ".")
+	if len(args.Rest) > 0 {
+		path = args.Rest[0]
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	scope := scopeOrDefault(args, abs)
+	agent := flag(args, "agent", "agent")
+	force := boolFlag(args, "force")
+	dryRun := boolFlag(args, "dry-run")
+	files := []agentInstructionFile{
+		{
+			Path:    filepath.Join(abs, "AGENTS.md"),
+			Content: agentInstructions(scope, agent),
+		},
+		{
+			Path:    filepath.Join(abs, "CLAUDE.md"),
+			Content: "@AGENTS.md\n",
+		},
+	}
+	results := make([]map[string]any, 0, len(files))
+	for _, file := range files {
+		exists := fileExists(file.Path)
+		action := "created"
+		switch {
+		case dryRun && exists && !force:
+			action = "would_skip"
+		case dryRun:
+			action = "would_write"
+		case exists && !force:
+			action = "skipped"
+		default:
+			if err := os.WriteFile(file.Path, []byte(file.Content), 0o644); err != nil {
+				return err
+			}
+			if exists {
+				action = "updated"
+			}
+		}
+		results = append(results, map[string]any{
+			"path":   file.Path,
+			"action": action,
+		})
+	}
+	if boolFlag(args, "json") {
+		return printJSON(map[string]any{
+			"scope": scope,
+			"agent": agent,
+			"path":  abs,
+			"files": results,
+		})
+	}
+	fmt.Println("Agent instructions for scope: " + scope)
+	for _, result := range results {
+		fmt.Println(stringValue(result["action"], "") + ": " + stringValue(result["path"], ""))
+	}
+	fmt.Println("Next: configure your MCP client with `abra mcp`; for Codex run `abra mcp install-codex`.")
+	fmt.Println("Then: tell your AI agent to read AGENTS.md or CLAUDE.md before changing code.")
+	return nil
+}
+
+type agentInstructionFile struct {
+	Path    string
+	Content string
+}
+
+func agentInstructions(scope, agent string) string {
+	return `# Agent Instructions
+
+Before answering architecture questions or changing code in this repository, use Abra MCP when it is available.
+
+1. Use exact scope ` + "`" + scope + "`" + `.
+2. If discovering scopes first, call ` + "`discover_scopes`" + ` with ` + "`expected_scope: \"" + scope + "\"`" + ` so this repo is not hidden by unrelated scopes.
+3. Call ` + "`working_memory_compose`" + ` with the current task, scope ` + "`" + scope + "`" + `, and ` + "`agent: \"" + agent + "\"`" + ` before implementation work.
+4. Follow the returned ` + "`agent_decision`" + `, verification, memory health, conflicts, impact map, and validation plan.
+5. If Abra MCP is unavailable, run ` + "`abra scope`" + ` to confirm the scope and continue with normal repository inspection.
+6. Do not include secrets, API keys, local tokens, or private business context in committed files.
+`
+}
+
 func installCodexMCP(ctx context.Context, args cliArgs) error {
 	codex, err := codexCommandPath()
 	if err != nil {
@@ -2283,6 +2376,7 @@ Usage:
   abra config model local
   abra config model openai --api-key-stdin
   abra config model compatible --base-url <url> --model <model> [--api-key-stdin]
+  abra agents init
   abra down [--reset]
   abra status
   abra doctor
@@ -2434,6 +2528,15 @@ and agent prompt to use. Use this when an AI client says Abra has no context:
 the usual cause is a scope mismatch between ingest and working_memory_compose.
 Compare this output with discover_scopes in the MCP client; if the exact scope
 is missing, ingest the project with the printed command and retry.
+`
+	case "agents", "agent":
+		return `Usage:
+  abra agents init [path] [--agent codex] [--force] [--dry-run] [--json]
+
+Writes repo-local AI agent instruction files that point every client at the
+same Abra scope. It creates AGENTS.md for agent-neutral instructions and
+CLAUDE.md importing AGENTS.md so Claude Code reads the same guidance without
+duplicating content. Existing files are skipped unless --force is set.
 `
 	case "mcp", "mcp-config":
 		return `Usage:
