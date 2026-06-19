@@ -9,6 +9,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 ### Added
 
 - Add repo-local `AGENTS.md` guidance so Codex-style agents use Abra MCP with the exact `repo:abra` scope before code changes.
+- Add repo-local `CLAUDE.md` compatibility shim so Claude Code reads the same source of truth as `AGENTS.md`.
 - Add deep readiness checks through `/readyz?deep=1` and have the CLI use them for local embedding setups.
 - Add configurable API read timeout and request-body limits for large local ingestion workloads.
 - Add optional MCP `ingest_documents` partial batch results with `continue_on_error` for connector overlays that need per-document status.
