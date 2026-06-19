@@ -129,6 +129,11 @@ Generate MCP client config:
 abra mcp > .tmp/abra.mcp.json
 ```
 
+The generated config uses `bearer_token_env_var: ABRA_API_TOKEN` by default so
+the token is not written literally to disk. Use `--token-env NAME` for a custom
+environment variable. `--literal-token` exists only for legacy clients that do
+not support bearer-token env vars.
+
 Install Abra into Codex as a streamable HTTP MCP server:
 
 ```sh
@@ -155,7 +160,7 @@ abra scope
 Prompt pattern:
 
 ```text
-Use Abra MCP first. Scope: repo:<project>. Call discover_scopes, choose this exact scope, then call working_memory_compose before answering or changing code. If discover_scopes does not show repo:<project>, run abra scope and ingest the project with that exact scope.
+Use Abra MCP first. Exact scope: repo:<project>. Call discover_scopes with expected_scope="repo:<project>", then call working_memory_compose with that exact scope before answering or changing code. If discover_scopes does not show repo:<project>, run abra scope and ingest the project with that exact scope.
 ```
 
 Stop the stack:
@@ -251,7 +256,7 @@ Connect an MCP client:
 go run ./cmd/abra mcp > .tmp/abra.mcp.json
 ```
 
-The generated config points at `http://127.0.0.1:18080/mcp` with the quickstart token. A static example is available at [examples/mcp/remote-http.json](./examples/mcp/remote-http.json). For Codex, prefer `abra mcp install-codex`; it installs the same HTTP MCP endpoint with a bearer-token environment variable so the token is not stored literally in Codex config, then validates that the endpoint is reachable and exposes the agent setup tools.
+The generated config points at `http://127.0.0.1:18080/mcp` and references the token through `bearer_token_env_var`. A static example is available at [examples/mcp/remote-http.json](./examples/mcp/remote-http.json). For Codex, prefer `abra mcp install-codex`; it installs the same HTTP MCP endpoint with a bearer-token environment variable so the token is not stored literally in Codex config, then validates that the endpoint is reachable and exposes the agent setup tools.
 
 Stop the stack:
 
@@ -859,7 +864,7 @@ Remote Git example:
   "name": "Frontend remote repo",
   "source_type": "git_repo",
   "scope": "team:example",
-  "base_url": "https://bitbucket.org/example-org/service-app.git",
+  "base_url": "https://github.com/example-org/service-app.git",
   "connector_kind": "git",
   "authority": "source-repo",
   "authority_score": 0.8,

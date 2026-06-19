@@ -77,6 +77,8 @@ config:
   rateLimitMax: "120"
   rateLimitWindow: 1 minute
   composeHealthCacheTtl: 2s
+  composeRecallConcurrency: "4"
+  composeGraphConcurrency: "4"
   otelExporterOtlpEndpoint: ""
   tracingEnabled: "false"
   tracingSampleRatio: "1"
@@ -108,6 +110,7 @@ migrate:
 - `config.embeddingProvider=local` means self-hosted Qwen-compatible neural retrieval. Set `config.embeddingProvider=compatible` plus the embedding secret values to replace it with any custom provider. Set `config.rerankerProvider` only when a reranker endpoint is available.
 - Keep Abra's built-in Postgres-backed rate limit enabled with `config.rateLimitMax` and `config.rateLimitWindow`; it applies across replicated API pods after migrations are applied. Add ingress or gateway rate limits for defense in depth on exposed deployments.
 - Set `config.composeHealthCacheTtl=0s` only when every working-memory compose call must run a fresh scoped health aggregate.
+- Keep `config.composeRecallConcurrency` and `config.composeGraphConcurrency` at conservative values until database pool usage and memory-compose p95 have been measured under expected agent traffic. Values must be between `1` and `32`.
 - Set `config.otelExporterOtlpEndpoint` to enable optional OpenTelemetry tracing. Keep `config.tracingSampleRatio` below `1` in high-throughput deployments unless you are debugging a short window.
 - Set `worker.gitCacheDir` and `worker.gitCloneDepth` for `git_repo` source configs. Keep credentials outside values files and provide them through platform-managed SSH keys or credential helpers.
 - Preserve the generic embedding provider contract.

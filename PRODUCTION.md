@@ -119,6 +119,8 @@ REDACT_PII=true
 RATE_LIMIT_MAX=120
 RATE_LIMIT_WINDOW=1 minute
 ABRA_COMPOSE_HEALTH_CACHE_TTL=2s
+ABRA_COMPOSE_RECALL_CONCURRENCY=4
+ABRA_COMPOSE_GRAPH_CONCURRENCY=4
 ABRA_BIND_ADDR=0.0.0.0
 ABRA_API_READ_TIMEOUT=2m
 ABRA_MAX_REQUEST_BODY_BYTES=26214400
@@ -143,6 +145,8 @@ Production startup fails without `ABRA_WEBHOOK_SECRETS` unless `ABRA_ALLOW_UNSIG
 The provider contract is intentionally provider-neutral. The provider must expose the configured embeddings request/response shape and must return vectors with the configured `EMBEDDING_DIMENSIONS`. API keys may be empty for self-hosted endpoints. The optional reranker is controlled separately with `RERANKER_PROVIDER`, `RERANKER_BASE_URL`, `RERANKER_API_KEY`, and `RERANKER_MODEL`; when unset, custom embedding providers do not keep the local Qwen reranker enabled. Abra stores embeddings and source-derived snippets; it does not send prompts for generation.
 
 `ABRA_COMPOSE_HEALTH_CACHE_TTL` controls the short-lived per-scope health snapshot cache used by `POST /memory/compose`; set it to `0s` to disable caching. Direct `GET /memory/health` remains uncached for operator checks. Track `abra_working_memory_health_lookup_total` to see whether compose traffic is using fresh lookups, cache hits, coalesced waits, disabled cache mode, or unknown/error paths.
+
+`ABRA_COMPOSE_RECALL_CONCURRENCY` and `ABRA_COMPOSE_GRAPH_CONCURRENCY` cap per-request fan-out inside `POST /memory/compose` and MCP `working_memory_compose`. Keep the defaults at `4` for small installs; raise them only after watching database pool usage, recall latency, and memory-compose p95 under realistic agent traffic. Values must be between `1` and `32`.
 
 OpenTelemetry tracing is optional and disabled unless `OTEL_EXPORTER_OTLP_ENDPOINT` or `ABRA_OTEL_EXPORTER_OTLP_ENDPOINT` is configured. Set `ABRA_TRACING_SAMPLE_RATIO` to a value from `0` to `1` to control head sampling. Keep sampled traces out of user/task payloads: Abra spans intentionally record bounded operation metadata such as route, status, retrieval mode, counts, verdict, agent decision, and worker ingestion counts, not raw scope names, queries, task text, principals, or tokens.
 

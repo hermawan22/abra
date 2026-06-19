@@ -106,6 +106,10 @@ Connect MCP:
 abra mcp > .tmp/abra.mcp.json
 ```
 
+By default this writes `bearer_token_env_var: ABRA_API_TOKEN`, not a literal
+token. Use `--token-env NAME` for a different env var. Use `--literal-token`
+only for legacy clients that cannot read bearer-token env vars.
+
 Connect Codex directly:
 
 ```sh
@@ -129,10 +133,11 @@ prompting an AI agent:
 abra scope
 ```
 
-Then tell the agent: `Use Abra MCP first. Scope: repo:<project>. Call
-discover_scopes, choose this exact scope, then call working_memory_compose
-before answering or changing code. If discover_scopes does not show
-repo:<project>, run abra scope and ingest the project with that exact scope.`
+Then tell the agent: `Use Abra MCP first. Exact scope: repo:<project>. Call
+discover_scopes with expected_scope="repo:<project>", then call
+working_memory_compose with that exact scope before answering or changing code.
+If discover_scopes does not show repo:<project>, run abra scope and ingest the
+project with that exact scope.`
 
 Stop the local stack:
 
@@ -173,7 +178,7 @@ The generated config uses:
 
 ```text
 url: http://127.0.0.1:18080/mcp
-Authorization: Bearer <token>
+bearer_token_env_var: ABRA_API_TOKEN
 ```
 
 Raw HTTP endpoints also accept `x-api-key: <token>`.

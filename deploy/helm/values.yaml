@@ -56,6 +56,8 @@ config:
   rateLimitMax: "120"
   rateLimitWindow: 1 minute
   composeHealthCacheTtl: 2s
+  composeRecallConcurrency: "4"
+  composeGraphConcurrency: "4"
   otelExporterOtlpEndpoint: ""
   tracingEnabled: "false"
   tracingSampleRatio: "1"

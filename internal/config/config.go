@@ -64,6 +64,8 @@ type Config struct {
 	WorkerLeaseTimeout                 time.Duration
 	WorkerMaxChangedDocumentsPerSource int
 	ComposeHealthCacheTTL              time.Duration
+	ComposeRecallConcurrency           int
+	ComposeGraphConcurrency            int
 	GitCacheDir                        string
 	GitCloneDepth                      int
 }
@@ -150,6 +152,8 @@ func Load() (Config, error) {
 		WorkerLeaseTimeout:                 durationEnv("WORKER_LEASE_TIMEOUT", defaultWorkerLeaseTimeout),
 		WorkerMaxChangedDocumentsPerSource: intEnv("WORKER_MAX_CHANGED_DOCUMENTS_PER_SOURCE", 100),
 		ComposeHealthCacheTTL:              durationEnv("ABRA_COMPOSE_HEALTH_CACHE_TTL", 2*time.Second),
+		ComposeRecallConcurrency:           intEnv("ABRA_COMPOSE_RECALL_CONCURRENCY", 4),
+		ComposeGraphConcurrency:            intEnv("ABRA_COMPOSE_GRAPH_CONCURRENCY", 4),
 		GitCacheDir:                        env("ABRA_GIT_CACHE_DIR", "/tmp/abra-git-cache"),
 		GitCloneDepth:                      intEnv("ABRA_GIT_CLONE_DEPTH", 1),
 	}
@@ -232,6 +236,12 @@ func Load() (Config, error) {
 	}
 	if cfg.ComposeHealthCacheTTL < 0 || cfg.ComposeHealthCacheTTL > time.Minute {
 		return Config{}, errors.New("ABRA_COMPOSE_HEALTH_CACHE_TTL must be between 0s and 1m")
+	}
+	if cfg.ComposeRecallConcurrency < 1 || cfg.ComposeRecallConcurrency > 32 {
+		return Config{}, errors.New("ABRA_COMPOSE_RECALL_CONCURRENCY must be between 1 and 32")
+	}
+	if cfg.ComposeGraphConcurrency < 1 || cfg.ComposeGraphConcurrency > 32 {
+		return Config{}, errors.New("ABRA_COMPOSE_GRAPH_CONCURRENCY must be between 1 and 32")
 	}
 	if strings.TrimSpace(cfg.GitCacheDir) == "" {
 		return Config{}, errors.New("ABRA_GIT_CACHE_DIR is required")

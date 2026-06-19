@@ -65,7 +65,7 @@ func (h *handler) mcpReadResource(r *http.Request, uri string) (map[string]any, 
 		return mcpTextResource(uri, "text/markdown", strings.TrimSpace(`
 # Abra Agent Workflow
 
-1. If the task scope is missing or uncertain, call `+"`discover_scopes`"+` first and use an exact returned scope. If the expected project is not listed, ask the operator to run `+"`abra scope`"+` in that project and ingest with the printed scope.
+1. If the task scope is known from `+"`abra scope`"+`, call `+"`discover_scopes`"+` with `+"`expected_scope`"+` set to that exact value. If the task scope is missing or uncertain, call `+"`discover_scopes`"+` with a project `+"`query`"+` and use an exact returned scope. If the expected project is not listed, ask the operator to run `+"`abra scope`"+` in that project and ingest with the printed scope.
 2. Use `+"`policy_plan`"+` before task, before code, or after task to get scoped recall queries.
 3. Use `+"`working_memory_compose`"+` before implementation to get source-backed facts, summaries, graph context, risks, validation steps, memory health, and the agent decision gate.
 4. Obey `+"`agent_decision`"+`. If it returns `+"`blocked`"+` or `+"`needs_review`"+`, use the allowed next actions instead of bypassing the gate.
@@ -137,10 +137,10 @@ func mcpPrompt(name string, args map[string]any) (map[string]any, error) {
 			return nil, fmt.Errorf("task is required")
 		}
 		if scope == "" {
-			text := "Before changing code, call `discover_scopes`, choose the exact matching project scope, then call `policy_plan` with hook `before_code` and task " + quoteText(task) + ". Then call `working_memory_compose` with the same task and chosen scope. Use the returned `agent_decision`, `verification`, `memory_health`, `conflicts`, `impact_map`, and `validation_plan` as the implementation gate."
+			text := "Before changing code, call `discover_scopes` with a project `query` or with `expected_scope` if `abra scope` already printed the exact scope. Choose the exact matching project scope, then call `policy_plan` with hook `before_code` and task " + quoteText(task) + ". Then call `working_memory_compose` with the same task and chosen scope. Use the returned `agent_decision`, `verification`, `memory_health`, `conflicts`, `impact_map`, and `validation_plan` as the implementation gate."
 			return mcpPromptResult("Discover scope and fetch working memory before code changes.", text), nil
 		}
-		text := "Before changing code, call `policy_plan` with hook `before_code`, task " + quoteText(task) + ", and scope " + quoteText(scope) + ". Then call `working_memory_compose` with the same task and scope"
+		text := "Before changing code, call `discover_scopes` with expected_scope " + quoteText(scope) + " to confirm the scope exists. Then call `policy_plan` with hook `before_code`, task " + quoteText(task) + ", and scope " + quoteText(scope) + ". Then call `working_memory_compose` with the same task and scope"
 		if agent != "" {
 			text += " and agent " + quoteText(agent)
 		}

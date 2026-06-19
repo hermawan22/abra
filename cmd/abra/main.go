@@ -1080,6 +1080,7 @@ func sourceIngest(ctx context.Context, args cliArgs) error {
 	if repo := firstNonEmpty(flag(args, "git", ""), flag(args, "repo", "")); repo != "" {
 		sourceType = "git_repo"
 		sourceURL = repo
+		scopeHint = repo
 		config["repository_url"] = repo
 		if ref := firstNonEmpty(flag(args, "ref", ""), flag(args, "branch", "")); ref != "" {
 			config["git_ref"] = ref
@@ -1349,15 +1350,21 @@ func mcp(ctx context.Context, args cliArgs) error {
 	default:
 		return fmt.Errorf("unknown mcp command %q\n\n%s", action, commandUsage("mcp"))
 	}
+	tokenEnv := flag(args, "token-env", "ABRA_API_TOKEN")
+	server := map[string]any{
+		"type":                 "http",
+		"url":                  strings.TrimRight(cfg(args).BaseURL, "/") + "/mcp",
+		"bearer_token_env_var": tokenEnv,
+	}
+	if boolFlag(args, "literal-token") {
+		server["headers"] = map[string]string{
+			"Authorization": "Bearer " + cfg(args).Token,
+		}
+		delete(server, "bearer_token_env_var")
+	}
 	body := map[string]any{
 		"mcpServers": map[string]any{
-			"abra": map[string]any{
-				"type": "http",
-				"url":  strings.TrimRight(cfg(args).BaseURL, "/") + "/mcp",
-				"headers": map[string]string{
-					"Authorization": "Bearer " + cfg(args).Token,
-				},
-			},
+			"abra": server,
 		},
 	}
 	return printJSON(body)
@@ -1376,7 +1383,7 @@ func scopeCommand(args cliArgs) error {
 			"examples": map[string]string{
 				"ingest":  "abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope),
 				"think":   "abra think \"what should I know before changing this project?\" --scope " + scope,
-				"codex":   "Use Abra MCP first. Scope: " + scope + ". Call discover_scopes, choose this exact scope, then call working_memory_compose before answering or changing code. If discover_scopes does not show " + scope + ", run: abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope),
+				"codex":   "Use Abra MCP first. Exact scope: " + scope + ". Call discover_scopes with expected_scope=\"" + scope + "\", then call working_memory_compose with that exact scope before answering or changing code. If discover_scopes does not show " + scope + ", run: abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope),
 				"compose": "abra compose \"ship this change\" --scope " + scope + " --agent codex",
 			},
 		})
@@ -1385,7 +1392,7 @@ func scopeCommand(args cliArgs) error {
 	fmt.Println("Use this exact scope with Abra MCP and AI agents.")
 	fmt.Println("Ingest: abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope))
 	fmt.Println("Think:  abra think \"what should I know before changing this project?\" --scope " + scope)
-	fmt.Println("Codex:  Use Abra MCP first. Scope: " + scope + ". Call discover_scopes, choose this exact scope, then call working_memory_compose.")
+	fmt.Println("Codex:  Use Abra MCP first. Exact scope: " + scope + `. Call discover_scopes with expected_scope="` + scope + `", then call working_memory_compose.`)
 	fmt.Println("MCP:    If discover_scopes does not show " + scope + ", ingest it with the command above and retry with the exact scope.")
 	return nil
 }
@@ -1424,10 +1431,10 @@ func installCodexMCP(ctx context.Context, args cliArgs) error {
 	fmt.Printf("  endpoint:  validated (%d tools)\n", toolCount)
 	if launchctlWarning != "" {
 		fmt.Println("Warning: could not set macOS launch environment: " + launchctlWarning)
-		fmt.Println("Set this before starting Codex: export " + tokenEnv + "=" + shellQuote(token))
+		fmt.Println("Set " + tokenEnv + " in the shell that starts Codex, then retry.")
 	}
 	if runtime.GOOS != "darwin" {
-		fmt.Println("Set this before starting Codex: export " + tokenEnv + "=" + shellQuote(token))
+		fmt.Println("Set " + tokenEnv + " in the shell that starts Codex, then retry.")
 	}
 	fmt.Println("Verify with: abra doctor")
 	fmt.Println("Fully quit and reopen Codex Desktop after installing or changing the token env.")
@@ -1900,6 +1907,9 @@ func defaultScope(pathHint string) string {
 	if strings.TrimSpace(pathHint) != "" {
 		root = pathHint
 	}
+	if scope := scopeFromRepositoryURL(root); scope != "" {
+		return scope
+	}
 	abs, err := filepath.Abs(root)
 	if err != nil {
 		abs = root
@@ -1915,6 +1925,39 @@ func defaultScope(pathHint string) string {
 		name = "local"
 	}
 	return "repo:" + name
+}
+
+func scopeFromRepositoryURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if strings.HasPrefix(raw, "git@") {
+		if idx := strings.Index(raw, ":"); idx >= 0 && idx+1 < len(raw) {
+			return scopeFromRepoPath(raw[idx+1:])
+		}
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return ""
+	}
+	return scopeFromRepoPath(parsed.Path)
+}
+
+func scopeFromRepoPath(path string) string {
+	parts := strings.Split(strings.Trim(strings.TrimSuffix(path, ".git"), "/"), "/")
+	if len(parts) >= 2 {
+		name := slug(parts[len(parts)-2] + "-" + parts[len(parts)-1])
+		if name != "" {
+			return "repo:" + name
+		}
+	}
+	if len(parts) == 1 {
+		if name := slug(parts[0]); name != "" {
+			return "repo:" + name
+		}
+	}
+	return ""
 }
 
 func findGitRoot(start string) string {
@@ -2322,10 +2365,12 @@ is missing, ingest the project with the printed command and retry.
 `
 	case "mcp", "mcp-config":
 		return `Usage:
-  abra mcp
+  abra mcp [--token-env ABRA_API_TOKEN] [--literal-token]
   abra mcp install-codex [--token-env ABRA_API_TOKEN]
 
-` + "`abra mcp`" + ` prints generic remote HTTP MCP client JSON.
+` + "`abra mcp`" + ` prints generic remote HTTP MCP client JSON. By default it
+uses bearer_token_env_var instead of writing a literal token; use --literal-token
+only for legacy clients that cannot read bearer-token env vars.
 ` + "`abra mcp install-codex`" + ` installs Abra into Codex as a streamable HTTP MCP
 server using the Codex CLI, stores the bearer-token env var name, validates the
 Abra MCP endpoint, and sets the token for the current macOS launch environment

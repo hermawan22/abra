@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -24,7 +25,9 @@ func New(cfg config.Config, db *store.Store) (http.Handler, error) {
 		return nil, err
 	}
 	memoryComposer := memory.NewComposerWithOptions(&composerStore{Store: db, brain: brainService}, memory.ComposerOptions{
-		HealthCacheTTL: cfg.ComposeHealthCacheTTL,
+		HealthCacheTTL:    cfg.ComposeHealthCacheTTL,
+		RecallConcurrency: cfg.ComposeRecallConcurrency,
+		GraphConcurrency:  cfg.ComposeGraphConcurrency,
 	})
 	mux := http.NewServeMux()
 	metrics := newMetricsCollector()
@@ -128,6 +131,68 @@ func scopeDiscoveryLimits(requested int, principal *apiPrincipal) (int, int) {
 		candidateLimit = maxScopeDiscoveryCandidateCap
 	}
 	return limit, candidateLimit
+}
+
+func rankScopeSummaries(scopes []store.ScopeSummary, expectedScope, query string) ([]store.ScopeSummary, []store.ScopeSummary, string) {
+	expectedScope = strings.ToLower(strings.TrimSpace(expectedScope))
+	query = strings.ToLower(strings.TrimSpace(query))
+	if expectedScope == "" && query == "" {
+		return scopes, nil, ""
+	}
+	type rankedScope struct {
+		scope store.ScopeSummary
+		score int
+	}
+	ranked := make([]rankedScope, 0, len(scopes))
+	for _, scope := range scopes {
+		name := strings.ToLower(scope.Scope)
+		score := 0
+		if expectedScope != "" {
+			switch {
+			case name == expectedScope:
+				score += 1000
+			case strings.Contains(name, expectedScope):
+				score += 800
+			}
+		}
+		if query != "" {
+			for _, term := range strings.Fields(query) {
+				if strings.Contains(name, term) {
+					score += 100
+				}
+			}
+			if strings.Contains(name, query) {
+				score += 300
+			}
+		}
+		ranked = append(ranked, rankedScope{scope: scope, score: score})
+	}
+	sort.SliceStable(ranked, func(i, j int) bool {
+		if ranked[i].score != ranked[j].score {
+			return ranked[i].score > ranked[j].score
+		}
+		left := ranked[i].scope
+		right := ranked[j].scope
+		leftTotal := left.Documents + left.Claims + left.Summaries + left.Sources + left.Jobs
+		rightTotal := right.Documents + right.Claims + right.Summaries + right.Sources + right.Jobs
+		if leftTotal != rightTotal {
+			return leftTotal > rightTotal
+		}
+		return left.Scope < right.Scope
+	})
+	ordered := make([]store.ScopeSummary, 0, len(ranked))
+	matches := []store.ScopeSummary{}
+	for _, item := range ranked {
+		ordered = append(ordered, item.scope)
+		if item.score > 0 {
+			matches = append(matches, item.scope)
+		}
+	}
+	recommended := ""
+	if len(matches) > 0 {
+		recommended = ordered[0].Scope
+	}
+	return ordered, matches, recommended
 }
 
 func (h *handler) index(w http.ResponseWriter, r *http.Request) {
@@ -1018,7 +1083,12 @@ func (h *handler) mcpToolCall(w http.ResponseWriter, r *http.Request, id any, pa
 			err = fmt.Errorf("forbidden: read role required")
 			break
 		}
+		expectedScope := strings.TrimSpace(stringArg(args, "expected_scope"))
+		query := strings.TrimSpace(stringArg(args, "query"))
 		limit, candidateLimit := scopeDiscoveryLimits(intArg(args, "limit", defaultScopeDiscoveryLimit), principal)
+		if expectedScope != "" || query != "" {
+			candidateLimit = maxScopeDiscoveryCandidateCap
+		}
 		scopes, listErr := h.db.ListScopes(r.Context(), candidateLimit)
 		if listErr != nil {
 			err = listErr
@@ -1028,20 +1098,28 @@ func (h *handler) mcpToolCall(w http.ResponseWriter, r *http.Request, id any, pa
 		for _, scope := range scopes {
 			if principal.allows(authActionRead, scope.Scope) {
 				visible = append(visible, scope)
-				if len(visible) >= limit {
-					break
-				}
 			}
+		}
+		visible, matches, recommendedScope := rankScopeSummaries(visible, expectedScope, query)
+		if len(visible) > limit {
+			visible = visible[:limit]
+		}
+		if len(matches) > limit {
+			matches = matches[:limit]
 		}
 		result = map[string]any{
 			"scopes":              visible,
 			"returned":            len(visible),
 			"limit":               limit,
+			"query":               query,
+			"expected_scope":      expectedScope,
+			"recommended_scope":   recommendedScope,
+			"matches":             matches,
 			"candidate_count":     len(scopes),
 			"candidate_limit":     candidateLimit,
 			"candidate_truncated": len(scopes) >= candidateLimit,
 			"filtered_by_token":   !principal.allScopes,
-			"hint":                "Use one exact scope value with brain_think, recall, policy_plan, and working_memory_compose. If the expected project is missing or candidate_truncated is true, run `abra scope` in that project, then `abra ingest . --code --scope <scope>` with the printed scope.",
+			"hint":                "Use one exact scope value with brain_think, recall, policy_plan, and working_memory_compose. When you already know the project scope from `abra scope`, call discover_scopes with expected_scope set to that exact value. If the expected project is missing or candidate_truncated is true, run `abra scope` in that project, then `abra ingest . --code --scope <scope>` with the printed scope.",
 		}
 	case "rebuild_summaries":
 		scope := stringArg(args, "scope")
@@ -1599,9 +1677,11 @@ func mcpTools() []map[string]any {
 		},
 		{
 			"name":        "discover_scopes",
-			"description": "List memory scopes visible to the current API token with counts, so AI agents can choose the right scope before recall or working-memory composition.",
+			"description": "List memory scopes visible to the current API token with counts, so AI agents can choose the right scope before recall or working-memory composition. Pass expected_scope or query when the project scope is known or discovery is crowded.",
 			"inputSchema": objectSchema(nil, map[string]any{
-				"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100},
+				"limit":          map[string]any{"type": "integer", "minimum": 1, "maximum": 100},
+				"query":          stringSchema(),
+				"expected_scope": stringSchema(),
 			}),
 		},
 		{

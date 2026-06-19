@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/hermawan22/abra/internal/brain"
+	"github.com/hermawan22/abra/internal/store"
 )
 
 func TestUpsertSourceConfigMCPAllowsOverlaySourceTypes(t *testing.T) {
@@ -63,6 +64,29 @@ func TestDiscoverScopesMCPToolIsDiscoverable(t *testing.T) {
 	}
 	if _, ok := properties["limit"]; !ok {
 		t.Fatalf("discover_scopes missing limit property in %#v", properties)
+	}
+	for _, property := range []string{"query", "expected_scope"} {
+		if _, ok := properties[property]; !ok {
+			t.Fatalf("discover_scopes missing %s property in %#v", property, properties)
+		}
+	}
+}
+
+func TestRankScopeSummariesPrioritizesExpectedScope(t *testing.T) {
+	scopes := []store.ScopeSummary{
+		{Scope: "repo:large-release", Documents: 1000},
+		{Scope: "repo:abra", Documents: 14},
+		{Scope: "repo:other", Documents: 50},
+	}
+	ordered, matches, recommended := rankScopeSummaries(scopes, "repo:abra", "")
+	if recommended != "repo:abra" {
+		t.Fatalf("recommended = %q, want repo:abra", recommended)
+	}
+	if len(matches) != 1 || matches[0].Scope != "repo:abra" {
+		t.Fatalf("matches = %#v", matches)
+	}
+	if ordered[0].Scope != "repo:abra" {
+		t.Fatalf("first ordered scope = %#v", ordered[0])
 	}
 }
 

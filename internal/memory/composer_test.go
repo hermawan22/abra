@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hermawan22/abra/internal/policy"
 	"github.com/hermawan22/abra/internal/store"
 )
 
@@ -27,12 +28,34 @@ type fakeStore struct {
 	healthCalls       int
 	healthScopes      []string
 	healthDelay       time.Duration
+	activeRecalls     int
+	maxActiveRecalls  int
+	recallDelay       time.Duration
+	activeGraphs      int
+	maxActiveGraphs   int
+	graphDelay        time.Duration
 }
 
 func (f *fakeStore) Recall(ctx context.Context, query, scope string, limit int, includeUnverified bool) (store.RecallResult, error) {
 	f.mu.Lock()
+	f.activeRecalls++
+	if f.activeRecalls > f.maxActiveRecalls {
+		f.maxActiveRecalls = f.activeRecalls
+	}
 	f.recalls = append(f.recalls, query)
 	f.mu.Unlock()
+	defer func() {
+		f.mu.Lock()
+		f.activeRecalls--
+		f.mu.Unlock()
+	}()
+	if f.recallDelay > 0 {
+		select {
+		case <-time.After(f.recallDelay):
+		case <-ctx.Done():
+			return store.RecallResult{}, ctx.Err()
+		}
+	}
 	if f.recallErrorOn != "" && strings.Contains(query, f.recallErrorOn) {
 		return store.RecallResult{}, errors.New("temporary recall shard unavailable")
 	}
@@ -75,8 +98,24 @@ func (f *fakeStore) ListMemorySummaries(ctx context.Context, query, scope string
 
 func (f *fakeStore) RelatedGraph(ctx context.Context, query, scope string, limit int) ([]store.RelationResult, error) {
 	f.mu.Lock()
+	f.activeGraphs++
+	if f.activeGraphs > f.maxActiveGraphs {
+		f.maxActiveGraphs = f.activeGraphs
+	}
 	f.graphQueries = append(f.graphQueries, query)
 	f.mu.Unlock()
+	defer func() {
+		f.mu.Lock()
+		f.activeGraphs--
+		f.mu.Unlock()
+	}()
+	if f.graphDelay > 0 {
+		select {
+		case <-time.After(f.graphDelay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	if f.graphErrorOn != "" && strings.Contains(query, f.graphErrorOn) {
 		return nil, errors.New("temporary graph shard unavailable")
 	}
@@ -487,6 +526,45 @@ func TestComposeBuildsMigrationWorkingMemory(t *testing.T) {
 	}
 	if !strings.Contains(result.Strategy, "migration-aware") {
 		t.Fatalf("strategy = %q", result.Strategy)
+	}
+}
+
+func TestComposerBoundsParallelRetrievalStages(t *testing.T) {
+	db := &fakeStore{
+		recallDelay: 10 * time.Millisecond,
+		graphDelay:  10 * time.Millisecond,
+	}
+	composer := NewComposerWithOptions(db, ComposerOptions{
+		RecallConcurrency: 2,
+		GraphConcurrency:  1,
+	})
+	queries := []policy.RecallQuery{
+		{Query: "one", Scope: "repo:test", Limit: 1},
+		{Query: "two", Scope: "repo:test", Limit: 1},
+		{Query: "three", Scope: "repo:test", Limit: 1},
+		{Query: "four", Scope: "repo:test", Limit: 1},
+	}
+	results, warnings, err := composer.retrieveQueries(context.Background(), queries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != len(queries) || len(warnings) != 0 {
+		t.Fatalf("retrieval results=%d warnings=%#v", len(results), warnings)
+	}
+	if db.maxActiveRecalls > 2 {
+		t.Fatalf("max active recalls = %d, want <= 2", db.maxActiveRecalls)
+	}
+
+	seeds := []string{"alpha", "beta", "gamma"}
+	graphResults, graphWarnings, err := composer.retrieveGraphSeeds(context.Background(), seeds, "repo:test", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(graphResults) != len(seeds) || len(graphWarnings) != 0 {
+		t.Fatalf("graph results=%d warnings=%#v", len(graphResults), graphWarnings)
+	}
+	if db.maxActiveGraphs > 1 {
+		t.Fatalf("max active graphs = %d, want <= 1", db.maxActiveGraphs)
 	}
 }
 

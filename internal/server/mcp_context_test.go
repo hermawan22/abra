@@ -54,7 +54,7 @@ func TestAgentWorkflowGuideExplainsScopeRecovery(t *testing.T) {
 		t.Fatalf("contents = %#v", result["contents"])
 	}
 	text, _ := contents[0]["text"].(string)
-	if !strings.Contains(text, "discover_scopes") || !strings.Contains(text, "exact returned scope") {
+	if !strings.Contains(text, "discover_scopes") || !strings.Contains(text, "expected_scope") {
 		t.Fatalf("guide text = %q", text)
 	}
 }

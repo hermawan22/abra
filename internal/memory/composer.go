@@ -27,13 +27,20 @@ type Store interface {
 }
 
 const defaultHealthCacheTTL = 2 * time.Second
+const (
+	defaultRecallConcurrency = 4
+	defaultGraphConcurrency  = 4
+	maxStageConcurrency      = 32
+)
 
 type Composer struct {
-	store          Store
-	healthCacheTTL time.Duration
-	healthMu       sync.Mutex
-	healthCache    map[string]healthCacheEntry
-	healthInflight map[string]*healthInflight
+	store             Store
+	healthCacheTTL    time.Duration
+	recallConcurrency int
+	graphConcurrency  int
+	healthMu          sync.Mutex
+	healthCache       map[string]healthCacheEntry
+	healthInflight    map[string]*healthInflight
 }
 
 type healthCacheEntry struct {
@@ -48,7 +55,9 @@ type healthInflight struct {
 }
 
 type ComposerOptions struct {
-	HealthCacheTTL time.Duration
+	HealthCacheTTL    time.Duration
+	RecallConcurrency int
+	GraphConcurrency  int
 }
 
 type ComposeInput struct {
@@ -125,6 +134,8 @@ type ComposeStats struct {
 	TotalDurationMS      int `json:"total_duration_ms"`
 	ParallelQueries      int `json:"parallel_queries"`
 	ParallelGraphQueries int `json:"parallel_graph_queries"`
+	RecallConcurrency    int `json:"recall_concurrency"`
+	GraphConcurrency     int `json:"graph_concurrency"`
 }
 
 type RetrievalTraceItem struct {
@@ -177,7 +188,11 @@ type healthLookup struct {
 }
 
 func NewComposer(store Store) *Composer {
-	return NewComposerWithOptions(store, ComposerOptions{HealthCacheTTL: defaultHealthCacheTTL})
+	return NewComposerWithOptions(store, ComposerOptions{
+		HealthCacheTTL:    defaultHealthCacheTTL,
+		RecallConcurrency: defaultRecallConcurrency,
+		GraphConcurrency:  defaultGraphConcurrency,
+	})
 }
 
 func NewComposerWithOptions(store Store, options ComposerOptions) *Composer {
@@ -185,12 +200,29 @@ func NewComposerWithOptions(store Store, options ComposerOptions) *Composer {
 	if ttl < 0 {
 		ttl = 0
 	}
+	recallConcurrency := boundedStageConcurrency(options.RecallConcurrency, defaultRecallConcurrency)
+	graphConcurrency := boundedStageConcurrency(options.GraphConcurrency, defaultGraphConcurrency)
 	return &Composer{
-		store:          store,
-		healthCacheTTL: ttl,
-		healthCache:    map[string]healthCacheEntry{},
-		healthInflight: map[string]*healthInflight{},
+		store:             store,
+		healthCacheTTL:    ttl,
+		recallConcurrency: recallConcurrency,
+		graphConcurrency:  graphConcurrency,
+		healthCache:       map[string]healthCacheEntry{},
+		healthInflight:    map[string]*healthInflight{},
 	}
+}
+
+func boundedStageConcurrency(value, fallback int) int {
+	if value <= 0 {
+		value = fallback
+	}
+	if value < 1 {
+		return 1
+	}
+	if value > maxStageConcurrency {
+		return maxStageConcurrency
+	}
+	return value
 }
 
 func (c *Composer) Compose(ctx context.Context, input ComposeInput) (ComposeResult, error) {
@@ -405,35 +437,39 @@ func (c *Composer) Compose(ctx context.Context, input ComposeInput) (ComposeResu
 		TotalDurationMS:      durationMS(started),
 		ParallelQueries:      len(plan.Queries),
 		ParallelGraphQueries: len(graphSeeds),
+		RecallConcurrency:    c.recallConcurrency,
+		GraphConcurrency:     c.graphConcurrency,
 	}
 
 	_ = c.store.InsertAuditEvent(ctx, "memory.composed", "memory_packet", input.Scope+"\x00"+input.Task, input.Scope, "", map[string]any{
-		"intent":            intent,
-		"agent":             input.Agent,
-		"queries":           len(plan.Queries),
-		"summaries":         len(result.Summaries),
-		"facts":             len(result.Facts),
-		"documents":         len(result.SupportingDocuments),
-		"relations":         len(result.GraphContext),
-		"graph_warnings":    len(result.GraphWarnings),
-		"retrieval_reasons": len(result.RetrievalReasons),
-		"conflicts":         len(result.Conflicts),
-		"files":             len(result.RelevantFiles),
-		"impact":            len(result.ImpactMap),
-		"validation":        len(result.ValidationPlan),
-		"context_blocks":    len(result.ContextWindow.Blocks),
-		"context_tokens":    result.ContextWindow.EstimatedTokens,
-		"context_dropped":   len(result.ContextWindow.DroppedBlocks),
-		"risk_count":        len(result.Risks),
-		"memory_health":     result.MemoryHealth.Status,
-		"health_signals":    len(result.MemoryHealth.Signals),
-		"verdict":           result.Verification.Verdict,
-		"decision":          result.AgentDecision.Decision,
-		"score":             result.Verification.Score,
-		"learning":          len(result.LearningSuggestions),
-		"policy":            len(result.AgentPolicyDecisions),
-		"duration_ms":       result.Stats.TotalDurationMS,
-		"warnings":          len(result.RetrievalWarnings),
+		"intent":             intent,
+		"agent":              input.Agent,
+		"queries":            len(plan.Queries),
+		"summaries":          len(result.Summaries),
+		"facts":              len(result.Facts),
+		"documents":          len(result.SupportingDocuments),
+		"relations":          len(result.GraphContext),
+		"graph_warnings":     len(result.GraphWarnings),
+		"retrieval_reasons":  len(result.RetrievalReasons),
+		"conflicts":          len(result.Conflicts),
+		"files":              len(result.RelevantFiles),
+		"impact":             len(result.ImpactMap),
+		"validation":         len(result.ValidationPlan),
+		"context_blocks":     len(result.ContextWindow.Blocks),
+		"context_tokens":     result.ContextWindow.EstimatedTokens,
+		"context_dropped":    len(result.ContextWindow.DroppedBlocks),
+		"risk_count":         len(result.Risks),
+		"memory_health":      result.MemoryHealth.Status,
+		"health_signals":     len(result.MemoryHealth.Signals),
+		"verdict":            result.Verification.Verdict,
+		"decision":           result.AgentDecision.Decision,
+		"score":              result.Verification.Score,
+		"learning":           len(result.LearningSuggestions),
+		"policy":             len(result.AgentPolicyDecisions),
+		"duration_ms":        result.Stats.TotalDurationMS,
+		"warnings":           len(result.RetrievalWarnings),
+		"recall_concurrency": c.recallConcurrency,
+		"graph_concurrency":  c.graphConcurrency,
 	})
 	return result, nil
 }
@@ -446,12 +482,18 @@ func (c *Composer) retrieveQueries(ctx context.Context, queries []policy.RecallQ
 	results := make([]retrievalResult, len(queries))
 	warningsByQuery := make([][]RetrievalWarning, len(queries))
 	errs := make(chan error, len(queries)*2)
+	sem := make(chan struct{}, minInt(c.recallConcurrency, len(queries)))
 	var wg sync.WaitGroup
 	for i, query := range queries {
 		i, query := i, query
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			if err := acquireStageSlot(ctx, sem); err != nil {
+				errs <- err
+				return
+			}
+			defer releaseStageSlot(sem)
 			querySummaries, err := c.store.ListMemorySummaries(ctx, query.Query, query.Scope, minInt(query.Limit, 4))
 			if err != nil {
 				if isContextError(err) {
@@ -495,6 +537,22 @@ func (c *Composer) retrieveQueries(ctx context.Context, queries []policy.RecallQ
 		warnings = append(warnings, queryWarnings...)
 	}
 	return results, warnings, nil
+}
+
+func acquireStageSlot(ctx context.Context, sem chan struct{}) error {
+	select {
+	case sem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func releaseStageSlot(sem chan struct{}) {
+	select {
+	case <-sem:
+	default:
+	}
 }
 
 func (c *Composer) activeConflicts(ctx context.Context, scope string, facts []store.ClaimResult, graph []store.RelationResult) ([]store.ConflictResult, error) {
@@ -636,12 +694,18 @@ func (c *Composer) retrieveGraphSeeds(ctx context.Context, seeds []string, scope
 	results := make([][]store.RelationResult, len(seeds))
 	warningsBySeed := make([][]RetrievalWarning, len(seeds))
 	errs := make(chan error, len(seeds))
+	sem := make(chan struct{}, minInt(c.graphConcurrency, len(seeds)))
 	var wg sync.WaitGroup
 	for i, seed := range seeds {
 		i, seed := i, seed
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			if err := acquireStageSlot(ctx, sem); err != nil {
+				errs <- err
+				return
+			}
+			defer releaseStageSlot(sem)
 			expanded, err := c.store.RelatedGraph(ctx, seed, scope, limit)
 			if err != nil {
 				if isContextError(err) {

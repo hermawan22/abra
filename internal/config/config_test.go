@@ -239,6 +239,40 @@ func TestLoadRejectsInvalidComposeHealthCacheTTL(t *testing.T) {
 	}
 }
 
+func TestLoadComposeConcurrencyLimits(t *testing.T) {
+	allowUnauthenticatedDev(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ComposeRecallConcurrency != 4 || cfg.ComposeGraphConcurrency != 4 {
+		t.Fatalf("default compose concurrency = recall:%d graph:%d", cfg.ComposeRecallConcurrency, cfg.ComposeGraphConcurrency)
+	}
+
+	t.Setenv("ABRA_COMPOSE_RECALL_CONCURRENCY", "2")
+	t.Setenv("ABRA_COMPOSE_GRAPH_CONCURRENCY", "1")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ComposeRecallConcurrency != 2 || cfg.ComposeGraphConcurrency != 1 {
+		t.Fatalf("compose concurrency = recall:%d graph:%d", cfg.ComposeRecallConcurrency, cfg.ComposeGraphConcurrency)
+	}
+}
+
+func TestLoadRejectsInvalidComposeConcurrencyLimits(t *testing.T) {
+	allowUnauthenticatedDev(t)
+	t.Setenv("ABRA_COMPOSE_RECALL_CONCURRENCY", "0")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected invalid recall concurrency error")
+	}
+	t.Setenv("ABRA_COMPOSE_RECALL_CONCURRENCY", "4")
+	t.Setenv("ABRA_COMPOSE_GRAPH_CONCURRENCY", "33")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected invalid graph concurrency error")
+	}
+}
+
 func TestLoadGitSourceConfig(t *testing.T) {
 	allowUnauthenticatedDev(t)
 	cfg, err := Load()

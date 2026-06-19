@@ -167,6 +167,53 @@ func TestCodexInstallCommandIncludesCustomTokenEnv(t *testing.T) {
 	}
 }
 
+func TestMCPConfigUsesTokenEnvByDefault(t *testing.T) {
+	t.Setenv("ABRA_API_TOKEN", "fixture-token-value")
+	output := captureStdout(t, func() {
+		if err := run(context.Background(), []string{"mcp", "--base-url", "http://127.0.0.1:18080"}); err != nil {
+			t.Fatalf("mcp error = %v", err)
+		}
+	})
+	if strings.Contains(output, "fixture-token-value") || strings.Contains(output, "Authorization") {
+		t.Fatalf("default mcp config leaked literal token:\n%s", output)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
+		t.Fatalf("decode mcp config: %v\n%s", err, output)
+	}
+	servers := payload["mcpServers"].(map[string]any)
+	abra := servers["abra"].(map[string]any)
+	if abra["bearer_token_env_var"] != "ABRA_API_TOKEN" {
+		t.Fatalf("mcp token env = %#v", abra["bearer_token_env_var"])
+	}
+}
+
+func TestMCPConfigLiteralTokenIsOptIn(t *testing.T) {
+	t.Setenv("ABRA_API_TOKEN", "fixture-token-value")
+	output := captureStdout(t, func() {
+		if err := run(context.Background(), []string{"mcp", "--base-url", "http://127.0.0.1:18080", "--literal-token"}); err != nil {
+			t.Fatalf("mcp error = %v", err)
+		}
+	})
+	if !strings.Contains(output, "Authorization") || !strings.Contains(output, "fixture-token-value") {
+		t.Fatalf("literal mcp config missing opt-in token:\n%s", output)
+	}
+}
+
+func TestDefaultScopeDerivesRemoteRepositoryIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want string
+	}{
+		{raw: "https://github.com/owner/repo.git", want: "repo:owner-repo"},
+		{raw: "git@github.com:owner/repo.git", want: "repo:owner-repo"},
+	} {
+		if got := defaultScope(tc.raw); got != tc.want {
+			t.Fatalf("defaultScope(%q) = %q, want %q", tc.raw, got, tc.want)
+		}
+	}
+}
+
 func TestValidateMCPToolsRequiresAgentIntegrationTools(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/mcp" {

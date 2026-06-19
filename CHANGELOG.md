@@ -18,9 +18,13 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Add bounded Prometheus counters for verifier `required_actions` so operators can see recurring agent-blocking causes without exposing scopes, tasks, queries, or recommendation text.
 - Add configurable `--wait-timeout` / `ABRA_CLI_WAIT_TIMEOUT` for queued source ingestion waits.
 - Add release preflight checks for `package-lock.json` version alignment.
+- Add configurable working-memory recall and graph fan-out caps for predictable compose load under concurrent agents.
 
 ### Changed
 
+- Make `discover_scopes` accept `expected_scope` and `query` hints so agents can find the exact project scope even when release or perf scopes crowd the first page.
+- Make `abra mcp` generate bearer-token environment variable config by default, with literal token output only behind `--literal-token`.
+- Derive default scopes for remote Git ingestion from the repository URL instead of the caller's current directory.
 - Make `abra doctor` and `abra mcp install-codex` validate that the MCP endpoint exposes `discover_scopes` and `working_memory_compose`.
 - Improve `abra doctor`, `abra scope`, and `abra mcp install-codex` guidance for Codex token env, exact scope matching, model config, and local model readiness.
 - Make `abra doctor` check macOS launch-environment token visibility for Codex Desktop separately from the current shell.
