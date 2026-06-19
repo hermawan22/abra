@@ -20,7 +20,7 @@ Install from GitHub releases:
 curl -fsSL https://raw.githubusercontent.com/hermawan22/abra/main/scripts/install.sh | sh
 ```
 
-Release downloads are verified against `SHA256SUMS` before the binary is installed. Set `ABRA_VERSION=vX.Y.Z` to install a specific release.
+Release downloads are verified against `SHA256SUMS` before the binary is installed. If GitHub CLI is available, the installer also verifies GitHub Artifact Attestations automatically. Set `ABRA_VERIFY_ATTESTATION=1` to require provenance verification, `ABRA_VERSION=vX.Y.Z` to install a specific release, or `ABRA_ALLOW_SOURCE_BUILD=1` to intentionally build from the release source tag when no platform asset exists.
 
 Run the guided first-run setup:
 
@@ -29,6 +29,8 @@ abra setup
 ```
 
 `abra setup` checks prerequisites, creates an env file, asks which embedding provider to use, can start the built-in local Qwen embedding runner, and can start Postgres, migrations, API, and worker. From a source checkout it uses `.tmp/quickstart.env`; from a global CLI install it stores runtime files under your Abra config directory and can be run from any folder. `abra install` is kept as a compatibility alias for `abra setup`; the curl script installs the CLI binary.
+
+If setup finishes but ingest or Codex still cannot use Abra, run `abra doctor` before changing config by hand. Doctor separates runtime env issues, API/MCP readiness, Codex token-env visibility, model config, and local model readiness. With the default local provider, `abra models status` shows whether the embedding endpoint is serving requests, and `abra models up` starts or repairs it.
 
 View or change the important runtime config without opening the env file:
 
@@ -107,22 +109,25 @@ abra mcp install-codex
 
 The installer writes the Codex MCP entry and validates that `/mcp` exposes
 `discover_scopes` and `working_memory_compose`. If validation fails, start Abra
-with `abra up`, check `abra doctor`, and rerun `abra mcp install-codex`.
+with `abra up`, check `abra doctor`, confirm local model readiness with
+`abra models status` when using the default local provider, and rerun
+`abra mcp install-codex`.
 
 Fully quit and reopen Codex Desktop after installing or changing the token env.
 Opening a new thread is enough only when the env var was already available to
-the Codex process. In each project, ask Abra for the exact scope before
+the Codex process. `abra mcp install-codex` sets the macOS launch environment
+when available; terminal-launched Codex still needs `ABRA_API_TOKEN` exported in
+the launching shell. In each project, ask Abra for the exact scope before
 prompting an AI agent:
 
 ```sh
 abra scope
 ```
 
-Then tell the agent: `Use Abra MCP first. Scope: repo:<project>. If unsure,
-call discover_scopes, choose the exact project scope, then call
-working_memory_compose before answering or changing code. If discover_scopes
-does not show the project, run abra scope and ingest the project with that exact
-scope.`
+Then tell the agent: `Use Abra MCP first. Scope: repo:<project>. Call
+discover_scopes, choose this exact scope, then call working_memory_compose
+before answering or changing code. If discover_scopes does not show
+repo:<project>, run abra scope and ingest the project with that exact scope.`
 
 Stop the local stack:
 

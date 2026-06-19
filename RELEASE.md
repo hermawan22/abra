@@ -31,12 +31,21 @@ npm audit --audit-level=high
 
 Each release should publish:
 
-- `abra` CLI archives for supported platforms
+- `abra_linux_amd64.tar.gz`
+- `abra_linux_arm64.tar.gz`
+- `abra_darwin_amd64.tar.gz`
+- `abra_darwin_arm64.tar.gz`
 - `SHA256SUMS`
 - GitHub Artifact Attestations for the CLI archives and `SHA256SUMS`
 
 Container images and SBOMs should only be documented in release notes after the
 workflow publishes them.
+
+Do not document a platform as supported until the release contains its archive,
+the archive is listed in `SHA256SUMS`, and both files have published
+attestations. The install script fails closed for missing platform assets,
+missing checksums, checksum mismatches, and invalid archives. Source builds are
+developer fallback installs only; they are not release artifacts.
 
 ## Tagging
 
@@ -59,11 +68,24 @@ Download release artifacts and verify checksums:
 sha256sum -c SHA256SUMS
 ```
 
-Verify artifact provenance with GitHub CLI:
+Verify artifact provenance with GitHub CLI for every archive and for
+`SHA256SUMS`:
 
 ```sh
 gh attestation verify --repo OWNER/REPO abra_linux_amd64.tar.gz
+gh attestation verify --repo OWNER/REPO SHA256SUMS
 ```
+
+Hardened install-script verification:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/scripts/install.sh \
+  | ABRA_VERSION=vX.Y.Z ABRA_VERIFY_ATTESTATION=1 sh
+```
+
+The hardened installer path must install from the release archive for the
+detected platform. Do not set `ABRA_ALLOW_SOURCE_BUILD=1` when verifying a
+published release.
 
 For container images published by downstream deployment workflows, prefer digests over mutable tags in production deploy manifests.
 

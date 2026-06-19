@@ -850,29 +850,33 @@ func (h *handler) mcpToolCall(w http.ResponseWriter, r *http.Request, id any, pa
 			err = parseErr
 			break
 		}
+		continueOnError, _ := args["continue_on_error"].(bool)
 		results := make([]map[string]any, 0, len(docs))
+		accepted := 0
+		failed := 0
 		for index, doc := range docs {
 			if !h.requireAccess(w, r, authActionWrite, doc.Scope) {
 				return
 			}
 			ingested, ingestErr := h.brain.IngestDocument(r.Context(), doc)
 			if ingestErr != nil {
+				if continueOnError {
+					failed++
+					results = append(results, mcpIngestDocumentError(index, doc, ingestErr))
+					continue
+				}
 				err = fmt.Errorf("document %d: %w", index, ingestErr)
 				break
 			}
-			results = append(results, map[string]any{
-				"index":       index,
-				"document_id": ingested.DocumentID,
-				"chunks":      ingested.Chunks,
-				"claims":      ingested.Claims,
-				"entities":    ingested.Entities,
-				"relations":   ingested.Relations,
-				"source_url":  doc.SourceURL,
-				"scope":       doc.Scope,
-			})
+			accepted++
+			results = append(results, mcpIngestDocumentSuccess(index, doc, ingested, continueOnError))
 		}
 		if err == nil {
-			result = map[string]any{"accepted": len(results), "documents": results}
+			response := map[string]any{"accepted": accepted, "documents": results}
+			if continueOnError {
+				response["failed"] = failed
+			}
+			result = response
 		}
 	case "remember_claim":
 		scope := stringArg(args, "scope")
@@ -1534,7 +1538,7 @@ func mcpTools() []map[string]any {
 		},
 		{
 			"name":        "ingest_documents",
-			"description": "Ingest a normalized batch of up to 50 source documents into Abra. Top-level scope/source_type/authority/metadata may be used as defaults.",
+			"description": "Ingest a normalized batch of up to 50 source documents into Abra. Top-level scope/source_type/authority/metadata may be used as defaults. Defaults to fail-fast; set continue_on_error to return per-document status for ingest failures.",
 			"inputSchema": objectSchema([]string{"documents"}, map[string]any{
 				"scope":             stringSchema(),
 				"source_type":       stringSchema(),
@@ -1542,6 +1546,7 @@ func mcpTools() []map[string]any {
 				"authority_score":   map[string]any{"type": "number", "minimum": 0, "maximum": 1},
 				"metadata":          map[string]any{"type": "object"},
 				"source_updated_at": stringSchema(),
+				"continue_on_error": map[string]any{"type": "boolean"},
 				"documents": map[string]any{
 					"type":     "array",
 					"minItems": 1,
@@ -1896,6 +1901,33 @@ func mcpToolTraceName(name string) string {
 		return name
 	default:
 		return "unknown"
+	}
+}
+
+func mcpIngestDocumentSuccess(index int, doc brain.IngestDocumentInput, ingested brain.IngestDocumentResult, includeStatus bool) map[string]any {
+	result := map[string]any{
+		"index":       index,
+		"document_id": ingested.DocumentID,
+		"chunks":      ingested.Chunks,
+		"claims":      ingested.Claims,
+		"entities":    ingested.Entities,
+		"relations":   ingested.Relations,
+		"source_url":  doc.SourceURL,
+		"scope":       doc.Scope,
+	}
+	if includeStatus {
+		result["status"] = "ingested"
+	}
+	return result
+}
+
+func mcpIngestDocumentError(index int, doc brain.IngestDocumentInput, err error) map[string]any {
+	return map[string]any{
+		"index":      index,
+		"status":     "error",
+		"error":      err.Error(),
+		"source_url": doc.SourceURL,
+		"scope":      doc.Scope,
 	}
 }
 

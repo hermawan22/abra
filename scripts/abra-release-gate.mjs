@@ -17,6 +17,7 @@ const dogfoodContainerSourceRoot = process.env.ABRA_RELEASE_DOGFOOD_SOURCE_ROOT 
 const checks = [];
 const managedStackEnv = {
   ABRA_API_KEYS: process.env.ABRA_API_KEYS || token,
+  ABRA_WEBHOOK_SECRETS: process.env.ABRA_WEBHOOK_SECRETS || "release-gate-webhook-secret",
   ABRA_APPROVAL_MODE: process.env.ABRA_APPROVAL_MODE || "advisory",
   ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION: process.env.ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION || "true",
   EMBEDDING_PROVIDER: process.env.EMBEDDING_PROVIDER || "local",
@@ -153,7 +154,7 @@ async function main() {
   await runCommand("script_checks", "npm", ["test"]);
   await runCommand("go_tests", "go", ["test", "./..."]);
   await runCommand("docker_compose_config", "docker", ["compose", "config"], {
-    env: manageStack ? managedStackEnv : { ABRA_API_KEYS: process.env.ABRA_API_KEYS || token }
+    env: managedStackEnv
   });
   await runCommand("helm_lint", "helm", ["lint", "./deploy/helm"]);
   await runCommand("helm_template", "helm", ["template", "abra", "./deploy/helm"]);

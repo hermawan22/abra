@@ -21,6 +21,23 @@ Security fixes are applied to the latest `0.1.x` release and the current `main` 
 
 Abra stores source-derived text snippets and embeddings. Treat the database as sensitive. Do not publish database dumps, embeddings, logs, or audit records from company deployments.
 
+## Installer and Release Verification
+
+For production hosts, install from a pinned release and require both checksum and
+GitHub Artifact Attestation verification:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/hermawan22/abra/main/scripts/install.sh \
+  | ABRA_VERSION=vX.Y.Z ABRA_VERIFY_ATTESTATION=1 sh
+```
+
+The installer verifies release archives against `SHA256SUMS` before installing.
+With `ABRA_VERIFY_ATTESTATION=1`, it also requires GitHub CLI (`gh`) and
+verifies artifact provenance for both the platform archive and `SHA256SUMS`.
+Do not use `ABRA_ALLOW_SOURCE_BUILD=1` for production installation or release
+verification; source builds are a developer fallback and are not release
+artifacts.
+
 ## Reporting Issues
 
 Report security issues privately to the maintainers. Use GitHub private vulnerability reporting when it is enabled for the repository; otherwise contact the repository owner privately through GitHub before sharing details. Do not file public issues for vulnerabilities, leaked secrets, database dumps, embeddings, or audit records.

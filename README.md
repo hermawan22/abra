@@ -42,7 +42,28 @@ Install from GitHub releases:
 curl -fsSL https://raw.githubusercontent.com/hermawan22/abra/main/scripts/install.sh | sh
 ```
 
-The installer downloads a platform release binary when available and verifies it against `SHA256SUMS` before installing. If no release asset exists for your platform yet, it falls back to `go install`.
+For a hardened install, pin the release and require GitHub Artifact
+Attestation verification:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/hermawan22/abra/main/scripts/install.sh \
+  | ABRA_VERSION=v0.3.7 ABRA_VERIFY_ATTESTATION=1 sh
+```
+
+The installer downloads the matching platform release archive, verifies it
+against `SHA256SUMS`, and installs only after the verified archive contains an
+executable `abra` binary. When GitHub CLI (`gh`) is available, the default
+`ABRA_VERIFY_ATTESTATION=auto` mode also attempts GitHub Artifact Attestation
+verification. Set `ABRA_VERIFY_ATTESTATION=1` to require provenance for the
+archive and `SHA256SUMS`. Missing platform assets, missing checksums, checksum
+mismatches, and invalid archives stop the install.
+
+Source builds are disabled by default so a missing release asset cannot silently
+replace a verified binary install. For local development only, opt in explicitly:
+
+```sh
+ABRA_ALLOW_SOURCE_BUILD=1 ./scripts/install.sh
+```
 
 Then run the guided CLI onboarding:
 
@@ -51,6 +72,8 @@ abra setup
 ```
 
 `abra setup` checks required commands, creates the runtime env file, asks which embedding provider to use, can start the built-in local Qwen embedding runner, and can start the local stack. From a source checkout it uses `.tmp/quickstart.env`; from a global CLI install it stores runtime files under your Abra config directory and can be run from any folder. `abra install` is a compatibility alias for `abra setup`; the curl script is what installs the CLI binary.
+
+If setup completes but ingest or Codex still cannot use Abra, run `abra doctor` before editing env files. It separates runtime env issues, API/MCP readiness, Codex token-env visibility, model config, and local model readiness. With the default local provider, use `abra models status` to check the embedding endpoint and `abra models up` to start or repair it.
 
 For non-interactive local setup:
 
@@ -109,12 +132,16 @@ abra mcp install-codex
 
 The installer writes the Codex MCP entry and validates that the Abra `/mcp`
 endpoint exposes `discover_scopes` and `working_memory_compose`. If validation
-fails, start the stack with `abra up` and rerun the install command.
+fails, start the stack with `abra up`, run `abra doctor`, check
+`abra models status` when using the default local provider, and rerun the install
+command.
 
 Fully quit and reopen Codex Desktop after installing or changing the token env.
 Opening a new thread is enough only when the env var was already available to
-the Codex process. To avoid scope mismatches, run this in each project and pass
-the printed scope to the agent:
+the Codex process. `abra mcp install-codex` sets the macOS launch environment
+when available; terminal-launched Codex still needs `ABRA_API_TOKEN` exported in
+the launching shell. To avoid scope mismatches, run this in each project and
+pass the printed scope to the agent:
 
 ```sh
 abra scope
@@ -123,7 +150,7 @@ abra scope
 Prompt pattern:
 
 ```text
-Use Abra MCP first. Scope: repo:<project>. If unsure, call discover_scopes, choose the exact project scope, then call working_memory_compose before answering or changing code. If discover_scopes does not show the project, run abra scope and ingest the project with that exact scope.
+Use Abra MCP first. Scope: repo:<project>. Call discover_scopes, choose this exact scope, then call working_memory_compose before answering or changing code. If discover_scopes does not show repo:<project>, run abra scope and ingest the project with that exact scope.
 ```
 
 Stop the stack:
@@ -395,7 +422,7 @@ MCP tools:
 
 - `recall(query, scope, limit?, include_unverified?)`
 - `ingest_document(source_type, source_url, title, scope, content, source_id?, source_updated_at?, authority?, authority_score?, metadata?)`
-- `ingest_documents(documents, scope?, source_type?, source_updated_at?, authority?, authority_score?, metadata?)`
+- `ingest_documents(documents, scope?, source_type?, source_updated_at?, authority?, authority_score?, metadata?, continue_on_error?)`
 - `remember_claim(claim, scope, source_url?, source_type?, authority?)`
 - `challenge(claim_id, reason, source_url?, verdict?, conflicting_claim_id?, severity?)`
 - `forget(claim_id, reason?)`

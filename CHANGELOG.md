@@ -11,17 +11,22 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Add repo-local `AGENTS.md` guidance so Codex-style agents use Abra MCP with the exact `repo:abra` scope before code changes.
 - Add deep readiness checks through `/readyz?deep=1` and have the CLI use them for local embedding setups.
 - Add configurable API read timeout and request-body limits for large local ingestion workloads.
+- Add optional MCP `ingest_documents` partial batch results with `continue_on_error` for connector overlays that need per-document status.
 
 ### Changed
 
 - Make `abra doctor` and `abra mcp install-codex` validate that the MCP endpoint exposes `discover_scopes` and `working_memory_compose`.
+- Improve `abra doctor`, `abra scope`, and `abra mcp install-codex` guidance for Codex token env, exact scope matching, model config, and local model readiness.
 - Prefer query-form working-memory MCP resources so scopes containing slashes are preserved.
 - Improve chunk splitting and embedding batch token estimation for oversized paragraphs, minified JSON, and dense code.
 - Harden production Compose and Helm defaults around compatible embeddings, loopback publish defaults, webhook signing, bind address, and request sizing.
+- Make the release gate provide production-valid placeholder embedding and webhook settings for Docker Compose config validation.
 
 ### Security
 
 - Add release workflow gates for verified signed tags, version alignment, checksum verification, and GitHub Artifact Attestations for CLI release assets.
+- Harden the curl installer to fail closed for missing checksums, checksum mismatches, invalid archives, and missing executables; source builds now require explicit `ABRA_ALLOW_SOURCE_BUILD=1`.
+- Add optional installer-side GitHub Artifact Attestation verification for release archives and `SHA256SUMS`.
 - Reject unsigned production webhooks by default unless explicitly overridden for deployments that disable webhook ingestion or verify signatures upstream.
 - Fail startup on malformed numeric, boolean, duration, tracing sample, port, and bind-address configuration.
 

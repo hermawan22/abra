@@ -4,6 +4,8 @@ set -eu
 REPO="${ABRA_REPO:-hermawan22/abra}"
 VERSION="${ABRA_VERSION:-latest}"
 INSTALL_DIR="${ABRA_INSTALL_DIR:-}"
+ALLOW_SOURCE_BUILD="${ABRA_ALLOW_SOURCE_BUILD:-0}"
+VERIFY_ATTESTATION="${ABRA_VERIFY_ATTESTATION:-auto}"
 
 log() {
   printf '%s\n' "$*" >&2
@@ -56,6 +58,8 @@ try_release() {
   os="$2"
   arch="$3"
   asset="abra_${os}_${arch}.tar.gz"
+  archive="$tmp/$asset"
+  sums="$tmp/SHA256SUMS"
   if [ "$VERSION" = "latest" ]; then
     base_url="https://github.com/$REPO/releases/latest/download"
   else
@@ -63,27 +67,70 @@ try_release() {
   fi
   url="$base_url/$asset"
   log "Trying release asset: $url"
-  if curl -fsSL "$url" -o "$tmp/abra.tar.gz"; then
-    if curl -fsSL "$base_url/SHA256SUMS" -o "$tmp/SHA256SUMS"; then
-      verify_checksum "$tmp/abra.tar.gz" "$tmp/SHA256SUMS" "$asset"
-    else
-      log "missing SHA256SUMS for release asset"
-      return 1
-    fi
-    mkdir -p "$tmp/release"
-    if tar -xzf "$tmp/abra.tar.gz" -C "$tmp/release"; then
-      if [ -x "$tmp/release/abra" ]; then
-        printf '%s\n' "$tmp/release/abra"
-        return 0
-      fi
-      found="$(find "$tmp/release" -type f -name abra -perm -111 2>/dev/null | head -n 1 || true)"
-      if [ -n "$found" ]; then
-        printf '%s\n' "$found"
-        return 0
-      fi
-    fi
+  if ! curl -fsSL "$url" -o "$archive"; then
+    log "release asset unavailable for ${os}/${arch}: $asset"
+    return 1
   fi
-  return 1
+  if ! curl -fsSL "$base_url/SHA256SUMS" -o "$sums"; then
+    log "missing SHA256SUMS for release asset"
+    exit 1
+  fi
+  verify_checksum "$archive" "$sums" "$asset"
+  verify_attestation "$archive" "$asset"
+  verify_attestation "$sums" "SHA256SUMS"
+  mkdir -p "$tmp/release"
+  if ! tar -xzf "$archive" -C "$tmp/release"; then
+    log "failed to extract verified release archive: $asset"
+    exit 1
+  fi
+  if [ -x "$tmp/release/abra" ]; then
+    printf '%s\n' "$tmp/release/abra"
+    return 0
+  fi
+  found="$(find "$tmp/release" -type f -name abra -perm -111 2>/dev/null | head -n 1 || true)"
+  if [ -n "$found" ]; then
+    printf '%s\n' "$found"
+    return 0
+  fi
+  log "verified release archive did not contain an executable abra binary"
+  exit 1
+}
+
+verify_attestation() {
+  file="$1"
+  asset="$2"
+  case "$VERIFY_ATTESTATION" in
+    0|false|False|FALSE|no|No|NO|off|Off|OFF)
+      log "Skipped GitHub artifact attestation verification: ABRA_VERIFY_ATTESTATION=$VERIFY_ATTESTATION"
+      return 0
+      ;;
+    1|true|True|TRUE|yes|Yes|YES|on|On|ON|auto)
+      ;;
+    *)
+      log "invalid ABRA_VERIFY_ATTESTATION=$VERIFY_ATTESTATION; use auto, 1, or 0"
+      exit 1
+      ;;
+  esac
+  if ! command -v gh >/dev/null 2>&1; then
+    if [ "$VERIFY_ATTESTATION" = "auto" ]; then
+      log "GitHub CLI not found; checksum verified, attestation verification skipped."
+      log "For hardened installs, install gh and set ABRA_VERIFY_ATTESTATION=1."
+      return 0
+    fi
+    log "missing GitHub CLI: install gh or set ABRA_VERIFY_ATTESTATION=0 to skip provenance verification"
+    exit 1
+  fi
+  if gh attestation verify --repo "$REPO" "$file" >/dev/null 2>&1; then
+    log "Verified GitHub artifact attestation: $asset"
+    return 0
+  fi
+  if [ "$VERIFY_ATTESTATION" = "auto" ]; then
+    log "GitHub artifact attestation verification did not pass for $asset."
+    log "Checksum is valid; set ABRA_VERIFY_ATTESTATION=1 to require provenance."
+    return 0
+  fi
+  log "GitHub artifact attestation verification failed for $asset"
+  exit 1
 }
 
 verify_checksum() {
@@ -116,9 +163,19 @@ verify_checksum() {
 
 build_with_go() {
   tmp="$1"
+  case "$ALLOW_SOURCE_BUILD" in
+    1|true|True|TRUE|yes|Yes|YES|on|On|ON)
+      ;;
+    *)
+      log "No matching release asset was found for this platform/version."
+      log "Source builds are disabled by default for install-script safety."
+      log "Set ABRA_ALLOW_SOURCE_BUILD=1 only for an explicit developer source build with Go."
+      exit 1
+      ;;
+  esac
   if ! need go; then
-    log "No release asset found and Go is not installed."
-    log "Install Go once, then rerun this installer, or download an Abra release binary."
+    log "ABRA_ALLOW_SOURCE_BUILD=1 was set but Go is not installed."
+    log "Install Go once, then rerun this installer, or download a verified Abra release binary."
     exit 1
   fi
   resolved="$VERSION"
@@ -132,6 +189,7 @@ build_with_go() {
   mkdir -p "$tmp/source" "$tmp/gobin"
   source_url="https://github.com/$REPO/archive/refs/tags/$resolved.tar.gz"
   log "Building Abra CLI from source tag: $source_url"
+  log "Source builds are developer fallback installs and are not release artifacts."
   curl -fsSL "$source_url" -o "$tmp/source.tar.gz"
   tar -xzf "$tmp/source.tar.gz" -C "$tmp/source"
   src_dir="$(find "$tmp/source" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
@@ -160,10 +218,15 @@ main() {
 
   os="$(detect_os)"
   arch="$(detect_arch)"
-  if binary="$(try_release "$tmp" "$os" "$arch")"; then
+  binary_path_file="$tmp/binary-path"
+  if try_release "$tmp" "$os" "$arch" > "$binary_path_file"; then
     :
   else
-    binary="$(build_with_go "$tmp")"
+    build_with_go "$tmp" > "$binary_path_file"
+  fi
+  if ! IFS= read -r binary < "$binary_path_file" || [ -z "$binary" ]; then
+    log "installer did not resolve an abra binary path"
+    exit 1
   fi
 
   install_binary "$binary" "$dst_dir"

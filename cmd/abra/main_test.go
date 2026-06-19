@@ -98,6 +98,59 @@ func TestCfgReadsRuntimeEnvFile(t *testing.T) {
 	}
 }
 
+func TestModelConfigCheckExplainsLocalModel(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+	mustWrite(t, filepath.Join(home, "quickstart.env"), strings.Join([]string{
+		"EMBEDDING_PROVIDER=local",
+		"EMBEDDING_BASE_URL=http://host.docker.internal:8080/v1",
+		"EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0",
+		"EMBEDDING_DIMENSIONS=1024",
+		"",
+	}, "\n"))
+
+	check := modelConfigCheck(parseArgs([]string{"doctor"}))
+	if check["ok"] != true {
+		t.Fatalf("check = %#v", check)
+	}
+	detail := stringValue(check["detail"], "")
+	for _, want := range []string{"provider=local", "base_url=http://host.docker.internal:8080/v1", "dimensions=1024"} {
+		if !strings.Contains(detail, want) {
+			t.Fatalf("detail missing %q: %s", want, detail)
+		}
+	}
+	if !strings.Contains(stringValue(check["hint"], ""), "abra models status") {
+		t.Fatalf("hint = %q", check["hint"])
+	}
+}
+
+func TestPrintDoctorIncludesDetailsAndHints(t *testing.T) {
+	output := captureStdout(t, func() {
+		if err := printDoctor(parseArgs([]string{"doctor"}), []map[string]any{
+			{"name": "model_config", "ok": true, "detail": "provider=local model=embed"},
+			{"name": "codex_mcp_client", "ok": false, "detail": "ABRA_API_TOKEN is not set", "hint": "run: abra mcp install-codex"},
+		}); err != nil {
+			t.Fatalf("printDoctor error = %v", err)
+		}
+	})
+	for _, want := range []string{"ok  model_config", "info provider=local model=embed", "warn  codex_mcp_client", "hint run: abra mcp install-codex"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("doctor output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestCodexInstallCommandIncludesCustomTokenEnv(t *testing.T) {
+	if got := codexInstallCommand("ABRA_API_TOKEN"); got != "abra mcp install-codex" {
+		t.Fatalf("default command = %q", got)
+	}
+	if got := codexInstallCommand("ABRA_OTHER_TOKEN"); got != "abra mcp install-codex --token-env ABRA_OTHER_TOKEN" {
+		t.Fatalf("custom command = %q", got)
+	}
+}
+
 func TestValidateMCPToolsRequiresAgentIntegrationTools(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/mcp" {

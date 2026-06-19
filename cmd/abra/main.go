@@ -627,7 +627,9 @@ func doctor(ctx context.Context, args cliArgs) error {
 	if envPath(args) != "" {
 		checks = append(checks, envFileCheck(envPath(args)))
 	}
+	checks = append(checks, modelConfigCheck(args))
 	checks = append(checks, localEmbeddingCheck(ctx, args))
+	checks = append(checks, codexMCPClientCheck(args))
 	result, code, err := getJSON(ctx, args, "/readyz")
 	if err != nil || code < 200 || code >= 300 {
 		checks = append(checks, map[string]any{"name": "readyz", "ok": false, "status": code, "hint": "run: abra up"})
@@ -666,12 +668,98 @@ func envFileCheck(path string) map[string]any {
 	return check
 }
 
+func modelConfigCheck(args cliArgs) map[string]any {
+	values, err := readEnvValues(envPath(args))
+	if err != nil {
+		return map[string]any{
+			"name":   "model_config",
+			"ok":     false,
+			"detail": "runtime env is not readable: " + envPath(args),
+			"hint":   "run: abra setup",
+		}
+	}
+	provider := strings.TrimSpace(values["EMBEDDING_PROVIDER"])
+	baseURL := strings.TrimSpace(values["EMBEDDING_BASE_URL"])
+	model := strings.TrimSpace(values["EMBEDDING_MODEL"])
+	dimensions := strings.TrimSpace(values["EMBEDDING_DIMENSIONS"])
+	if provider == "" {
+		return map[string]any{
+			"name":   "model_config",
+			"ok":     false,
+			"detail": "embedding provider is empty",
+			"hint":   "run: abra setup, or configure one with abra config model local",
+		}
+	}
+	if baseURL == "" || model == "" {
+		return map[string]any{
+			"name":   "model_config",
+			"ok":     false,
+			"detail": "embedding provider=" + provider + " base_url=" + valueOr(baseURL, "<empty>") + " model=" + valueOr(model, "<empty>"),
+			"hint":   "run: abra config model local, or abra config model compatible --base-url <url> --model <model>",
+		}
+	}
+	detail := "provider=" + provider + " model=" + model + " base_url=" + baseURL
+	if dimensions != "" {
+		detail += " dimensions=" + dimensions
+	}
+	if provider == "local" {
+		return map[string]any{
+			"name":   "model_config",
+			"ok":     true,
+			"detail": detail,
+			"hint":   "local model readiness is checked by local_embeddings; use abra models status when ingest or setup stalls",
+		}
+	}
+	return map[string]any{"name": "model_config", "ok": true, "detail": detail}
+}
+
 func mcpCheck(ctx context.Context, args cliArgs) map[string]any {
 	toolCount, err := validateMCPTools(ctx, args)
 	if err != nil {
-		return map[string]any{"name": "mcp", "ok": false, "error": err.Error()}
+		return map[string]any{"name": "mcp", "ok": false, "error": err.Error(), "hint": "run: abra up, then abra doctor"}
 	}
-	return map[string]any{"name": "mcp", "ok": true, "tools": toolCount}
+	return map[string]any{"name": "mcp", "ok": true, "detail": fmt.Sprintf("tools=%d required=discover_scopes,working_memory_compose", toolCount)}
+}
+
+func codexMCPClientCheck(args cliArgs) map[string]any {
+	codex, err := codexCommandPath()
+	if err != nil {
+		return map[string]any{
+			"name":    "codex_mcp_client",
+			"ok":      true,
+			"skipped": true,
+			"detail":  "Codex CLI not found; skip this check unless you use Codex",
+		}
+	}
+	tokenEnv := flag(args, "token-env", "ABRA_API_TOKEN")
+	expectedToken := cfg(args).Token
+	actualToken := strings.TrimSpace(os.Getenv(tokenEnv))
+	check := map[string]any{
+		"name":      "codex_mcp_client",
+		"path":      codex,
+		"token_env": tokenEnv,
+	}
+	if strings.TrimSpace(expectedToken) == "" {
+		check["ok"] = false
+		check["detail"] = "Abra token is empty"
+		check["hint"] = "run: abra setup, then abra mcp install-codex"
+		return check
+	}
+	if actualToken == "" {
+		check["ok"] = false
+		check["detail"] = tokenEnv + " is not set in this shell; Codex also needs it in the Codex process environment"
+		check["hint"] = "run: abra mcp install-codex, fully quit and reopen Codex Desktop, or export " + tokenEnv + " before launching terminal Codex"
+		return check
+	}
+	if actualToken != expectedToken {
+		check["ok"] = false
+		check["detail"] = tokenEnv + " is set but does not match the active Abra env token"
+		check["hint"] = "rerun: " + codexInstallCommand(tokenEnv) + ", then fully quit and reopen Codex Desktop"
+		return check
+	}
+	check["ok"] = true
+	check["detail"] = tokenEnv + " is set in this shell; restart Codex Desktop if this changed after Codex launched"
+	return check
 }
 
 func browserUICheck(ctx context.Context, args cliArgs) map[string]any {
@@ -700,6 +788,9 @@ func printDoctor(args cliArgs, checks []map[string]any) error {
 			status = "warn"
 		}
 		fmt.Println(status + "  " + stringValue(check["name"], "check"))
+		if detail := stringValue(check["detail"], ""); detail != "" {
+			fmt.Println("info " + detail)
+		}
 		if hint := stringValue(check["hint"], ""); hint != "" {
 			fmt.Println("hint " + hint)
 		}
@@ -1226,7 +1317,7 @@ func scopeCommand(args cliArgs) error {
 			"examples": map[string]string{
 				"ingest":  "abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope),
 				"think":   "abra think \"what should I know before changing this project?\" --scope " + scope,
-				"codex":   "Use Abra MCP first. Scope: " + scope + ". Call working_memory_compose before answering or changing code. If the scope is missing in MCP, run discover_scopes and then ingest this project with the exact scope.",
+				"codex":   "Use Abra MCP first. Scope: " + scope + ". Call discover_scopes, choose this exact scope, then call working_memory_compose before answering or changing code. If discover_scopes does not show " + scope + ", run: abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope),
 				"compose": "abra compose \"ship this change\" --scope " + scope + " --agent codex",
 			},
 		})
@@ -1235,8 +1326,8 @@ func scopeCommand(args cliArgs) error {
 	fmt.Println("Use this exact scope with Abra MCP and AI agents.")
 	fmt.Println("Ingest: abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope))
 	fmt.Println("Think:  abra think \"what should I know before changing this project?\" --scope " + scope)
-	fmt.Println("Codex:  Use Abra MCP first. Scope: " + scope + ". Call working_memory_compose before answering or changing code.")
-	fmt.Println("MCP:    If discover_scopes does not show this project, ingest it with the command above and retry with the exact scope.")
+	fmt.Println("Codex:  Use Abra MCP first. Scope: " + scope + ". Call discover_scopes, choose this exact scope, then call working_memory_compose.")
+	fmt.Println("MCP:    If discover_scopes does not show " + scope + ", ingest it with the command above and retry with the exact scope.")
 	return nil
 }
 
@@ -1249,6 +1340,9 @@ func installCodexMCP(ctx context.Context, args cliArgs) error {
 	token := cfg(args).Token
 	if token == "" {
 		return errors.New("missing Abra token")
+	}
+	if err := runQuiet(codex, "mcp", "list"); err != nil {
+		return fmt.Errorf("Codex CLI could not read its MCP configuration: %w\nFix the Codex config, then retry `abra mcp install-codex`", err)
 	}
 	launchctlWarning := ""
 	if runtime.GOOS == "darwin" {
@@ -1263,7 +1357,7 @@ func installCodexMCP(ctx context.Context, args cliArgs) error {
 	}
 	toolCount, err := validateMCPTools(ctx, args)
 	if err != nil {
-		return fmt.Errorf("codex mcp config was written, but Abra MCP endpoint validation failed: %w\nRun `abra up` and retry `abra mcp install-codex`", err)
+		return fmt.Errorf("codex mcp config was written, but Abra MCP endpoint validation failed: %w\n\nRecovery:\n  1. Start or repair Abra: abra up\n  2. Check API, MCP, token env, and model readiness: abra doctor\n  3. If local embeddings are not ready: abra models status && abra models up\n  4. Reinstall after the endpoint is ready: %s\n\nCodex reads the bearer token from %s. Fully quit and reopen Codex Desktop after changing that env var.", err, codexInstallCommand(tokenEnv), tokenEnv)
 	}
 	fmt.Println("Installed Abra MCP for Codex:")
 	fmt.Println("  url:       " + strings.TrimRight(cfg(args).BaseURL, "/") + "/mcp")
@@ -1276,10 +1370,18 @@ func installCodexMCP(ctx context.Context, args cliArgs) error {
 	if runtime.GOOS != "darwin" {
 		fmt.Println("Set this before starting Codex: export " + tokenEnv + "=" + shellQuote(token))
 	}
+	fmt.Println("Verify with: abra doctor")
 	fmt.Println("Fully quit and reopen Codex Desktop after installing or changing the token env.")
 	fmt.Println("Opening a new thread is enough only when the env var was already available to the Codex process.")
-	fmt.Println("Scope hint: run `abra scope` in each project and pass that scope to working_memory_compose.")
+	fmt.Println("Scope hint: run `abra scope` in each project, compare it with discover_scopes in Codex, and pass the exact scope to working_memory_compose.")
 	return nil
+}
+
+func codexInstallCommand(tokenEnv string) string {
+	if strings.TrimSpace(tokenEnv) == "" || tokenEnv == "ABRA_API_TOKEN" {
+		return "abra mcp install-codex"
+	}
+	return "abra mcp install-codex --token-env " + tokenEnv
 }
 
 func validateMCPTools(ctx context.Context, args cliArgs) (int, error) {
@@ -1840,6 +1942,13 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+func valueOr(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
+}
+
 func csv(value string) []string {
 	parts := []string{}
 	for _, item := range strings.Split(value, ",") {
@@ -2124,6 +2233,8 @@ Builds a task-specific working-memory packet for AI coding agents.
 Prints the stable memory scope for a project path and shows the exact commands
 and agent prompt to use. Use this when an AI client says Abra has no context:
 the usual cause is a scope mismatch between ingest and working_memory_compose.
+Compare this output with discover_scopes in the MCP client; if the exact scope
+is missing, ingest the project with the printed command and retry.
 `
 	case "mcp", "mcp-config":
 		return `Usage:
@@ -2135,7 +2246,17 @@ the usual cause is a scope mismatch between ingest and working_memory_compose.
 server using the Codex CLI, stores the bearer-token env var name, validates the
 Abra MCP endpoint, and sets the token for the current macOS launch environment
 when available. Fully quit and reopen Codex Desktop after installing or changing
-the token env.
+the token env. Run abra doctor when Codex cannot see Abra; it checks API/MCP
+readiness, model config/readiness, and the current shell token env.
+`
+	case "doctor":
+		return `Usage:
+  abra doctor [--json] [--token-env ABRA_API_TOKEN]
+
+Checks local commands, runtime env permissions, embedding model config, local
+embedding readiness, API readiness, MCP tools, and Codex token-env hints. Use it
+after abra setup, after changing model config, and before rerunning
+abra mcp install-codex when Codex cannot connect.
 `
 	case "setup":
 		return `Usage:
@@ -2150,6 +2271,10 @@ Guided first-run onboarding. It checks prerequisites, creates the runtime env,
 chooses the embedding provider, and can start the local stack. The default
 local provider uses abra models up to serve Qwen/Qwen3-Embedding-0.6B through a
 local OpenAI-compatible endpoint.
+
+If setup writes config but later commands cannot embed, run abra doctor first.
+For the default local provider, model readiness is checked with
+abra models status and repaired with abra models up before restarting the stack.
 
 Common setup flags:
   --base-url            embedding provider base URL

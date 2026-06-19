@@ -1,6 +1,11 @@
 package server
 
-import "testing"
+import (
+	"errors"
+	"testing"
+
+	"github.com/hermawan22/abra/internal/brain"
+)
 
 func TestUpsertSourceConfigMCPAllowsOverlaySourceTypes(t *testing.T) {
 	var tool map[string]any
@@ -58,6 +63,50 @@ func TestDiscoverScopesMCPToolIsDiscoverable(t *testing.T) {
 	}
 	if _, ok := properties["limit"]; !ok {
 		t.Fatalf("discover_scopes missing limit property in %#v", properties)
+	}
+}
+
+func TestIngestDocumentsMCPContinueOnErrorIsOptional(t *testing.T) {
+	schema := mcpToolSchema(t, "ingest_documents")
+	required := requiredSet(t, schema)
+	if required["continue_on_error"] {
+		t.Fatalf("ingest_documents required = %#v, continue_on_error must be optional", schema["required"])
+	}
+	properties, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("properties = %#v", schema["properties"])
+	}
+	continueOnError, ok := properties["continue_on_error"].(map[string]any)
+	if !ok {
+		t.Fatalf("continue_on_error schema = %#v", properties["continue_on_error"])
+	}
+	if continueOnError["type"] != "boolean" {
+		t.Fatalf("continue_on_error type = %#v, want boolean", continueOnError["type"])
+	}
+}
+
+func TestIngestDocumentsMCPStatusEntries(t *testing.T) {
+	doc := brain.IngestDocumentInput{SourceURL: "file:///doc.md", Scope: "repo:abra"}
+	success := mcpIngestDocumentSuccess(1, doc, brain.IngestDocumentResult{
+		DocumentID: "doc-1",
+		Chunks:     2,
+		Claims:     1,
+		Entities:   3,
+		Relations:  4,
+	}, true)
+	if success["status"] != "ingested" {
+		t.Fatalf("success status = %#v, want ingested", success["status"])
+	}
+	if success["index"] != 1 || success["document_id"] != "doc-1" || success["source_url"] != doc.SourceURL || success["scope"] != doc.Scope {
+		t.Fatalf("success entry = %#v", success)
+	}
+
+	failed := mcpIngestDocumentError(2, doc, errors.New("embedding unavailable"))
+	if failed["status"] != "error" {
+		t.Fatalf("failed status = %#v, want error", failed["status"])
+	}
+	if failed["index"] != 2 || failed["error"] != "embedding unavailable" || failed["source_url"] != doc.SourceURL || failed["scope"] != doc.Scope {
+		t.Fatalf("failed entry = %#v", failed)
 	}
 }
 
