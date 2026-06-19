@@ -75,6 +75,22 @@ func TestShellQuoteEscapesSingleQuotes(t *testing.T) {
 	}
 }
 
+func TestWaitTimeoutUsesFlagOrEnv(t *testing.T) {
+	t.Setenv("ABRA_CLI_WAIT_TIMEOUT", "7s")
+	if got := waitTimeout(parseArgs([]string{"watch"})); got != 7*time.Second {
+		t.Fatalf("env wait timeout = %s", got)
+	}
+	if got := waitTimeout(parseArgs([]string{"watch", "--wait-timeout", "2m"})); got != 2*time.Minute {
+		t.Fatalf("flag wait timeout = %s", got)
+	}
+	if got := waitTimeout(parseArgs([]string{"watch", "--timeout", "90s"})); got != 90*time.Second {
+		t.Fatalf("timeout alias = %s", got)
+	}
+	if got := waitTimeout(parseArgs([]string{"watch", "--wait-timeout", "bad"})); got != time.Minute {
+		t.Fatalf("invalid wait timeout = %s", got)
+	}
+}
+
 func TestCfgReadsRuntimeEnvFile(t *testing.T) {
 	t.Setenv("ABRA_BASE_URL", "")
 	t.Setenv("ABRA_URL", "")
@@ -275,6 +291,50 @@ func TestSetupOpenAIStdinNoStart(t *testing.T) {
 	}
 	if !strings.Contains(output, "verify your OpenAI embedding endpoint is reachable from Abra") {
 		t.Fatalf("openai setup next steps should mention OpenAI endpoint readiness:\n%s", output)
+	}
+}
+
+func TestInstallCodexPrevalidatesMCPBeforeMutatingConfig(t *testing.T) {
+	root := t.TempDir()
+	logPath := filepath.Join(root, "codex.log")
+	codexPath := filepath.Join(root, "codex")
+	mustWrite(t, codexPath, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> "+shellQuote(logPath)+"\nexit 0\n")
+	if err := os.Chmod(codexPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ABRA_CODEX_COMMAND", codexPath)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/mcp" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result": map[string]any{
+				"tools": []map[string]any{{"name": "discover_scopes"}},
+			},
+		})
+	}))
+	defer server.Close()
+
+	err := run(context.Background(), []string{"mcp", "install-codex", "--base-url", server.URL, "--token", "test-token"})
+	if err == nil {
+		t.Fatal("expected MCP prevalidation error")
+	}
+	if !strings.Contains(err.Error(), "before changing Codex config") {
+		t.Fatalf("error should explain prevalidation: %v", err)
+	}
+	logBytes, readErr := os.ReadFile(logPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	logText := string(logBytes)
+	if !strings.Contains(logText, "mcp list") {
+		t.Fatalf("codex mcp list was not called:\n%s", logText)
+	}
+	if strings.Contains(logText, "mcp remove") || strings.Contains(logText, "mcp add") {
+		t.Fatalf("codex config was mutated before MCP validation:\n%s", logText)
 	}
 }
 

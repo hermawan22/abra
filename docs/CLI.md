@@ -79,7 +79,7 @@ abra ingest . --code --scope repo:my-app
 Queue a remote Git repo through the worker:
 
 ```sh
-abra ingest --git https://github.com/owner/repo.git --ref main --code --scope repo:owner-repo --wait
+abra ingest --git https://github.com/owner/repo.git --ref main --code --scope repo:owner-repo --wait --wait-timeout 10m
 ```
 
 Ask Abra to think with governed memory:
@@ -201,7 +201,7 @@ From a source checkout, run the CLI as `go run ./cmd/abra <command>`. In a relea
 | compatibility setup alias | `abra install` |
 | ingest one document | `abra ingest --text "source-backed content"` |
 | ingest local repo | `abra ingest . --code --scope repo:my-app` |
-| ingest remote git | `abra ingest --git https://github.com/owner/repo.git --ref main --code --scope repo:owner-repo --wait` |
+| ingest remote git | `abra ingest --git https://github.com/owner/repo.git --ref main --code --scope repo:owner-repo --wait --wait-timeout 10m` |
 | list sources | `abra sources` |
 | list jobs | `abra jobs` |
 | think | `abra think "question" --scope repo:my-app` |
@@ -232,8 +232,11 @@ curl -sS -H "$auth_header" \
   "$ABRA_BASE_URL/ingest/documents"
 ```
 
-For worker-based source refreshes, use `abra watch local --path . --wait`
-or `abra watch git --git https://github.com/owner/repo.git --wait`.
+For worker-based source refreshes, use `abra watch local --path . --wait --wait-timeout 10m`
+or `abra watch git --git https://github.com/owner/repo.git --wait --wait-timeout 10m`.
+When `--code` is enabled and no `--code-include` is supplied, Abra includes supported
+Go, JavaScript, TypeScript, and React code files repo-wide while skipping common
+dependency, build, cache, and vendor directories.
 For event-based ingestion, send normalized documents to `POST /ingest/webhooks`
 from your connector or automation. The core OSS worker schedules `local_repo`,
 `git_repo`, and markdown source configs. Other source systems should use a thin

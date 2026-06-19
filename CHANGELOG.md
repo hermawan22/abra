@@ -16,13 +16,16 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Add retrieval source-diversity scoring so working-memory verification can flag packets dominated by one source.
 - Add structured verifier `required_actions` so agents can respond to weak, partial, or unsafe memory packets without parsing recommendation text.
 - Add bounded Prometheus counters for verifier `required_actions` so operators can see recurring agent-blocking causes without exposing scopes, tasks, queries, or recommendation text.
+- Add configurable `--wait-timeout` / `ABRA_CLI_WAIT_TIMEOUT` for queued source ingestion waits.
 
 ### Changed
 
 - Make `abra doctor` and `abra mcp install-codex` validate that the MCP endpoint exposes `discover_scopes` and `working_memory_compose`.
 - Improve `abra doctor`, `abra scope`, and `abra mcp install-codex` guidance for Codex token env, exact scope matching, model config, and local model readiness.
+- Make `abra doctor` check macOS launch-environment token visibility for Codex Desktop separately from the current shell.
 - Prefer query-form working-memory MCP resources so scopes containing slashes are preserved.
 - Improve chunk splitting and embedding batch token estimation for oversized paragraphs, minified JSON, and dense code.
+- Expand default `--code` ingestion includes to supported code files repo-wide instead of only `src` JavaScript/TypeScript paths.
 - Gate low-confidence retrieval on lexical and semantic relevance signal instead of allowing boosted rank alone to make weak matches look strong, while preserving moderate rank-only compatibility paths.
 - Make `abra setup --openai/--compatible --no-start` print provider-appropriate next steps instead of telling users to start local models.
 - Rewrite loopback custom embedding provider URLs to `host.docker.internal` in setup/config flows so Dockerized Abra services can reach host-served models.
@@ -32,6 +35,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 ### Fixed
 
 - Align the self-host smoke test with the query-form working-memory MCP resource template used to preserve scopes containing slashes.
+- Validate the Abra MCP endpoint before mutating Codex MCP config during `abra mcp install-codex`.
 
 ### Security
 

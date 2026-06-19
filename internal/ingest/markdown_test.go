@@ -114,7 +114,6 @@ func TestLocalRepoMarkdownIngestorCanIncludeCode(t *testing.T) {
 		Scope:       "repo:app",
 		Include:     []string{"README.md"},
 		IncludeCode: true,
-		CodeInclude: []string{"src/**/*.tsx", "internal/**/*.go"},
 	})
 	if err != nil {
 		t.Fatal(err)

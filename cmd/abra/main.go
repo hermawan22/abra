@@ -631,6 +631,7 @@ func doctor(ctx context.Context, args cliArgs) error {
 	checks = append(checks, modelConfigCheck(args))
 	checks = append(checks, localEmbeddingCheck(ctx, args))
 	checks = append(checks, codexMCPClientCheck(args))
+	checks = append(checks, codexLaunchEnvCheck(args))
 	result, code, err := getJSON(ctx, args, "/readyz")
 	if err != nil || code < 200 || code >= 300 {
 		checks = append(checks, map[string]any{"name": "readyz", "ok": false, "status": code, "hint": "run: abra up"})
@@ -760,6 +761,49 @@ func codexMCPClientCheck(args cliArgs) map[string]any {
 	}
 	check["ok"] = true
 	check["detail"] = tokenEnv + " is set in this shell; restart Codex Desktop if this changed after Codex launched"
+	return check
+}
+
+func codexLaunchEnvCheck(args cliArgs) map[string]any {
+	tokenEnv := flag(args, "token-env", "ABRA_API_TOKEN")
+	check := map[string]any{
+		"name":      "codex_desktop_launch_env",
+		"token_env": tokenEnv,
+	}
+	if runtime.GOOS != "darwin" {
+		check["ok"] = true
+		check["skipped"] = true
+		check["detail"] = "macOS launch environment check only applies to Codex Desktop on macOS"
+		return check
+	}
+	expectedToken := cfg(args).Token
+	if strings.TrimSpace(expectedToken) == "" {
+		check["ok"] = false
+		check["detail"] = "Abra token is empty"
+		check["hint"] = "run: abra setup, then abra mcp install-codex"
+		return check
+	}
+	actualToken, err := commandOutput("launchctl", "getenv", tokenEnv)
+	if err != nil {
+		check["ok"] = false
+		check["detail"] = "could not read macOS launch environment: " + err.Error()
+		check["hint"] = "run: abra mcp install-codex, or export " + tokenEnv + " before launching terminal Codex"
+		return check
+	}
+	actualToken = strings.TrimSpace(actualToken)
+	switch {
+	case actualToken == "":
+		check["ok"] = false
+		check["detail"] = tokenEnv + " is not set in the macOS launch environment used by Codex Desktop"
+		check["hint"] = "run: abra mcp install-codex, then fully quit and reopen Codex Desktop"
+	case actualToken != expectedToken:
+		check["ok"] = false
+		check["detail"] = tokenEnv + " in macOS launch environment does not match the active Abra env token"
+		check["hint"] = "rerun: " + codexInstallCommand(tokenEnv) + ", then fully quit and reopen Codex Desktop"
+	default:
+		check["ok"] = true
+		check["detail"] = tokenEnv + " is set for Codex Desktop launches; fully reopen Codex if it was already running"
+	}
 	return check
 }
 
@@ -1345,6 +1389,10 @@ func installCodexMCP(ctx context.Context, args cliArgs) error {
 	if err := runQuiet(codex, "mcp", "list"); err != nil {
 		return fmt.Errorf("Codex CLI could not read its MCP configuration: %w\nFix the Codex config, then retry `abra mcp install-codex`", err)
 	}
+	toolCount, err := validateMCPTools(ctx, args)
+	if err != nil {
+		return fmt.Errorf("Abra MCP endpoint validation failed before changing Codex config: %w\n\nRecovery:\n  1. Start or repair Abra: abra up\n  2. Check API, MCP, token env, and model readiness: abra doctor\n  3. If local embeddings are not ready: abra models status && abra models up\n  4. Retry after the endpoint is ready: %s", err, codexInstallCommand(tokenEnv))
+	}
 	launchctlWarning := ""
 	if runtime.GOOS == "darwin" {
 		if err := runQuiet("launchctl", "setenv", tokenEnv, token); err != nil {
@@ -1355,10 +1403,6 @@ func installCodexMCP(ctx context.Context, args cliArgs) error {
 	_ = runQuiet(codex, "mcp", "remove", "abra")
 	if err := runQuiet(codex, "mcp", "add", "abra", "--url", strings.TrimRight(cfg(args).BaseURL, "/")+"/mcp", "--bearer-token-env-var", tokenEnv); err != nil {
 		return fmt.Errorf("codex mcp add failed: %w", err)
-	}
-	toolCount, err := validateMCPTools(ctx, args)
-	if err != nil {
-		return fmt.Errorf("codex mcp config was written, but Abra MCP endpoint validation failed: %w\n\nRecovery:\n  1. Start or repair Abra: abra up\n  2. Check API, MCP, token env, and model readiness: abra doctor\n  3. If local embeddings are not ready: abra models status && abra models up\n  4. Reinstall after the endpoint is ready: %s\n\nCodex reads the bearer token from %s. Fully quit and reopen Codex Desktop after changing that env var.", err, codexInstallCommand(tokenEnv), tokenEnv)
 	}
 	fmt.Println("Installed Abra MCP for Codex:")
 	fmt.Println("  url:       " + strings.TrimRight(cfg(args).BaseURL, "/") + "/mcp")
@@ -1419,6 +1463,9 @@ func mcpToolNames(result map[string]any) map[string]bool {
 }
 
 func codexCommandPath() (string, error) {
+	if override := strings.TrimSpace(os.Getenv("ABRA_CODEX_COMMAND")); override != "" {
+		return override, nil
+	}
 	macPath := "/Applications/Codex.app/Contents/Resources/codex"
 	if runtime.GOOS == "darwin" && fileExists(macPath) {
 		return macPath, nil
@@ -1978,7 +2025,9 @@ func localFileURL(root, relPath string) string {
 }
 
 func waitForSourceJob(ctx context.Context, args cliArgs, scope, sourceID string) error {
-	for i := 0; i < 60; i++ {
+	timeout := waitTimeout(args)
+	deadline := time.Now().Add(timeout)
+	for {
 		path := "/ingestion/jobs?scope=" + urlQueryEscape(scope) + "&source_config_id=" + urlQueryEscape(sourceID) + "&limit=1"
 		result, _, err := getJSON(ctx, args, path)
 		if err == nil {
@@ -1996,9 +2045,24 @@ func waitForSourceJob(ctx context.Context, args cliArgs, scope, sourceID string)
 				fmt.Println("Job " + status + "...")
 			}
 		}
+		if time.Now().After(deadline) {
+			break
+		}
 		time.Sleep(time.Second)
 	}
-	return errors.New("job did not finish within 60s; run `abra jobs --scope " + scope + "`")
+	return errors.New("job did not finish within " + timeout.String() + "; run `abra jobs --scope " + scope + "`")
+}
+
+func waitTimeout(args cliArgs) time.Duration {
+	value := firstNonEmpty(flag(args, "wait-timeout", ""), flag(args, "timeout", ""), os.Getenv("ABRA_CLI_WAIT_TIMEOUT"))
+	if value == "" {
+		return time.Minute
+	}
+	timeout, err := time.ParseDuration(value)
+	if err != nil || timeout <= 0 {
+		return time.Minute
+	}
+	return timeout
 }
 
 func stringValue(value any, fallback string) string {
@@ -2098,8 +2162,8 @@ Usage:
   abra ingest ./notes.md
   abra ingest --scope repo:demo --text "Agents should use Abra" [--title Intro]
   abra ingest --git https://github.com/owner/repo.git [--ref main] [--scope repo:demo]
-  abra watch local --scope repo:demo --path . [--wait]
-  abra watch git --scope repo:demo --git https://github.com/owner/repo.git [--wait]
+  abra watch local --scope repo:demo --path . [--wait] [--wait-timeout 10m]
+  abra watch git --scope repo:demo --git https://github.com/owner/repo.git [--wait] [--wait-timeout 10m]
   abra sources [--scope repo:demo]
   abra jobs [--scope repo:demo]
   abra think "What should agents use?"
@@ -2142,7 +2206,8 @@ Source ingestion flags:
   --include        comma-separated document globs, default **/*.md
   --exclude        comma-separated exclude globs
   --code           also ingest code intelligence from supported code files
-  --wait           wait up to 60s for the queued worker job when using --git
+  --wait           wait for the queued worker job when using --git
+  --wait-timeout   max wait for queued worker jobs, default 1m
   --timeout        HTTP timeout for direct local ingest, default 10m
 `
 	case "config":
@@ -2188,13 +2253,14 @@ onboarding, or abra up for non-interactive stack startup.
 `
 	case "watch", "source":
 		return `Usage:
-  abra watch local --scope repo:demo --path . [--include "**/*.md"] [--code] [--wait]
-  abra watch git --scope repo:demo --git https://github.com/owner/repo.git [--ref main] [--wait]
+  abra watch local --scope repo:demo --path . [--include "**/*.md"] [--code] [--wait] [--wait-timeout 10m]
+  abra watch git --scope repo:demo --git https://github.com/owner/repo.git [--ref main] [--wait] [--wait-timeout 10m]
 
 This creates or updates a source config, then enqueues an ingestion job.
 The OSS worker supports markdown, local_repo, and git_repo. External systems
 such as Jira, Confluence, Slack, and Drive should push normalized documents
 through the HTTP/MCP ingestion API or a deployment-specific connector overlay.
+Use --wait-timeout or ABRA_CLI_WAIT_TIMEOUT for slow local model or large repo runs.
 `
 	case "sources":
 		return `Usage:

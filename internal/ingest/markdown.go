@@ -153,16 +153,17 @@ func codeInclude(source SourceSpec) []string {
 	}
 	return []string{
 		"package.json",
-		"src/**/*.js",
-		"src/**/*.jsx",
-		"src/**/*.ts",
-		"src/**/*.tsx",
+		"**/*.go",
+		"**/*.js",
+		"**/*.jsx",
+		"**/*.ts",
+		"**/*.tsx",
 	}
 }
 
 func defaultSkipDir(rel string) bool {
 	switch filepath.Base(rel) {
-	case ".git", "node_modules", "dist", "build", "coverage", ".next", ".turbo":
+	case ".git", ".cache", ".next", ".turbo", "build", "coverage", "dist", "node_modules", "target", "vendor":
 		return true
 	default:
 		return false
