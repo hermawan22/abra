@@ -915,17 +915,28 @@ func codexMCPClientCheck(args cliArgs) map[string]any {
 		check["ok"] = false
 		check["detail"] = tokenEnv + " is not set in this shell; Codex also needs it in the Codex process environment"
 		check["hint"] = "run: abra mcp install-codex, fully quit and reopen Codex Desktop, or export " + tokenEnv + " before launching terminal Codex"
+		check["next"] = codexMCPRecoverySteps(args, tokenEnv)
 		return check
 	}
 	if actualToken != expectedToken {
 		check["ok"] = false
 		check["detail"] = tokenEnv + " is set but does not match the active Abra env token"
 		check["hint"] = "rerun: " + codexInstallCommand(tokenEnv) + ", then fully quit and reopen Codex Desktop"
+		check["next"] = codexMCPRecoverySteps(args, tokenEnv)
 		return check
 	}
 	check["ok"] = true
 	check["detail"] = tokenEnv + " is set in this shell; restart Codex Desktop if this changed after Codex launched"
 	return check
+}
+
+func codexMCPRecoverySteps(args cliArgs, tokenEnv string) []string {
+	return []string{
+		codexInstallCommand(tokenEnv),
+		"fully quit and reopen Codex Desktop",
+		"for terminal Codex: set -a; source " + shellQuote(envPath(args)) + "; set +a; codex",
+		"then run: abra agents verify . --scope " + shellQuote(scopeOrDefault(args, ".")),
+	}
 }
 
 func codexLaunchEnvCheck(args cliArgs) map[string]any {
@@ -1008,6 +1019,12 @@ func printDoctor(args cliArgs, checks []map[string]any) error {
 		}
 		if hint := stringValue(check["hint"], ""); hint != "" {
 			fmt.Println("hint " + hint)
+		}
+		if next, ok := check["next"].([]string); ok && len(next) > 0 {
+			fmt.Println("next")
+			for _, step := range next {
+				fmt.Println("  - " + step)
+			}
 		}
 		if errText := stringValue(check["error"], ""); errText != "" {
 			fmt.Println("err  " + errText)
@@ -2857,6 +2874,14 @@ Common flags:
   --token dev-token
   --json
 
+First run:
+  abra setup
+  abra scope
+  abra ingest . --code --scope <scope-from-abra-scope>
+  abra agents verify . --scope <scope-from-abra-scope>
+  abra think "What should I know before changing this project?" --scope <scope-from-abra-scope>
+  abra mcp install-codex
+
 Abra is CLI + MCP only. No browser UI is shipped.
 `
 }
@@ -3034,8 +3059,8 @@ preflight checks that should exit non-zero when any check is not ok.
   abra setup --yes --no-models
   abra setup --local
   abra setup --openai --api-key-stdin
-  abra setup --compatible --base-url <url> --embedding-model <model> [--api-key-stdin]
-  abra setup --provider compatible --base-url <url> --embedding-model <model>
+  abra setup --compatible --embedding-base-url <url> --embedding-model <model> [--api-key-stdin]
+  abra setup --provider compatible --embedding-base-url <url> --embedding-model <model>
   abra setup --yes --no-start
 
 Guided first-run onboarding. It checks prerequisites, creates the runtime env,
@@ -3049,7 +3074,8 @@ use abra models status and abra models up when you want to inspect or repair it
 directly.
 
 Common setup flags:
-  --base-url            embedding provider base URL
+  --embedding-base-url  embedding provider base URL
+  --base-url            legacy alias for --embedding-base-url during setup
   --embedding-model     embedding model name
   --model               provider selector or legacy embedding model alias
   --dimensions          embedding dimensions

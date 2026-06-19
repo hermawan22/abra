@@ -45,7 +45,7 @@ ABRA_PORT=18080
 The Compose file uses its bundled Postgres service unless `ABRA_DATABASE_URL` is set. To point Compose at managed Postgres with `pgvector`, add:
 
 ```text
-ABRA_DATABASE_URL=postgres://user:password@postgres.example.internal:5432/abra
+ABRA_DATABASE_URL=postgres://user:password@postgres.example.invalid:5432/abra
 ```
 
 Install:
@@ -302,7 +302,7 @@ Supported filters are `scope`, `event_type` or `type`, `target_type`, `since`, `
 The worker can also push audit events to an HTTP/SIEM sink without adding another service:
 
 ```text
-ABRA_AUDIT_SINK_URL=https://siem.example.internal/abra/audit
+ABRA_AUDIT_SINK_URL=https://siem.example.invalid/abra/audit
 ABRA_AUDIT_SINK_TOKEN=replace-with-sink-token
 ABRA_AUDIT_SINK_SECRET=replace-with-hmac-secret
 ABRA_AUDIT_SINK_SCOPE=team:example

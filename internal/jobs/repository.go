@@ -368,7 +368,8 @@ func (r *Repository) DocumentState(ctx context.Context, doc ingest.Document) (Do
 	err := r.pool.QueryRow(ctx, `
 		SELECT content_checksum,
 		       COALESCE(metadata->>'ingest_checksum', ''),
-		       COALESCE(metadata->>'ingest_fingerprint', '')
+		       COALESCE(metadata->>'ingest_fingerprint', ''),
+		       COALESCE(metadata->>'ingest_complete' = 'true', false)
 		FROM documents
 		WHERE source_type = $1
 		  AND source_url = $2
@@ -378,6 +379,7 @@ func (r *Repository) DocumentState(ctx context.Context, doc ingest.Document) (Do
 		&state.ContentChecksum,
 		&state.IngestChecksum,
 		&state.IngestFingerprint,
+		&state.IngestComplete,
 	)
 	if err == pgx.ErrNoRows {
 		return DocumentState{}, nil

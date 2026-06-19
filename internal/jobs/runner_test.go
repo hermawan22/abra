@@ -37,6 +37,7 @@ func TestRunnerIngestsOnlyChangedDocuments(t *testing.T) {
 			"README.md": {
 				Found:             true,
 				IngestFingerprint: ingest.Fingerprint("docs", "README.md", unchangedChecksum),
+				IngestComplete:    true,
 			},
 		},
 	}
@@ -78,6 +79,27 @@ func TestRunnerIngestsOnlyChangedDocuments(t *testing.T) {
 	}
 	if !store.success {
 		t.Fatal("source success was not recorded")
+	}
+}
+
+func TestUnchangedRequiresCompletedIngest(t *testing.T) {
+	doc := ingest.Document{
+		Checksum:    "checksum",
+		Fingerprint: "fingerprint",
+	}
+	state := DocumentState{
+		Found:             true,
+		ContentChecksum:   doc.Checksum,
+		IngestChecksum:    doc.Checksum,
+		IngestFingerprint: doc.Fingerprint,
+		IngestComplete:    false,
+	}
+	if unchanged(doc, state) {
+		t.Fatal("document with incomplete prior ingest must not be skipped")
+	}
+	state.IngestComplete = true
+	if !unchanged(doc, state) {
+		t.Fatal("completed matching document should be skipped")
 	}
 }
 

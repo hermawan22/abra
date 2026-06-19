@@ -38,6 +38,7 @@ type DocumentState struct {
 	ContentChecksum   string
 	IngestChecksum    string
 	IngestFingerprint string
+	IngestComplete    bool
 }
 
 type DocumentIngestor interface {
@@ -377,6 +378,9 @@ func heartbeatLoopErr(errs <-chan error) error {
 
 func unchanged(doc ingest.Document, state DocumentState) bool {
 	if !state.Found {
+		return false
+	}
+	if !state.IngestComplete {
 		return false
 	}
 	if state.IngestFingerprint != "" {

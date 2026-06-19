@@ -8,10 +8,21 @@ STAMP="$(date -u +%Y%m%d%H%M%S)"
 SCOPE="${ABRA_SMOKE_SCOPE:-team:smoke:${STAMP}}"
 SOURCE_NAME="smoke-${STAMP}"
 SOURCE_URL="file://abra-smoke-${STAMP}.md"
-WEBHOOK_SOURCE_URL="https://jira.example.local/browse/ABRA-${STAMP}"
+WEBHOOK_SOURCE_URL="https://jira.example.invalid/browse/ABRA-${STAMP}"
 
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
+
+case "$BASE_URL" in
+  http://127.0.0.1:*|http://localhost:*|http://[::1]:*)
+    ;;
+  *)
+    if [[ -z "${ABRA_API_TOKEN:-}" && "${ABRA_ALLOW_DEV_TOKEN:-}" != "1" ]]; then
+      echo "ABRA_API_TOKEN is required when ABRA_BASE_URL is not loopback. Set ABRA_ALLOW_DEV_TOKEN=1 only for isolated test environments." >&2
+      exit 1
+    fi
+    ;;
+esac
 
 json_get() {
   local path="$1"
@@ -1102,7 +1113,7 @@ if (Array.isArray(codeRefreshRelationsUpdated.relations) && codeRefreshRelations
 if (!Array.isArray(codeRefreshRelationsUpdated.relations) || !codeRefreshRelationsUpdated.relations.some((relation) => relation.to_entity === "example-ui-kit" && relation.status === "active")) {
   throw new Error("code source refresh did not create the replacement example-ui-kit active relation");
 }
-if (webhook.accepted !== 1 || !Array.isArray(webhook.documents) || webhook.documents[0].source_url !== "https://jira.example.local/browse/ABRA-" + process.env.STAMP) {
+if (webhook.accepted !== 1 || !Array.isArray(webhook.documents) || webhook.documents[0].source_url !== "https://jira.example.invalid/browse/ABRA-" + process.env.STAMP) {
   throw new Error("signed webhook did not ingest exactly one connector document");
 }
 if (!webhook.documents[0].ingestion_job_id || webhook.documents[0].job_status !== "succeeded") {

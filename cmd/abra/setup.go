@@ -84,11 +84,28 @@ func setup(ctx context.Context, args cliArgs) error {
 	if _, err := exec.LookPath("docker"); err != nil {
 		return errors.New("missing required command: docker")
 	}
-	if err := up(ctx, args); err != nil {
+	if err := up(ctx, setupStackArgs(args)); err != nil {
 		return err
 	}
 	fmt.Println("Local stack is ready.")
 	return nil
+}
+
+func setupStackArgs(args cliArgs) cliArgs {
+	out := cliArgs{
+		Command: args.Command,
+		Flags:   map[string]string{},
+		Bools:   map[string]bool{},
+		Rest:    append([]string(nil), args.Rest...),
+	}
+	for key, value := range args.Flags {
+		out.Flags[key] = value
+	}
+	for key, value := range args.Bools {
+		out.Bools[key] = value
+	}
+	delete(out.Flags, "base-url")
+	return out
 }
 
 func setupUsesLocalEmbeddings(args cliArgs) bool {
@@ -225,7 +242,7 @@ func setupEmbeddingModel(args cliArgs, fallback string) string {
 }
 
 func setupLocalNeuralEmbeddings(args cliArgs, reader *bufio.Reader, interactive bool) error {
-	baseURL := firstNonEmpty(flag(args, "base-url", ""), defaultEmbeddingBaseURL)
+	baseURL := setupEmbeddingBaseURL(args, defaultEmbeddingBaseURL)
 	model := setupEmbeddingModel(args, defaultServedModelName)
 	dimensions := firstNonEmpty(flag(args, "dimensions", ""), "1024")
 	rerankerProvider := firstNonEmpty(flag(args, "reranker-provider", ""), "")
@@ -293,14 +310,14 @@ func setupLocalNeuralEmbeddings(args cliArgs, reader *bufio.Reader, interactive 
 }
 
 func setupOpenAIEmbeddings(args cliArgs, reader *bufio.Reader, interactive bool) error {
-	args.Flags["base-url"] = firstNonEmpty(flag(args, "base-url", ""), "https://api.openai.com/v1")
+	args.Flags["embedding-base-url"] = setupEmbeddingBaseURL(args, "https://api.openai.com/v1")
 	args.Flags["embedding-model"] = setupEmbeddingModel(args, "text-embedding-3-small")
 	args.Flags["dimensions"] = firstNonEmpty(flag(args, "dimensions", ""), "1536")
 	return setupCompatibleEmbeddings(args, reader, interactive)
 }
 
 func setupCompatibleEmbeddings(args cliArgs, reader *bufio.Reader, interactive bool) error {
-	baseURL := firstNonEmpty(flag(args, "base-url", ""), "https://api.openai.com/v1")
+	baseURL := setupEmbeddingBaseURL(args, "https://api.openai.com/v1")
 	model := setupEmbeddingModel(args, "text-embedding-3-small")
 	dimensions := firstNonEmpty(flag(args, "dimensions", ""), "1536")
 	apiKey := flag(args, "api-key", "")
@@ -355,6 +372,10 @@ func setupCompatibleEmbeddings(args cliArgs, reader *bufio.Reader, interactive b
 	}
 	fmt.Println("After changing embedding providers, re-ingest important sources so vector recall uses the new embedding space.")
 	return nil
+}
+
+func setupEmbeddingBaseURL(args cliArgs, fallback string) string {
+	return firstNonEmpty(flag(args, "embedding-base-url", ""), flag(args, "base-url", ""), fallback)
 }
 
 func promptDefault(reader *bufio.Reader, label, fallback string) (string, error) {

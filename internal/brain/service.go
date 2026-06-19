@@ -352,6 +352,7 @@ func (s *Service) IngestDocument(ctx context.Context, input IngestDocumentInput)
 	if s.cfg.RedactPII {
 		content = redact(content)
 	}
+	metadata := mergeMetadata(input.Metadata, map[string]any{"ingest_complete": false})
 	sourceConfigID := metadataString(input.Metadata, "source_config_id")
 	ingestionJobID := metadataString(input.Metadata, "ingestion_job_id")
 	authority := metadataString(input.Metadata, "authority")
@@ -375,7 +376,7 @@ func (s *Service) IngestDocument(ctx context.Context, input IngestDocumentInput)
 		SourceUpdatedAt: input.SourceUpdatedAt,
 		Authority:       authority,
 		AuthorityScore:  authorityScore,
-		Metadata:        input.Metadata,
+		Metadata:        metadata,
 	})
 	if err != nil {
 		return IngestDocumentResult{}, err
@@ -527,6 +528,9 @@ func (s *Service) IngestDocument(ctx context.Context, input IngestDocumentInput)
 	}
 	summaryCount += summaries
 	_ = s.db.InsertAuditEvent(ctx, "document.ingested", "document", documentID, input.Scope, input.SourceURL, map[string]any{"chunks": len(chunks), "claims": len(claims), "deprecated_claims": deprecatedClaimCount, "deprecated_relations": deprecatedRelationCount, "deleted_summaries": deletedSummaryCount, "conflicts": conflictCount, "entities": entityCount, "relations": relationCount, "summaries": summaryCount})
+	if err := s.db.MarkDocumentIngestComplete(ctx, documentID); err != nil {
+		return IngestDocumentResult{}, err
+	}
 
 	return IngestDocumentResult{DocumentID: documentID, Chunks: len(chunks), Claims: len(claims), DeprecatedClaims: deprecatedClaimCount, DeprecatedRelations: deprecatedRelationCount, DeletedSummaries: deletedSummaryCount, Conflicts: conflictCount, Entities: entityCount, Relations: relationCount, Summaries: summaryCount}, nil
 }

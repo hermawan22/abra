@@ -26,6 +26,6 @@ We pledge to make participation in this project a harassment-free experience for
 
 Project maintainers are responsible for clarifying and enforcing standards of acceptable behavior. Maintainers may remove, edit, or reject comments, commits, code, wiki edits, issues, and other contributions that are not aligned with this Code of Conduct.
 
-Instances of abusive, harassing, or otherwise unacceptable behavior may be reported privately to the project maintainers through GitHub Discussions, a private maintainer contact listed on the repository owner profile, or GitHub private vulnerability reporting when the report also includes a security concern.
+Instances of abusive, harassing, or otherwise unacceptable behavior should be reported privately to the project maintainers through a private maintainer contact listed on the repository owner profile. Do not use public GitHub Discussions for private reports. If the report also includes a security concern, use GitHub private vulnerability reporting for this repository.
 
 This Code of Conduct is adapted from the Contributor Covenant, version 2.1.

@@ -100,7 +100,7 @@ After ingesting the project with the exact scope printed by `abra scope`, `abra 
 Connect a custom compatible embedding provider during setup without editing env files:
 
 ```sh
-printf '%s' "$PROVIDER_API_KEY" | abra setup --compatible --base-url https://api.example.com/v1 --embedding-model embedding-model --api-key-stdin
+printf '%s' "$PROVIDER_API_KEY" | abra setup --compatible --embedding-base-url https://api.example.com/v1 --embedding-model embedding-model --api-key-stdin
 ```
 
 Try the governed brain:
@@ -728,7 +728,7 @@ Filters: `scope`, `event_type` or `type`, `target_type`, `since`, `until`, `limi
 The worker can also push audit events to an HTTP/SIEM sink. It sends `application/x-ndjson`, optionally signs the body with `x-abra-signature: sha256=<hmac>`, and advances a durable Postgres cursor only after the sink returns 2xx:
 
 ```text
-ABRA_AUDIT_SINK_URL=https://siem.example.internal/abra/audit
+ABRA_AUDIT_SINK_URL=https://siem.example.invalid/abra/audit
 ABRA_AUDIT_SINK_TOKEN=replace-with-sink-token
 ABRA_AUDIT_SINK_SECRET=replace-with-hmac-secret
 ABRA_AUDIT_SINK_SCOPE=team:example

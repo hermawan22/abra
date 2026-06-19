@@ -20,6 +20,16 @@ const maxFailureRate = decimalEnv("ABRA_PERF_MAX_FAILURE_RATE", 0);
 
 const checks = [];
 
+requireTokenForRemoteBaseURL(baseUrl);
+
+function requireTokenForRemoteBaseURL(rawBaseUrl) {
+  const url = new URL(rawBaseUrl);
+  const loopback = ["127.0.0.1", "localhost", "::1", "[::1]"].includes(url.hostname);
+  if (!loopback && !process.env.ABRA_API_TOKEN && process.env.ABRA_ALLOW_DEV_TOKEN !== "1") {
+    throw new Error("ABRA_API_TOKEN is required when ABRA_BASE_URL is not loopback. Set ABRA_ALLOW_DEV_TOKEN=1 only for isolated test environments.");
+  }
+}
+
 function numberEnv(name, fallback) {
   const value = Number(process.env[name] || fallback);
   return Number.isFinite(value) && value > 0 ? value : fallback;

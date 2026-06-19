@@ -560,15 +560,45 @@ func TestPrintDoctorIncludesDetailsAndHints(t *testing.T) {
 	output := captureStdout(t, func() {
 		if err := printDoctor(parseArgs([]string{"doctor"}), []map[string]any{
 			{"name": "model_config", "ok": true, "detail": "provider=local model=embed"},
-			{"name": "codex_mcp_client", "ok": false, "detail": "ABRA_API_TOKEN is not set", "hint": "run: abra mcp install-codex"},
+			{
+				"name":   "codex_mcp_client",
+				"ok":     false,
+				"detail": "ABRA_API_TOKEN is not set",
+				"hint":   "run: abra mcp install-codex",
+				"next": []string{
+					"abra mcp install-codex",
+					"for terminal Codex: set -a; source .tmp/quickstart.env; set +a; codex",
+				},
+			},
 		}); err != nil {
 			t.Fatalf("printDoctor error = %v", err)
 		}
 	})
-	for _, want := range []string{"ok  model_config", "info provider=local model=embed", "warn  codex_mcp_client", "hint run: abra mcp install-codex"} {
+	for _, want := range []string{"ok  model_config", "info provider=local model=embed", "warn  codex_mcp_client", "hint run: abra mcp install-codex", "next", "for terminal Codex: set -a"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("doctor output missing %q:\n%s", want, output)
 		}
+	}
+}
+
+func TestCodexMCPRecoveryStepsDoNotPrintToken(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+	secret := "super-secret-token"
+	mustWrite(t, filepath.Join(home, "quickstart.env"), "ABRA_API_TOKEN="+secret+"\n")
+
+	steps := codexMCPRecoverySteps(parseArgs([]string{"doctor"}), "ABRA_API_TOKEN")
+	encoded, err := json.Marshal(steps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), secret) {
+		t.Fatalf("doctor recovery leaked token: %s", encoded)
+	}
+	if !strings.Contains(string(encoded), "source") || !strings.Contains(string(encoded), "quickstart.env") {
+		t.Fatalf("doctor recovery missing terminal Codex source guidance: %s", encoded)
 	}
 }
 
@@ -638,6 +668,27 @@ func TestSetupNormalizesAggressiveWorkerInterval(t *testing.T) {
 	}
 	if values["WORKER_INTERVAL"] != "30s" {
 		t.Fatalf("worker interval = %q\noutput:\n%s", values["WORKER_INTERVAL"], output)
+	}
+}
+
+func TestSetupStackArgsDropProviderBaseURL(t *testing.T) {
+	args := parseArgs([]string{
+		"setup",
+		"--compatible",
+		"--base-url", "https://models.example.invalid/v1",
+		"--embedding-base-url", "https://models.example.invalid/v2",
+		"--token", "test-token",
+		"--env-file", ".tmp/custom.env",
+	})
+	stackArgs := setupStackArgs(args)
+	if got := flag(stackArgs, "base-url", ""); got != "" {
+		t.Fatalf("stack base-url = %q, want empty", got)
+	}
+	if got := flag(stackArgs, "embedding-base-url", ""); got != "https://models.example.invalid/v2" {
+		t.Fatalf("embedding-base-url = %q", got)
+	}
+	if cfg(stackArgs).Token != "test-token" || cfg(stackArgs).EnvFile != ".tmp/custom.env" {
+		t.Fatalf("stack args lost runtime flags: %+v", cfg(stackArgs))
 	}
 }
 

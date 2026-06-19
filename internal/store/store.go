@@ -626,6 +626,16 @@ func (s *Store) UpsertDocument(ctx context.Context, record DocumentRecord) (stri
 	return id, err
 }
 
+func (s *Store) MarkDocumentIngestComplete(ctx context.Context, documentID string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE documents
+		SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{ingest_complete}', 'true'::jsonb, true),
+		    ingested_at = now()
+		WHERE id = $1
+	`, documentID)
+	return err
+}
+
 func (s *Store) ReplaceChunks(ctx context.Context, documentID, scope string, chunks []ChunkRecord) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {

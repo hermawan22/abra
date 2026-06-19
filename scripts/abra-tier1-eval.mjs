@@ -22,6 +22,16 @@ const artifacts = {
   isolated_source_url: isolatedSourceUrl
 };
 
+requireTokenForRemoteBaseURL(baseUrl);
+
+function requireTokenForRemoteBaseURL(rawBaseUrl) {
+  const url = new URL(rawBaseUrl);
+  const loopback = ["127.0.0.1", "localhost", "::1", "[::1]"].includes(url.hostname);
+  if (!loopback && !process.env.ABRA_API_TOKEN && process.env.ABRA_ALLOW_DEV_TOKEN !== "1") {
+    throw new Error("ABRA_API_TOKEN is required when ABRA_BASE_URL is not loopback. Set ABRA_ALLOW_DEV_TOKEN=1 only for isolated test environments.");
+  }
+}
+
 async function request(path, { method = "GET", body, expectStatus = 200, text = false } = {}) {
   const response = await fetch(`${baseUrl}${path}`, {
     method,

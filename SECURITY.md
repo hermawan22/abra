@@ -40,7 +40,7 @@ artifacts.
 
 ## Reporting Issues
 
-Report security issues privately to the maintainers. Use GitHub private vulnerability reporting when it is enabled for the repository; otherwise contact the repository owner privately through GitHub before sharing details. Do not file public issues for vulnerabilities, leaked secrets, database dumps, embeddings, or audit records.
+Report security issues privately through GitHub private vulnerability reporting for this repository: `https://github.com/hermawan22/abra/security/advisories/new`. If that flow is unavailable in a fork, contact the fork maintainer privately before sharing details. Do not file public issues for vulnerabilities, leaked secrets, database dumps, embeddings, or audit records.
 
 Deployment forks should also follow their own incident and security process.
 
