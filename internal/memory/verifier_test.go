@@ -265,6 +265,58 @@ func TestVerifyPacketWeakWhenRetrievalSignalIsLow(t *testing.T) {
 	}
 }
 
+func TestVerifyPacketWeakWhenBoostedRankHasNoRelevanceSignal(t *testing.T) {
+	source := "file://source.md"
+	report := verifyPacket(
+		testSummaries(source),
+		[]store.ClaimResult{
+			{ID: "claim-1", Claim: "Boosted but not actually matched.", Status: "verified", Source: &source, Rank: 1.5, TextScore: 0, VectorScore: 0, Freshness: "fresh"},
+		},
+		[]store.DocumentResult{{ID: "doc-1", Title: "Boosted", Source: source, Content: "Boosted authority result.", Rank: 1.2, TextScore: 0, VectorScore: 0}},
+		[]store.RelationResult{{FromEntity: "A", ToEntity: "B", Type: "uses", Confidence: 0.8, SourceURL: &source}},
+		[]EvidenceItem{{SourceURL: source, Count: 2}},
+		testRetrievalPlan(1),
+		nil,
+		nil,
+		nil,
+	)
+	if report.Verdict != "weak" || !report.ActionRequired || !report.RetrievalQuality.LowConfidence {
+		t.Fatalf("boosted rank without lexical/vector relevance should be weak and action-required: %#v", report)
+	}
+	if report.RetrievalQuality.TopRankScore < 1 {
+		t.Fatalf("test should preserve boosted rank while still flagging low confidence: %#v", report.RetrievalQuality)
+	}
+	if check, ok := findCheck(report.Checks, "retrieval_quality"); !ok || check.Status != "review" || !strings.Contains(check.Message, "very low lexical and semantic relevance signal") {
+		t.Fatalf("boosted low-signal retrieval quality check wrong: %#v ok=%v", check, ok)
+	}
+	if !contains(report.RequiredActions, "rerun_with_more_specific_query") || !contains(report.RequiredActions, "check_embeddings_or_reindex") {
+		t.Fatalf("boosted low-signal required actions missing: %#v", report.RequiredActions)
+	}
+}
+
+func TestVerifyPacketAllowsModerateRankOnlyCompatibility(t *testing.T) {
+	source := "file://source.md"
+	report := verifyPacket(
+		testSummaries(source),
+		[]store.ClaimResult{
+			{ID: "claim-1", Claim: "Rank-only result from a compatible retriever.", Status: "verified", Source: &source, Rank: 0.4, TextScore: 0, VectorScore: 0, Freshness: "fresh"},
+		},
+		[]store.DocumentResult{{ID: "doc-1", Title: "Rank only", Source: source, Content: "Rank-only source chunk.", Rank: 0.4, TextScore: 0, VectorScore: 0}},
+		[]store.RelationResult{{FromEntity: "A", ToEntity: "B", Type: "uses", Confidence: 0.8, SourceURL: &source}},
+		[]EvidenceItem{{SourceURL: source, Count: 2}},
+		testRetrievalPlan(1),
+		nil,
+		nil,
+		nil,
+	)
+	if report.RetrievalQuality.LowConfidence {
+		t.Fatalf("moderate rank-only compatibility path should not be low confidence: %#v", report.RetrievalQuality)
+	}
+	if check, ok := findCheck(report.Checks, "retrieval_quality"); !ok || check.Status != "pass" || !strings.Contains(check.Message, "ranking signal is strong enough") {
+		t.Fatalf("rank-only retrieval quality check wrong: %#v ok=%v", check, ok)
+	}
+}
+
 func TestVerifyPacketPartialWhenManyResultsComeFromOneSource(t *testing.T) {
 	source := "file://single-source.md"
 	report := verifyPacket(
@@ -315,12 +367,17 @@ func testSummaries(source string) []store.MemorySummaryResult {
 }
 
 func containsCheck(values []VerificationCheck, name string) bool {
+	_, ok := findCheck(values, name)
+	return ok
+}
+
+func findCheck(values []VerificationCheck, name string) (VerificationCheck, bool) {
 	for _, value := range values {
 		if value.Name == name {
-			return true
+			return value, true
 		}
 	}
-	return false
+	return VerificationCheck{}, false
 }
 
 func containsRecommendation(values []string, fragment string) bool {

@@ -417,6 +417,7 @@ func configModelCompatible(args cliArgs, label string) error {
 	if baseURL == "" || model == "" {
 		return errors.New("config model compatible requires --base-url and --model; add --api-key or --api-key-stdin when the provider requires auth")
 	}
+	baseURL = containerReachableBaseURL(strings.TrimSpace(baseURL))
 	if err := updateEnvValues(args, map[string]string{
 		"EMBEDDING_PROVIDER":                   "compatible",
 		"EMBEDDING_BASE_URL":                   baseURL,

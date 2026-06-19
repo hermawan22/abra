@@ -218,7 +218,10 @@ func retrievalQuality(facts []store.ClaimResult, docs []store.DocumentResult) Re
 	quality.TopRankScore = round2(quality.TopRankScore)
 	quality.TopTextScore = round2(quality.TopTextScore)
 	quality.TopVectorScore = round2(quality.TopVectorScore)
-	quality.LowConfidence = quality.ResultCount > 0 && quality.TopRankScore < 0.1 && quality.TopTextScore < 0.1 && quality.TopVectorScore < 0.1
+	noLexicalSemanticSignal := quality.TopTextScore < 0.1 && quality.TopVectorScore < 0.1
+	weakRankSignal := quality.TopRankScore < 0.35
+	boostedWithoutRawSignal := quality.TopTextScore == 0 && quality.TopVectorScore == 0 && quality.TopRankScore >= 1
+	quality.LowConfidence = quality.ResultCount > 0 && noLexicalSemanticSignal && (weakRankSignal || boostedWithoutRawSignal)
 	quality.LowSourceDiversity = quality.ResultCount >= 4 && quality.UniqueSources <= 1
 	return quality
 }
@@ -250,7 +253,7 @@ func retrievalQualityCheck(quality RetrievalQuality) VerificationCheck {
 		return VerificationCheck{Name: "retrieval_quality", Status: "missing", Score: 0, Message: "no retrieval results were available for ranking quality"}
 	}
 	if quality.LowConfidence {
-		return VerificationCheck{Name: "retrieval_quality", Status: "review", Score: 0.2, Message: "retrieval results have very low rank, text, and vector signal"}
+		return VerificationCheck{Name: "retrieval_quality", Status: "review", Score: 0.2, Message: "retrieval results have very low lexical and semantic relevance signal"}
 	}
 	if quality.TopTextScore > 0.01 && quality.TopVectorScore > 0.01 {
 		return VerificationCheck{Name: "retrieval_quality", Status: "pass", Score: 1, Message: "retrieval includes lexical and semantic ranking signal"}

@@ -20,6 +20,7 @@ type metricsCollector struct {
 	policies      map[string]int64
 	recall        map[string]int64
 	quality       map[string]*retrievalQualityMetric
+	actions       map[string]int64
 	health        map[string]*memoryHealthMetric
 	healthLookups map[string]int64
 	signals       map[string]int64
@@ -82,6 +83,7 @@ func newMetricsCollector() *metricsCollector {
 		policies:      map[string]int64{},
 		recall:        map[string]int64{},
 		quality:       map[string]*retrievalQualityMetric{},
+		actions:       map[string]int64{},
 		health:        map[string]*memoryHealthMetric{},
 		healthLookups: map[string]int64{},
 		signals:       map[string]int64{},
@@ -132,6 +134,7 @@ func (m *metricsCollector) observeRecall(status string, duration time.Duration, 
 
 func (m *metricsCollector) observeMemory(status string, duration time.Duration, result memory.ComposeResult) {
 	m.observeMemoryRetrievalQuality(status, result.Verification)
+	m.observeRequiredActions("working_memory", status, result.Verification.Verdict, result.AgentDecision.Decision, result.Verification.RequiredActions)
 	m.observeMemoryHealth(status, result.MemoryHealth)
 	m.observeMemoryHealthLookup(status, result.RetrievalTrace)
 	m.observeSmartPath("working_memory", status, result.Verification.Verdict, result.AgentDecision.Decision, duration, smartPathCounts{
@@ -149,6 +152,7 @@ func (m *metricsCollector) observeMemory(status string, duration time.Duration, 
 
 func (m *metricsCollector) observeBrainThink(status string, duration time.Duration, result memory.ThinkResult) {
 	m.observeMemoryRetrievalQuality(status, result.Verification)
+	m.observeRequiredActions("brain_think", status, result.Verification.Verdict, result.AgentDecision.Decision, result.Verification.RequiredActions)
 	m.observeMemoryHealth(status, result.MemoryHealth)
 	m.observeMemoryHealthLookup(status, result.RetrievalTrace)
 	m.observeSmartPath("brain_think", status, result.Verification.Verdict, result.AgentDecision.Decision, duration, smartPathCounts{
@@ -295,6 +299,24 @@ func (m *metricsCollector) observeMemoryRetrievalQuality(status string, report m
 	metric.LastResultCount = int64(quality.ResultCount)
 }
 
+func (m *metricsCollector) observeRequiredActions(operation, status, verdict, decision string, actions []string) {
+	if len(actions) == 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, action := range actions {
+		key := strings.Join([]string{
+			normalizeAgentPolicyMetricValue(operation, "unknown"),
+			normalizeAgentPolicyMetricValue(status, "unknown"),
+			normalizeVerificationVerdict(verdict),
+			normalizeAgentPolicyMetricValue(decision, "unknown"),
+			normalizeRequiredAction(action),
+		}, "\n")
+		m.actions[key]++
+	}
+}
+
 func normalizeRecallMode(value string) string {
 	switch strings.TrimSpace(value) {
 	case "hybrid", "full_text", "full_text_embedding_error", "full_text_empty_embedding", "empty":
@@ -331,6 +353,65 @@ func normalizeRetrievalQuality(quality memory.RetrievalQuality, verdict string) 
 		return "unknown"
 	}
 	return "missing"
+}
+
+func normalizeRequiredAction(value string) string {
+	switch strings.TrimSpace(value) {
+	case "add_evidence",
+		"ask_for_operator_review",
+		"attach_missing_evidence",
+		"change_policy_or_scope_for_acl_change",
+		"change_policy_or_scope_for_agent_write",
+		"change_policy_or_scope_for_backfill",
+		"change_policy_or_scope_for_challenge_claim",
+		"change_policy_or_scope_for_forget_claim",
+		"change_policy_or_scope_for_source_authority_change",
+		"check_embeddings_or_reindex",
+		"check_memory_health_endpoint_and_storage",
+		"cite_evidence",
+		"cite_evidence_and_validate",
+		"cite_source_chunks_and_graph",
+		"clean_up_trust_guard",
+		"corroborate_with_additional_source",
+		"expand_graph_context",
+		"fill_missing_retrieval_layers",
+		"fix_source_configs",
+		"ingest_relevant_sources",
+		"ingest_source_backed_memory",
+		"inspect_ingestion_liveness",
+		"inspect_memory_health",
+		"inspect_related_files_manually",
+		"narrow_scope_or_task",
+		"request_approval_for_acl_change",
+		"request_approval_for_agent_write",
+		"request_approval_for_backfill",
+		"request_approval_for_challenge_claim",
+		"request_approval_for_forget_claim",
+		"request_approval_for_source_authority_change",
+		"rerun_degraded_retrieval",
+		"rerun_retrieval",
+		"rerun_with_more_specific_query",
+		"rerun_working_memory_compose",
+		"refresh_or_challenge_memory",
+		"refresh_stale_sources",
+		"resolve_active_conflicts",
+		"resolve_challenged_claims",
+		"resolve_unsafe_claims",
+		"retrieve_evidence_sources",
+		"retrieve_facts",
+		"retrieve_graph_relations",
+		"retrieve_summaries",
+		"retrieve_supporting_documents",
+		"review_conflict_evidence",
+		"review_graph_warnings",
+		"review_relation_conflicts",
+		"verify_unverified_claims":
+		return strings.TrimSpace(value)
+	case "":
+		return "unknown"
+	default:
+		return "other"
+	}
 }
 
 func normalizeMemoryHealthStatus(value string) string {
@@ -599,6 +680,26 @@ func (m *metricsCollector) prometheus() string {
 	writeRetrievalQualityFloat(&out, "abra_working_memory_retrieval_last_top_text_score", "Last top lexical score observed by working-memory retrieval quality.", "gauge", qualityKeys, m.quality, func(metric *retrievalQualityMetric) float64 { return metric.LastTopText })
 	writeRetrievalQualityFloat(&out, "abra_working_memory_retrieval_last_top_vector_score", "Last top vector score observed by working-memory retrieval quality.", "gauge", qualityKeys, m.quality, func(metric *retrievalQualityMetric) float64 { return metric.LastTopVector })
 	writeRetrievalQualityInt(&out, "abra_working_memory_retrieval_last_result_count", "Last result count observed by working-memory retrieval quality.", qualityKeys, m.quality, func(metric *retrievalQualityMetric) int64 { return metric.LastResultCount })
+
+	actionKeys := make([]string, 0, len(m.actions))
+	for key := range m.actions {
+		actionKeys = append(actionKeys, key)
+	}
+	sort.Strings(actionKeys)
+	out.WriteString("# HELP abra_verification_required_actions_total Total verification required actions returned by smart-memory executions with bounded action labels.\n")
+	out.WriteString("# TYPE abra_verification_required_actions_total counter\n")
+	for _, key := range actionKeys {
+		parts := strings.Split(key, "\n")
+		out.WriteString(fmt.Sprintf(
+			"abra_verification_required_actions_total{operation=%q,status=%q,verdict=%q,decision=%q,action=%q} %d\n",
+			parts[0],
+			parts[1],
+			parts[2],
+			parts[3],
+			parts[4],
+			m.actions[key],
+		))
+	}
 
 	healthKeys := make([]string, 0, len(m.health))
 	for key := range m.health {

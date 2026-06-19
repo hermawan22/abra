@@ -198,9 +198,11 @@ func TestSetupYesNoStartDefaultsLocalQwen(t *testing.T) {
 	t.Setenv("ABRA_HOME", home)
 	t.Chdir(root)
 
-	if err := run(context.Background(), []string{"setup", "--yes", "--no-start"}); err != nil {
-		t.Fatalf("setup error = %v", err)
-	}
+	output := captureStdout(t, func() {
+		if err := run(context.Background(), []string{"setup", "--yes", "--no-start"}); err != nil {
+			t.Fatalf("setup error = %v", err)
+		}
+	})
 	values, err := readEnvValues(filepath.Join(home, "quickstart.env"))
 	if err != nil {
 		t.Fatalf("read env: %v", err)
@@ -226,6 +228,9 @@ func TestSetupYesNoStartDefaultsLocalQwen(t *testing.T) {
 	if values["RERANKER_BASE_URL"] != "" {
 		t.Fatalf("reranker base url = %q", values["RERANKER_BASE_URL"])
 	}
+	if !strings.Contains(output, "abra models up") {
+		t.Fatalf("local setup next steps should include models up:\n%s", output)
+	}
 }
 
 func TestSetupOpenAIStdinNoStart(t *testing.T) {
@@ -247,9 +252,11 @@ func TestSetupOpenAIStdinNoStart(t *testing.T) {
 	_, _ = writer.WriteString("openai-test-key\n")
 	_ = writer.Close()
 
-	if err := run(context.Background(), []string{"setup", "--openai", "--api-key-stdin", "--no-start"}); err != nil {
-		t.Fatalf("setup openai error = %v", err)
-	}
+	output := captureStdout(t, func() {
+		if err := run(context.Background(), []string{"setup", "--openai", "--api-key-stdin", "--no-start"}); err != nil {
+			t.Fatalf("setup openai error = %v", err)
+		}
+	})
 	values, err := readEnvValues(filepath.Join(home, "quickstart.env"))
 	if err != nil {
 		t.Fatalf("read env: %v", err)
@@ -262,6 +269,44 @@ func TestSetupOpenAIStdinNoStart(t *testing.T) {
 	}
 	if values["EMBEDDING_API_KEY"] != "openai-test-key" {
 		t.Fatalf("api key = %q", values["EMBEDDING_API_KEY"])
+	}
+	if strings.Contains(output, "abra models up") {
+		t.Fatalf("openai setup next steps should not suggest local models:\n%s", output)
+	}
+	if !strings.Contains(output, "verify your OpenAI embedding endpoint is reachable from Abra") {
+		t.Fatalf("openai setup next steps should mention OpenAI endpoint readiness:\n%s", output)
+	}
+}
+
+func TestSetupCompatibleNoStartDoesNotSuggestLocalModels(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+
+	output := captureStdout(t, func() {
+		if err := run(context.Background(), []string{"setup", "--compatible", "--base-url", "http://localhost:9999/v1", "--embedding-model", "custom-embedding", "--api-key", "compatible-key", "--no-start"}); err != nil {
+			t.Fatalf("setup compatible error = %v", err)
+		}
+	})
+	values, err := readEnvValues(filepath.Join(home, "quickstart.env"))
+	if err != nil {
+		t.Fatalf("read env: %v", err)
+	}
+	if values["EMBEDDING_BASE_URL"] != "http://host.docker.internal:9999/v1" {
+		t.Fatalf("base url = %q", values["EMBEDDING_BASE_URL"])
+	}
+	if values["EMBEDDING_MODEL"] != "custom-embedding" {
+		t.Fatalf("model = %q", values["EMBEDDING_MODEL"])
+	}
+	if strings.Contains(output, "abra models up") {
+		t.Fatalf("compatible setup next steps should not suggest local models:\n%s", output)
+	}
+	if !strings.Contains(output, "verify your compatible embedding endpoint is reachable") {
+		t.Fatalf("compatible setup next steps should mention endpoint readiness:\n%s", output)
+	}
+	if !strings.Contains(output, "rewritten so Abra containers can reach the host service") {
+		t.Fatalf("compatible loopback setup should explain host rewrite:\n%s", output)
 	}
 }
 
@@ -399,6 +444,9 @@ func TestConfigModelCompatibleAllowsNoAPIKey(t *testing.T) {
 	}
 	if values["EMBEDDING_TIMEOUT"] != "30s" {
 		t.Fatalf("timeout = %q", values["EMBEDDING_TIMEOUT"])
+	}
+	if values["EMBEDDING_BASE_URL"] != "http://host.docker.internal:9999/v1" {
+		t.Fatalf("base url = %q", values["EMBEDDING_BASE_URL"])
 	}
 }
 

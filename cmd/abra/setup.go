@@ -310,9 +310,10 @@ func setupCompatibleEmbeddings(args cliArgs, reader *bufio.Reader, interactive b
 			}
 		}
 	}
+	baseURL = containerReachableBaseURL(strings.TrimSpace(baseURL))
 	if err := updateEnvValues(args, map[string]string{
 		"EMBEDDING_PROVIDER":                   "compatible",
-		"EMBEDDING_BASE_URL":                   strings.TrimSpace(baseURL),
+		"EMBEDDING_BASE_URL":                   baseURL,
 		"EMBEDDING_API_KEY":                    strings.TrimSpace(apiKey),
 		"EMBEDDING_MODEL":                      strings.TrimSpace(model),
 		"EMBEDDING_DIMENSIONS":                 strings.TrimSpace(dimensions),
@@ -326,6 +327,9 @@ func setupCompatibleEmbeddings(args cliArgs, reader *bufio.Reader, interactive b
 		return err
 	}
 	fmt.Println("Embedding: compatible " + strings.TrimSpace(model))
+	if isLoopbackProviderURL(baseURL) {
+		fmt.Println("Endpoint: " + baseURL + " (rewritten so Abra containers can reach the host service)")
+	}
 	fmt.Println("After changing embedding providers, re-ingest important sources so vector recall uses the new embedding space.")
 	return nil
 }
@@ -358,11 +362,44 @@ func promptSecret(label string) (string, error) {
 }
 
 func printSetupNext(args cliArgs) {
+	values := setupConfiguredValues(args)
+	provider := strings.TrimSpace(values["EMBEDDING_PROVIDER"])
+	label := setupProviderLabel(values)
 	fmt.Println("Next:")
-	fmt.Println("  abra models up")
+	if provider == "local" || provider == "" {
+		fmt.Println("  abra models up")
+	} else {
+		fmt.Println("  verify your " + label + " embedding endpoint is reachable from Abra")
+	}
 	fmt.Println("  abra up --env-file " + envPath(args))
 	fmt.Println("  abra ingest . --code")
 	fmt.Println(`  abra think "What should I know before changing this project?"`)
+}
+
+func setupConfiguredValues(args cliArgs) map[string]string {
+	values, err := readEnvValues(envPath(args))
+	if err != nil {
+		return map[string]string{}
+	}
+	return values
+}
+
+func setupProviderLabel(values map[string]string) string {
+	baseURL := strings.ToLower(strings.TrimSpace(values["EMBEDDING_BASE_URL"]))
+	model := strings.ToLower(strings.TrimSpace(values["EMBEDDING_MODEL"]))
+	if strings.Contains(baseURL, "api.openai.com") || strings.HasPrefix(model, "text-embedding-") {
+		return "OpenAI"
+	}
+	provider := strings.TrimSpace(values["EMBEDDING_PROVIDER"])
+	if provider == "" {
+		return "configured"
+	}
+	return provider
+}
+
+func isLoopbackProviderURL(value string) bool {
+	value = strings.ToLower(value)
+	return strings.Contains(value, "host.docker.internal") || strings.Contains(value, "127.0.0.1") || strings.Contains(value, "localhost") || strings.Contains(value, "[::1]")
 }
 
 func isInteractive() bool {

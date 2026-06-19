@@ -23,7 +23,8 @@ func TestSmartPathMetricsPrometheus(t *testing.T) {
 		SupportingDocuments: []store.DocumentResult{{ID: "doc-1"}},
 		GraphContext:        []store.RelationResult{{FromEntity: "A", ToEntity: "B", Type: "depends_on"}},
 		Verification: memory.VerificationReport{
-			Verdict: "strong",
+			Verdict:         "strong",
+			RequiredActions: []string{"cite_evidence", "custom-action"},
 			RetrievalQuality: memory.RetrievalQuality{
 				ResultCount:    3,
 				TopRankScore:   1.25,
@@ -49,7 +50,10 @@ func TestSmartPathMetricsPrometheus(t *testing.T) {
 		},
 	})
 	collector.observeMemory("ok", 55*time.Millisecond, memory.ComposeResult{
-		Verification: memory.VerificationReport{Verdict: "unsafe"},
+		Verification: memory.VerificationReport{
+			Verdict:         "unsafe",
+			RequiredActions: []string{"resolve_active_conflicts", "review_conflict_evidence"},
+		},
 		AgentDecision: memory.AgentDecision{
 			Decision:          "blocked",
 			ReviewRequired:    true,
@@ -69,7 +73,8 @@ func TestSmartPathMetricsPrometheus(t *testing.T) {
 	})
 	collector.observeMemory("ok", 13*time.Millisecond, memory.ComposeResult{
 		Verification: memory.VerificationReport{
-			Verdict: "partial",
+			Verdict:         "partial",
+			RequiredActions: []string{"corroborate_with_additional_source"},
 			RetrievalQuality: memory.RetrievalQuality{
 				ResultCount:        4,
 				LowSourceDiversity: true,
@@ -93,6 +98,10 @@ func TestSmartPathMetricsPrometheus(t *testing.T) {
 		`abra_working_memory_retrieval_quality_total{status="error",verdict="unknown",quality="unknown"} 1`,
 		`abra_working_memory_retrieval_top_rank_score_sum{status="ok",verdict="strong",quality="ok"} 1.250000`,
 		`abra_working_memory_retrieval_last_result_count{status="ok",verdict="strong",quality="ok"} 3`,
+		`abra_verification_required_actions_total{operation="working_memory",status="ok",verdict="strong",decision="proceed",action="cite_evidence"} 1`,
+		`abra_verification_required_actions_total{operation="working_memory",status="ok",verdict="strong",decision="proceed",action="other"} 1`,
+		`abra_verification_required_actions_total{operation="working_memory",status="ok",verdict="unsafe",decision="blocked",action="resolve_active_conflicts"} 1`,
+		`abra_verification_required_actions_total{operation="working_memory",status="ok",verdict="partial",decision="caution",action="corroborate_with_additional_source"} 1`,
 		`abra_working_memory_health_status_total{api_status="ok",health_status="healthy"} 1`,
 		`abra_working_memory_health_status_total{api_status="ok",health_status="critical"} 1`,
 		`abra_working_memory_health_status_total{api_status="error",health_status="unknown"} 1`,

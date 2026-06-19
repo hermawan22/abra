@@ -15,6 +15,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Add retrieval reason explainability to recall, working-memory composition, context windows, and governed think results.
 - Add retrieval source-diversity scoring so working-memory verification can flag packets dominated by one source.
 - Add structured verifier `required_actions` so agents can respond to weak, partial, or unsafe memory packets without parsing recommendation text.
+- Add bounded Prometheus counters for verifier `required_actions` so operators can see recurring agent-blocking causes without exposing scopes, tasks, queries, or recommendation text.
 
 ### Changed
 
@@ -22,6 +23,9 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Improve `abra doctor`, `abra scope`, and `abra mcp install-codex` guidance for Codex token env, exact scope matching, model config, and local model readiness.
 - Prefer query-form working-memory MCP resources so scopes containing slashes are preserved.
 - Improve chunk splitting and embedding batch token estimation for oversized paragraphs, minified JSON, and dense code.
+- Gate low-confidence retrieval on lexical and semantic relevance signal instead of allowing boosted rank alone to make weak matches look strong, while preserving moderate rank-only compatibility paths.
+- Make `abra setup --openai/--compatible --no-start` print provider-appropriate next steps instead of telling users to start local models.
+- Rewrite loopback custom embedding provider URLs to `host.docker.internal` in setup/config flows so Dockerized Abra services can reach host-served models.
 - Harden production Compose and Helm defaults around compatible embeddings, loopback publish defaults, webhook signing, bind address, and request sizing.
 - Make the release gate provide production-valid placeholder embedding and webhook settings for Docker Compose config validation.
 
