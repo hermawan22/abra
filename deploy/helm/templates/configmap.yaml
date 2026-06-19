@@ -36,5 +36,7 @@ data:
   ABRA_SERVICE_NAME: {{ .Values.config.serviceName | quote }}
   ABRA_DEPLOYMENT_ENVIRONMENT: {{ .Values.config.deploymentEnvironment | quote }}
   WORKER_INTERVAL: {{ .Values.worker.interval | quote }}
+  WORKER_MAX_SOURCES_PER_RUN: {{ .Values.worker.maxSourcesPerRun | quote }}
+  WORKER_CONCURRENCY: {{ .Values.worker.concurrency | quote }}
   ABRA_GIT_CACHE_DIR: {{ .Values.worker.gitCacheDir | quote }}
   ABRA_GIT_CLONE_DEPTH: {{ .Values.worker.gitCloneDepth | quote }}

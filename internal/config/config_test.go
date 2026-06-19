@@ -290,6 +290,50 @@ func TestLoadAIProviderConcurrencyDefaultsAndOverride(t *testing.T) {
 	}
 }
 
+func TestLoadWorkerConcurrencyDefaultsAndOverride(t *testing.T) {
+	allowUnauthenticatedDev(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.WorkerConcurrency != 1 {
+		t.Fatalf("WorkerConcurrency = %d, want 1", cfg.WorkerConcurrency)
+	}
+	if cfg.WorkerMaxSourcesPerRun != 25 {
+		t.Fatalf("WorkerMaxSourcesPerRun = %d, want 25", cfg.WorkerMaxSourcesPerRun)
+	}
+
+	t.Setenv("WORKER_CONCURRENCY", "4")
+	t.Setenv("WORKER_MAX_SOURCES_PER_RUN", "50")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.WorkerConcurrency != 4 {
+		t.Fatalf("WorkerConcurrency = %d, want 4", cfg.WorkerConcurrency)
+	}
+	if cfg.WorkerMaxSourcesPerRun != 50 {
+		t.Fatalf("WorkerMaxSourcesPerRun = %d, want 50", cfg.WorkerMaxSourcesPerRun)
+	}
+}
+
+func TestLoadRejectsInvalidWorkerConcurrency(t *testing.T) {
+	allowUnauthenticatedDev(t)
+	t.Setenv("WORKER_CONCURRENCY", "0")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected invalid worker concurrency error")
+	}
+	t.Setenv("WORKER_CONCURRENCY", "33")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected invalid worker concurrency error")
+	}
+	t.Setenv("WORKER_CONCURRENCY", "2")
+	t.Setenv("WORKER_MAX_SOURCES_PER_RUN", "0")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected invalid worker max sources error")
+	}
+}
+
 func TestLoadRejectsInvalidAIProviderConcurrency(t *testing.T) {
 	allowUnauthenticatedDev(t)
 	t.Setenv("ABRA_AI_PROVIDER_CONCURRENCY", "0")

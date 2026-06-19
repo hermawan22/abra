@@ -274,6 +274,7 @@ For worker-based source refreshes, use `abra ingest . --code --tracked`, `abra w
 or `abra watch git --git https://github.com/owner/repo.git --wait --wait-timeout 10m`.
 Tracked local sources require the worker process to see the same filesystem path;
 use direct `abra ingest . --code` for ordinary Docker-backed local setup.
+Use `WORKER_CONCURRENCY` to run multiple queued ingestion jobs in one worker process; keep the default `1` for local Qwen and raise it only after `abra doctor`, provider latency, and database usage show headroom.
 When `--code` is enabled and no `--code-include` is supplied, Abra includes supported
 Go, JavaScript, TypeScript, and React code files repo-wide while skipping common
 dependency, build, cache, and vendor directories.

@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -362,11 +364,133 @@ func TestRunnerProcessesWebhookDocumentJob(t *testing.T) {
 	}
 }
 
+func TestRunnerHonorsWorkerConcurrency(t *testing.T) {
+	store := &fakeStore{
+		queuedJobs: []QueuedIngestionJob{
+			{ID: "webhook-job-1", TriggerType: "webhook", Attempts: 1, MaxAttempts: 3},
+			{ID: "webhook-job-2", TriggerType: "webhook", Attempts: 1, MaxAttempts: 3},
+			{ID: "webhook-job-3", TriggerType: "webhook", Attempts: 1, MaxAttempts: 3},
+		},
+		webhookDocuments: map[string]IngestDocumentInput{
+			"webhook-job-1": webhookInput("webhook-job-1"),
+			"webhook-job-2": webhookInput("webhook-job-2"),
+			"webhook-job-3": webhookInput("webhook-job-3"),
+		},
+	}
+	brain := newBlockingIngestor()
+	runner := NewRunner(store, brain, Options{
+		MaxSourcesPerRun:             10,
+		MaxChangedDocumentsPerSource: 10,
+		Concurrency:                  2,
+		SourceTimeout:                time.Second,
+	})
+
+	done := make(chan struct{})
+	var stats RunStats
+	var err error
+	go func() {
+		stats, err = runner.RunOnce(context.Background())
+		close(done)
+	}()
+
+	waitStarted(t, brain.started)
+	waitStarted(t, brain.started)
+	select {
+	case <-brain.started:
+		t.Fatal("third job started while concurrency was limited to 2")
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(brain.release)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("runner did not finish")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if maxActive := atomic.LoadInt32(&brain.maxActive); maxActive != 2 {
+		t.Fatalf("max active ingests = %d, want 2", maxActive)
+	}
+	if stats.SourcesSucceeded != 3 || stats.DocumentsChanged != 3 || stats.ChunksWritten != 6 || stats.ClaimsWritten != 3 {
+		t.Fatalf("stats = %+v", stats)
+	}
+}
+
+func TestRunnerSerializesSameSourceJobs(t *testing.T) {
+	store := &fakeStore{
+		queuedJobs: []QueuedIngestionJob{
+			{ID: "job-1", Source: SourceConfig{ID: "docs"}, TriggerType: "webhook", Attempts: 1, MaxAttempts: 3},
+			{ID: "job-2", Source: SourceConfig{ID: "docs"}, TriggerType: "webhook", Attempts: 1, MaxAttempts: 3},
+		},
+		webhookDocuments: map[string]IngestDocumentInput{
+			"job-1": webhookInput("job-1"),
+			"job-2": webhookInput("job-2"),
+		},
+	}
+	brain := newBlockingIngestor()
+	runner := NewRunner(store, brain, Options{
+		MaxSourcesPerRun:             10,
+		MaxChangedDocumentsPerSource: 10,
+		Concurrency:                  2,
+		SourceTimeout:                time.Second,
+	})
+
+	done := make(chan struct{})
+	var err error
+	go func() {
+		_, err = runner.RunOnce(context.Background())
+		close(done)
+	}()
+
+	waitStarted(t, brain.started)
+	select {
+	case <-brain.started:
+		t.Fatal("same-source job started concurrently")
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(brain.release)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("runner did not finish")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if maxActive := atomic.LoadInt32(&brain.maxActive); maxActive != 1 {
+		t.Fatalf("max active ingests = %d, want 1", maxActive)
+	}
+}
+
+func webhookInput(id string) IngestDocumentInput {
+	return IngestDocumentInput{
+		SourceType: "webhook",
+		SourceURL:  "https://example.invalid/" + id,
+		SourceID:   id,
+		Title:      id,
+		Scope:      "repo:test",
+		Content:    "synthetic webhook payload",
+		Metadata:   map[string]any{},
+	}
+}
+
+func waitStarted(t *testing.T, started <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for ingestion to start")
+	}
+}
+
 type fakeStore struct {
+	mu                  sync.Mutex
 	sources             []SourceConfig
 	states              map[string]DocumentState
 	queuedJobs          []QueuedIngestionJob
 	webhookDocument     IngestDocumentInput
+	webhookDocuments    map[string]IngestDocumentInput
 	success             bool
 	markedError         bool
 	jobs                []string
@@ -387,6 +511,8 @@ func (f *fakeStore) EnqueueScheduledSources(context.Context, int) (int, error) {
 }
 
 func (f *fakeStore) ClaimQueuedIngestionJobs(context.Context, int, string) ([]QueuedIngestionJob, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if len(f.queuedJobs) > 0 {
 		return f.queuedJobs, nil
 	}
@@ -399,11 +525,15 @@ func (f *fakeStore) ClaimQueuedIngestionJobs(context.Context, int, string) ([]Qu
 }
 
 func (f *fakeStore) HeartbeatIngestionJob(context.Context, string, string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.heartbeats++
 	return f.heartbeatErr
 }
 
 func (f *fakeStore) FinishIngestionJob(_ context.Context, _ string, leaseOwner string, _ SourceStats, runErr error) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.finishLeaseOwner = leaseOwner
 	if runErr != nil {
 		if f.finishStatusOnError != "" {
@@ -424,24 +554,34 @@ func (f *fakeStore) DocumentState(_ context.Context, doc ingest.Document) (Docum
 	return f.states[doc.Path], nil
 }
 
-func (f *fakeStore) GetWebhookDocument(context.Context, string) (IngestDocumentInput, error) {
+func (f *fakeStore) GetWebhookDocument(_ context.Context, jobID string) (IngestDocumentInput, error) {
 	if f.err != nil {
 		return IngestDocumentInput{}, f.err
+	}
+	if f.webhookDocuments != nil {
+		if document, ok := f.webhookDocuments[jobID]; ok {
+			return document, nil
+		}
 	}
 	return f.webhookDocument, nil
 }
 
 func (f *fakeStore) MarkSourceSuccess(context.Context, string, SourceStats) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.success = true
 	return nil
 }
 
 func (f *fakeStore) MarkSourceError(context.Context, string, error) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.markedError = true
 	return nil
 }
 
 type fakeIngestor struct {
+	mu     sync.Mutex
 	inputs []IngestDocumentInput
 	err    error
 }
@@ -450,8 +590,43 @@ func (f *fakeIngestor) IngestDocument(_ context.Context, input IngestDocumentInp
 	if f.err != nil {
 		return IngestDocumentResult{}, f.err
 	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.inputs = append(f.inputs, input)
 	return IngestDocumentResult{DocumentID: "doc", Chunks: 2, Claims: 1}, nil
+}
+
+type blockingIngestor struct {
+	started   chan struct{}
+	release   chan struct{}
+	active    int32
+	maxActive int32
+}
+
+func newBlockingIngestor() *blockingIngestor {
+	return &blockingIngestor{
+		started: make(chan struct{}, 10),
+		release: make(chan struct{}),
+	}
+}
+
+func (b *blockingIngestor) IngestDocument(ctx context.Context, input IngestDocumentInput) (IngestDocumentResult, error) {
+	active := atomic.AddInt32(&b.active, 1)
+	for {
+		maxActive := atomic.LoadInt32(&b.maxActive)
+		if active <= maxActive || atomic.CompareAndSwapInt32(&b.maxActive, maxActive, active) {
+			break
+		}
+	}
+	b.started <- struct{}{}
+	select {
+	case <-ctx.Done():
+		atomic.AddInt32(&b.active, -1)
+		return IngestDocumentResult{}, ctx.Err()
+	case <-b.release:
+	}
+	atomic.AddInt32(&b.active, -1)
+	return IngestDocumentResult{DocumentID: input.SourceID, Chunks: 2, Claims: 1}, nil
 }
 
 func writeTestFile(t *testing.T, root, rel, content string) {

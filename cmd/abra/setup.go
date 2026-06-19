@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -121,15 +122,38 @@ func normalizeLocalRuntimeDefaults(args cliArgs) error {
 	if err != nil {
 		return err
 	}
+	updates := map[string]string{}
 	raw := strings.TrimSpace(values["WORKER_INTERVAL"])
 	if raw == "" {
-		return updateEnvValues(args, map[string]string{"WORKER_INTERVAL": defaultWorkerInterval.String()})
+		updates["WORKER_INTERVAL"] = defaultWorkerInterval.String()
+	} else {
+		interval, err := time.ParseDuration(raw)
+		if err != nil || interval < 10*time.Second {
+			updates["WORKER_INTERVAL"] = defaultWorkerInterval.String()
+		}
 	}
-	interval, err := time.ParseDuration(raw)
-	if err != nil || interval < 10*time.Second {
-		return updateEnvValues(args, map[string]string{"WORKER_INTERVAL": defaultWorkerInterval.String()})
+	if !validIntRange(values["WORKER_MAX_SOURCES_PER_RUN"], 1, 1000) {
+		updates["WORKER_MAX_SOURCES_PER_RUN"] = "25"
 	}
-	return nil
+	if !validIntRange(values["WORKER_CONCURRENCY"], 1, 32) {
+		updates["WORKER_CONCURRENCY"] = "1"
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+	return updateEnvValues(args, updates)
+}
+
+func validIntRange(raw string, minValue, maxValue int) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return false
+	}
+	return value >= minValue && value <= maxValue
 }
 
 func printSetupPrerequisites() {

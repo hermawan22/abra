@@ -148,6 +148,8 @@ The provider contract is intentionally provider-neutral. The provider must expos
 
 `ABRA_COMPOSE_RECALL_CONCURRENCY` and `ABRA_COMPOSE_GRAPH_CONCURRENCY` cap per-request fan-out inside `POST /memory/compose` and MCP `working_memory_compose`. Keep the conservative defaults (`1` for recall and `4` for graph) for small installs and local embedding runners; raise them only after watching database pool usage, recall latency, embedding-provider saturation, and memory-compose p95 under realistic agent traffic. Values must be between `1` and `32`.
 
+`WORKER_MAX_SOURCES_PER_RUN` caps how many queued ingestion jobs one worker cycle claims. `WORKER_CONCURRENCY` caps how many claimed jobs run at once inside one worker process. Keep `WORKER_CONCURRENCY=1` with the default local Qwen runner; raise it only after the embedding provider and database pool have measured headroom. Same-source jobs are serialized inside one worker process to avoid git-cache and source-refresh races.
+
 OpenTelemetry tracing is optional and disabled unless `OTEL_EXPORTER_OTLP_ENDPOINT` or `ABRA_OTEL_EXPORTER_OTLP_ENDPOINT` is configured. Set `ABRA_TRACING_SAMPLE_RATIO` to a value from `0` to `1` to control head sampling. Keep sampled traces out of user/task payloads: Abra spans intentionally record bounded operation metadata such as route, status, retrieval mode, counts, verdict, agent decision, and worker ingestion counts, not raw scope names, queries, task text, principals, or tokens.
 
 ## Deployment Roles
@@ -164,7 +166,7 @@ Recommended deployment:
 
 - Run `/app/abra-migrate` as a pre-deploy job.
 - Run at least one API replica behind an internal load balancer.
-- Run one worker replica for TTL expiry/revalidation.
+- Run one worker replica by default; scale `WORKER_CONCURRENCY` first for job-level ingestion parallelism.
 - Use `POST /mcp` on the API service for remote MCP clients.
 - Operate Abra through the CLI, API, MCP, metrics, and runbooks.
 

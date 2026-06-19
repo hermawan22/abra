@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/hermawan22/abra/internal/ingest"
@@ -16,6 +17,8 @@ import (
 const (
 	DefaultMaxSourcesPerRun             = 25
 	DefaultMaxChangedDocumentsPerSource = 100
+	DefaultWorkerConcurrency            = 1
+	MaxWorkerConcurrency                = 32
 	DefaultSourceTimeout                = 2 * time.Minute
 	DefaultLeaseTimeout                 = 5 * time.Minute
 	DefaultLeaseOwner                   = "abra-worker"
@@ -66,6 +69,7 @@ type IngestDocumentResult struct {
 type Options struct {
 	MaxSourcesPerRun             int
 	MaxChangedDocumentsPerSource int
+	Concurrency                  int
 	SourceTimeout                time.Duration
 	LeaseTimeout                 time.Duration
 	LeaseOwner                   string
@@ -116,6 +120,12 @@ func NewRunner(store SourceStore, ingestor DocumentIngestor, options Options) *R
 	if options.MaxChangedDocumentsPerSource <= 0 {
 		options.MaxChangedDocumentsPerSource = DefaultMaxChangedDocumentsPerSource
 	}
+	if options.Concurrency <= 0 {
+		options.Concurrency = DefaultWorkerConcurrency
+	}
+	if options.Concurrency > MaxWorkerConcurrency {
+		options.Concurrency = MaxWorkerConcurrency
+	}
 	if options.SourceTimeout <= 0 {
 		options.SourceTimeout = DefaultSourceTimeout
 	}
@@ -157,51 +167,21 @@ func (r *Runner) RunOnce(ctx context.Context) (RunStats, error) {
 		return RunStats{}, err
 	}
 	span.SetAttributes(attribute.Int("abra.worker.claimed_jobs", len(queuedJobs)))
+	span.SetAttributes(attribute.Int("abra.worker.concurrency", r.options.Concurrency))
 
 	stats := RunStats{Sources: len(queuedJobs)}
-	for _, queuedJob := range queuedJobs {
-		source := queuedJob.Source
-		jobID := queuedJob.ID
-		var sourceStats SourceStats
-		var err error
-		if queuedJob.TriggerType == "webhook" {
-			sourceStats, err = r.runWebhookDocument(ctx, jobID)
-		} else {
-			sourceStats, err = r.runSource(ctx, source, jobID)
+	for _, result := range r.runQueuedJobs(ctx, queuedJobs) {
+		stats.DocumentsSeen += result.Stats.DocumentsSeen
+		stats.DocumentsChanged += result.Stats.DocumentsChanged
+		stats.DocumentsSkipped += result.Stats.DocumentsSkipped
+		stats.DocumentsDeferred += result.Stats.DocumentsDeferred
+		stats.ChunksWritten += result.Stats.ChunksWritten
+		stats.ClaimsWritten += result.Stats.ClaimsWritten
+		if result.Succeeded {
+			stats.SourcesSucceeded++
 		}
-		stats.DocumentsSeen += sourceStats.DocumentsSeen
-		stats.DocumentsChanged += sourceStats.DocumentsChanged
-		stats.DocumentsSkipped += sourceStats.DocumentsSkipped
-		stats.DocumentsDeferred += sourceStats.DocumentsDeferred
-		stats.ChunksWritten += sourceStats.ChunksWritten
-		stats.ClaimsWritten += sourceStats.ClaimsWritten
-		finalStatus, finishErr := r.store.FinishIngestionJob(ctx, jobID, r.options.LeaseOwner, sourceStats, err)
-		if finishErr != nil {
-			r.options.Logger.Error("source ingestion job finish failed", "source_config_id", source.ID, "job_id", jobID, "error", finishErr)
-		}
-		if err != nil {
+		if result.Failed {
 			stats.SourcesFailed++
-			r.options.Logger.Error("source ingestion failed", "source_config_id", source.ID, "error", err)
-			if finalStatus == "failed" {
-				if markErr := r.store.MarkSourceError(ctx, source.ID, err); markErr != nil {
-					r.options.Logger.Error("source error update failed", "source_config_id", source.ID, "error", markErr)
-				}
-			} else if finalStatus == "retry" {
-				r.options.Logger.Warn("source ingestion queued for retry", "source_config_id", source.ID, "job_id", jobID)
-			}
-			continue
-		}
-		if finalStatus != "succeeded" {
-			stats.SourcesFailed++
-			r.options.Logger.Warn("source ingestion completed but job was not marked succeeded", "source_config_id", source.ID, "job_id", jobID, "status", finalStatus)
-			continue
-		}
-		stats.SourcesSucceeded++
-		if queuedJob.TriggerType == "webhook" || source.ID == "" {
-			continue
-		}
-		if err := r.store.MarkSourceSuccess(ctx, source.ID, sourceStats); err != nil {
-			r.options.Logger.Error("source success update failed", "source_config_id", source.ID, "error", err)
 		}
 	}
 	runErr = ctx.Err()
@@ -217,6 +197,113 @@ func (r *Runner) RunOnce(ctx context.Context) (RunStats, error) {
 		attribute.Int("abra.worker.claims_written", stats.ClaimsWritten),
 	)
 	return stats, runErr
+}
+
+type queuedJobResult struct {
+	Stats     SourceStats
+	Succeeded bool
+	Failed    bool
+}
+
+func (r *Runner) runQueuedJobs(ctx context.Context, queuedJobs []QueuedIngestionJob) []queuedJobResult {
+	if len(queuedJobs) == 0 {
+		return nil
+	}
+	if r.options.Concurrency <= 1 || len(queuedJobs) == 1 {
+		results := make([]queuedJobResult, 0, len(queuedJobs))
+		for _, queuedJob := range queuedJobs {
+			results = append(results, r.runQueuedJob(ctx, queuedJob))
+		}
+		return results
+	}
+
+	workerCount := r.options.Concurrency
+	if workerCount > len(queuedJobs) {
+		workerCount = len(queuedJobs)
+	}
+	sourceLocks := sourceJobLocks(queuedJobs)
+	jobs := make(chan QueuedIngestionJob)
+	results := make(chan queuedJobResult, len(queuedJobs))
+	var wg sync.WaitGroup
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for queuedJob := range jobs {
+				if lock := sourceLocks[queuedJob.Source.ID]; lock != nil {
+					lock <- struct{}{}
+					result := r.runQueuedJob(ctx, queuedJob)
+					<-lock
+					results <- result
+					continue
+				}
+				results <- r.runQueuedJob(ctx, queuedJob)
+			}
+		}()
+	}
+	for _, queuedJob := range queuedJobs {
+		jobs <- queuedJob
+	}
+	close(jobs)
+	wg.Wait()
+	close(results)
+
+	out := make([]queuedJobResult, 0, len(queuedJobs))
+	for result := range results {
+		out = append(out, result)
+	}
+	return out
+}
+
+func sourceJobLocks(queuedJobs []QueuedIngestionJob) map[string]chan struct{} {
+	locks := map[string]chan struct{}{}
+	for _, queuedJob := range queuedJobs {
+		sourceID := queuedJob.Source.ID
+		if sourceID == "" {
+			continue
+		}
+		if _, ok := locks[sourceID]; !ok {
+			locks[sourceID] = make(chan struct{}, 1)
+		}
+	}
+	return locks
+}
+
+func (r *Runner) runQueuedJob(ctx context.Context, queuedJob QueuedIngestionJob) queuedJobResult {
+	source := queuedJob.Source
+	jobID := queuedJob.ID
+	var sourceStats SourceStats
+	var err error
+	if queuedJob.TriggerType == "webhook" {
+		sourceStats, err = r.runWebhookDocument(ctx, jobID)
+	} else {
+		sourceStats, err = r.runSource(ctx, source, jobID)
+	}
+	finalStatus, finishErr := r.store.FinishIngestionJob(ctx, jobID, r.options.LeaseOwner, sourceStats, err)
+	if finishErr != nil {
+		r.options.Logger.Error("source ingestion job finish failed", "source_config_id", source.ID, "job_id", jobID, "trigger_type", queuedJob.TriggerType, "error", finishErr)
+	}
+	if err != nil {
+		r.options.Logger.Error("source ingestion failed", "source_config_id", source.ID, "job_id", jobID, "trigger_type", queuedJob.TriggerType, "error", err)
+		if finalStatus == "failed" && source.ID != "" {
+			if markErr := r.store.MarkSourceError(ctx, source.ID, err); markErr != nil {
+				r.options.Logger.Error("source error update failed", "source_config_id", source.ID, "job_id", jobID, "error", markErr)
+			}
+		} else if finalStatus == "retry" {
+			r.options.Logger.Warn("source ingestion queued for retry", "source_config_id", source.ID, "job_id", jobID, "trigger_type", queuedJob.TriggerType)
+		}
+		return queuedJobResult{Stats: sourceStats, Failed: true}
+	}
+	if finalStatus != "succeeded" {
+		r.options.Logger.Warn("source ingestion completed but job was not marked succeeded", "source_config_id", source.ID, "job_id", jobID, "trigger_type", queuedJob.TriggerType, "status", finalStatus)
+		return queuedJobResult{Stats: sourceStats, Failed: true}
+	}
+	if queuedJob.TriggerType != "webhook" && source.ID != "" {
+		if err := r.store.MarkSourceSuccess(ctx, source.ID, sourceStats); err != nil {
+			r.options.Logger.Error("source success update failed", "source_config_id", source.ID, "job_id", jobID, "error", err)
+		}
+	}
+	return queuedJobResult{Stats: sourceStats, Succeeded: true}
 }
 
 func (r *Runner) runWebhookDocument(ctx context.Context, jobID string) (SourceStats, error) {

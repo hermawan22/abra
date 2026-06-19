@@ -60,6 +60,8 @@ type Config struct {
 	RateLimitMax                       int
 	RateLimitWindow                    time.Duration
 	WorkerInterval                     time.Duration
+	WorkerMaxSourcesPerRun             int
+	WorkerConcurrency                  int
 	WorkerSourceTimeout                time.Duration
 	WorkerLeaseTimeout                 time.Duration
 	WorkerMaxChangedDocumentsPerSource int
@@ -151,6 +153,8 @@ func Load() (Config, error) {
 		RateLimitMax:                       intEnv("RATE_LIMIT_MAX", 120),
 		RateLimitWindow:                    durationEnv("RATE_LIMIT_WINDOW", time.Minute),
 		WorkerInterval:                     durationEnv("WORKER_INTERVAL", 5*time.Minute),
+		WorkerMaxSourcesPerRun:             intEnv("WORKER_MAX_SOURCES_PER_RUN", 25),
+		WorkerConcurrency:                  intEnv("WORKER_CONCURRENCY", 1),
 		WorkerSourceTimeout:                durationEnv("WORKER_SOURCE_TIMEOUT", defaultWorkerSourceTimeout),
 		WorkerLeaseTimeout:                 durationEnv("WORKER_LEASE_TIMEOUT", defaultWorkerLeaseTimeout),
 		WorkerMaxChangedDocumentsPerSource: intEnv("WORKER_MAX_CHANGED_DOCUMENTS_PER_SOURCE", 100),
@@ -210,6 +214,12 @@ func Load() (Config, error) {
 	}
 	if cfg.WorkerLeaseTimeout <= cfg.WorkerSourceTimeout {
 		return Config{}, errors.New("WORKER_LEASE_TIMEOUT must be greater than WORKER_SOURCE_TIMEOUT")
+	}
+	if cfg.WorkerMaxSourcesPerRun < 1 || cfg.WorkerMaxSourcesPerRun > 1000 {
+		return Config{}, errors.New("WORKER_MAX_SOURCES_PER_RUN must be between 1 and 1000")
+	}
+	if cfg.WorkerConcurrency < 1 || cfg.WorkerConcurrency > 32 {
+		return Config{}, errors.New("WORKER_CONCURRENCY must be between 1 and 32")
 	}
 	if cfg.WorkerMaxChangedDocumentsPerSource < 1 {
 		return Config{}, errors.New("WORKER_MAX_CHANGED_DOCUMENTS_PER_SOURCE must be positive")
@@ -299,6 +309,8 @@ func validateEnvSyntax() error {
 		"EMBEDDING_DIMENSIONS",
 		"RATE_LIMIT_MAX",
 		"ABRA_AUDIT_SINK_BATCH_SIZE",
+		"WORKER_MAX_SOURCES_PER_RUN",
+		"WORKER_CONCURRENCY",
 		"WORKER_MAX_CHANGED_DOCUMENTS_PER_SOURCE",
 		"ABRA_GIT_CLONE_DEPTH",
 		"ABRA_MAX_REQUEST_BODY_BYTES",

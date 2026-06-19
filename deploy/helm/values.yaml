@@ -17,6 +17,8 @@ api:
 worker:
   replicas: 1
   interval: 5m
+  maxSourcesPerRun: "25"
+  concurrency: "1"
   gitCacheDir: /tmp/abra-git-cache
   gitCloneDepth: "1"
   resources:

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -82,10 +83,14 @@ func main() {
 		slog.Error("brain service failed", "error", err)
 		os.Exit(1)
 	}
+	leaseOwner := workerLeaseOwner()
 	runner := jobs.NewRunner(repo, brainIngestor{service: brainService}, jobs.Options{
+		MaxSourcesPerRun:             cfg.WorkerMaxSourcesPerRun,
 		MaxChangedDocumentsPerSource: cfg.WorkerMaxChangedDocumentsPerSource,
+		Concurrency:                  cfg.WorkerConcurrency,
 		SourceTimeout:                cfg.WorkerSourceTimeout,
 		LeaseTimeout:                 cfg.WorkerLeaseTimeout,
+		LeaseOwner:                   leaseOwner,
 		GitCacheDir:                  cfg.GitCacheDir,
 		GitCloneDepth:                cfg.GitCloneDepth,
 		Logger:                       slog.Default(),
@@ -94,7 +99,7 @@ func main() {
 	ticker := time.NewTicker(cfg.WorkerInterval)
 	defer ticker.Stop()
 
-	slog.Info("abra worker started", "interval", cfg.WorkerInterval.String())
+	slog.Info("abra worker started", "interval", cfg.WorkerInterval.String(), "max_sources_per_run", cfg.WorkerMaxSourcesPerRun, "concurrency", cfg.WorkerConcurrency, "lease_owner", leaseOwner)
 	run(ctx, cfg, db, runner)
 	for {
 		select {
@@ -104,6 +109,14 @@ func main() {
 			run(ctx, cfg, db, runner)
 		}
 	}
+}
+
+func workerLeaseOwner() string {
+	hostname, err := os.Hostname()
+	if err != nil || hostname == "" {
+		hostname = "unknown-host"
+	}
+	return "abra-worker:" + hostname + ":" + strconv.Itoa(os.Getpid())
 }
 
 func run(ctx context.Context, cfg config.Config, db *store.Store, runner *jobs.Runner) {

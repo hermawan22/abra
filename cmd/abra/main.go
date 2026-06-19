@@ -340,6 +340,8 @@ func configShow(args cliArgs) error {
 		"embedding_dimensions": values["EMBEDDING_DIMENSIONS"],
 		"embedding_timeout":    values["EMBEDDING_TIMEOUT"],
 		"provider_concurrency": firstNonEmpty(values["ABRA_AI_PROVIDER_CONCURRENCY"], defaultProviderConcurrency(values["EMBEDDING_PROVIDER"])),
+		"worker_concurrency":   firstNonEmpty(values["WORKER_CONCURRENCY"], "1"),
+		"worker_max_sources":   firstNonEmpty(values["WORKER_MAX_SOURCES_PER_RUN"], "25"),
 		"reranker_provider":    values["RERANKER_PROVIDER"],
 		"reranker_base_url":    values["RERANKER_BASE_URL"],
 		"reranker_api_key":     maskSecret(values["RERANKER_API_KEY"]),
@@ -363,6 +365,8 @@ func configShow(args cliArgs) error {
 		fmt.Println("timeout:   " + timeout)
 	}
 	fmt.Println("provider_concurrency: " + stringValue(view["provider_concurrency"], ""))
+	fmt.Println("worker_concurrency:   " + stringValue(view["worker_concurrency"], ""))
+	fmt.Println("worker_max_sources:   " + stringValue(view["worker_max_sources"], ""))
 	fmt.Println("api_key:   " + stringValue(view["embedding_api_key"], ""))
 	if rerankerProvider := stringValue(view["reranker_provider"], ""); rerankerProvider != "" {
 		fmt.Println("reranker:  " + rerankerProvider)
@@ -505,6 +509,8 @@ func updateEnvValues(args cliArgs, updates map[string]string) error {
 		"RERANKER_MODEL",
 		"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION",
 		"WORKER_INTERVAL",
+		"WORKER_MAX_SOURCES_PER_RUN",
+		"WORKER_CONCURRENCY",
 	} {
 		if value, exists := updates[key]; exists && !applied[key] {
 			lines = append(lines, key+"="+value)
@@ -686,6 +692,7 @@ func doctor(ctx context.Context, args cliArgs) error {
 	if envPath(args) != "" {
 		checks = append(checks, envFileCheck(envPath(args)))
 		checks = append(checks, workerIntervalCheck(args))
+		checks = append(checks, workerConcurrencyCheck(args))
 	}
 	checks = append(checks, modelConfigCheck(args))
 	checks = append(checks, aiProviderConcurrencyCheck(args))
@@ -770,6 +777,55 @@ func workerIntervalCheck(args cliArgs) map[string]any {
 		"name":   "worker_interval",
 		"ok":     true,
 		"detail": "WORKER_INTERVAL=" + raw,
+	}
+}
+
+func workerConcurrencyCheck(args cliArgs) map[string]any {
+	path := envPath(args)
+	values, err := readEnvValues(path)
+	if err != nil {
+		return map[string]any{
+			"name":   "worker_concurrency",
+			"ok":     false,
+			"detail": "runtime env is not readable: " + path,
+			"hint":   "run: abra setup",
+		}
+	}
+	raw := strings.TrimSpace(values["WORKER_CONCURRENCY"])
+	if raw == "" {
+		return map[string]any{
+			"name":   "worker_concurrency",
+			"ok":     true,
+			"detail": "WORKER_CONCURRENCY is unset; runtime default is 1",
+		}
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 1 || value > 32 {
+		return map[string]any{
+			"name":   "worker_concurrency",
+			"ok":     false,
+			"detail": "WORKER_CONCURRENCY=" + raw + " must be an integer between 1 and 32",
+			"hint":   "set WORKER_CONCURRENCY=1 in " + path + ", then run: abra down && abra up",
+		}
+	}
+	provider := strings.TrimSpace(values["EMBEDDING_PROVIDER"])
+	providerConcurrencyRaw := strings.TrimSpace(values["ABRA_AI_PROVIDER_CONCURRENCY"])
+	if providerConcurrencyRaw == "" {
+		providerConcurrencyRaw = defaultProviderConcurrency(provider)
+	}
+	providerConcurrency, providerErr := strconv.Atoi(providerConcurrencyRaw)
+	if providerErr == nil && value > providerConcurrency && isLocalProviderName(provider) {
+		return map[string]any{
+			"name":   "worker_concurrency",
+			"ok":     true,
+			"detail": "WORKER_CONCURRENCY=" + raw + " with local provider concurrency=" + providerConcurrencyRaw + "; jobs may queue behind the single local model runner",
+			"hint":   "keep WORKER_CONCURRENCY=1 for the default local Qwen runner, or raise ABRA_AI_PROVIDER_CONCURRENCY only after provider capacity is measured",
+		}
+	}
+	return map[string]any{
+		"name":   "worker_concurrency",
+		"ok":     true,
+		"detail": "WORKER_CONCURRENCY=" + raw,
 	}
 }
 
@@ -3145,6 +3201,8 @@ RATE_LIMIT_WINDOW=1 minute
 ABRA_API_READ_TIMEOUT=10m
 ABRA_MAX_REQUEST_BODY_BYTES=26214400
 WORKER_INTERVAL=30s
+WORKER_MAX_SOURCES_PER_RUN=25
+WORKER_CONCURRENCY=1
 ABRA_DEPLOYMENT_ENVIRONMENT=development
 `
 
@@ -3169,5 +3227,8 @@ RATE_LIMIT_MAX=120
 RATE_LIMIT_WINDOW=1 minute
 ABRA_API_READ_TIMEOUT=2m
 ABRA_MAX_REQUEST_BODY_BYTES=26214400
+WORKER_INTERVAL=30s
+WORKER_MAX_SOURCES_PER_RUN=25
+WORKER_CONCURRENCY=1
 ABRA_PORT=18080
 `
