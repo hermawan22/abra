@@ -37,15 +37,18 @@ type VerificationCheck struct {
 }
 
 type RetrievalQuality struct {
-	ResultCount      int     `json:"result_count"`
-	TopRankScore     float64 `json:"top_rank_score"`
-	AverageRankScore float64 `json:"average_rank_score"`
-	TopTextScore     float64 `json:"top_text_score"`
-	TopVectorScore   float64 `json:"top_vector_score"`
-	LexicalHits      int     `json:"lexical_hits"`
-	VectorHits       int     `json:"vector_hits"`
-	ZeroScoreResults int     `json:"zero_score_results"`
-	LowConfidence    bool    `json:"low_confidence"`
+	ResultCount         int     `json:"result_count"`
+	TopRankScore        float64 `json:"top_rank_score"`
+	AverageRankScore    float64 `json:"average_rank_score"`
+	TopTextScore        float64 `json:"top_text_score"`
+	TopVectorScore      float64 `json:"top_vector_score"`
+	LexicalHits         int     `json:"lexical_hits"`
+	VectorHits          int     `json:"vector_hits"`
+	ZeroScoreResults    int     `json:"zero_score_results"`
+	UniqueSources       int     `json:"unique_sources"`
+	DominantSourceShare float64 `json:"dominant_source_share"`
+	LowConfidence       bool    `json:"low_confidence"`
+	LowSourceDiversity  bool    `json:"low_source_diversity"`
 }
 
 type RetrievalCoverage struct {
@@ -111,6 +114,7 @@ func verifyPacket(summaries []store.MemorySummaryResult, facts []store.ClaimResu
 		countTargetCheck("graph_context", len(graph), plan.CoverageTargets.GraphRelations, "graph context is available for impact exploration"),
 		retrievalCoverageCheck(report.RetrievalCoverage),
 		retrievalQualityCheck(report.RetrievalQuality),
+		retrievalSourceDiversityCheck(report.RetrievalQuality),
 	)
 	report.Checks = append(report.Checks, unsafeSignalCheck("unverified_claims", len(report.UnverifiedClaims), "unverified claims are present"))
 	report.Checks = append(report.Checks, unsafeSignalCheck("stale_claims", len(report.StaleClaims), "stale or expired claims are present"))
@@ -129,7 +133,7 @@ func verifyPacket(summaries []store.MemorySummaryResult, facts []store.ClaimResu
 		score = score / float64(len(report.Checks))
 	}
 	report.Score = round2(score)
-	report.ActionRequired = len(report.ActiveConflicts) > 0 || len(report.ChallengedClaims) > 0 || len(report.StaleClaims) > 0 || len(report.RetrievalWarnings) > 0 || len(report.GraphWarnings) > 0 || len(report.MissingEvidenceClaims) > 0 || report.RetrievalQuality.LowConfidence || !report.RetrievalCoverage.Complete
+	report.ActionRequired = len(report.ActiveConflicts) > 0 || len(report.ChallengedClaims) > 0 || len(report.StaleClaims) > 0 || len(report.RetrievalWarnings) > 0 || len(report.GraphWarnings) > 0 || len(report.MissingEvidenceClaims) > 0 || report.RetrievalQuality.LowConfidence || report.RetrievalQuality.LowSourceDiversity || !report.RetrievalCoverage.Complete
 	report.Verdict = verificationVerdict(report)
 	report.Recommendations = verificationRecommendations(report, len(facts), len(graph))
 
@@ -172,7 +176,8 @@ func retrievalCoverage(summaries []store.MemorySummaryResult, facts []store.Clai
 func retrievalQuality(facts []store.ClaimResult, docs []store.DocumentResult) RetrievalQuality {
 	quality := RetrievalQuality{ResultCount: len(facts) + len(docs)}
 	totalRank := 0.0
-	observe := func(rank, text, vector float64) {
+	sourceCounts := map[string]int{}
+	observe := func(rank, text, vector float64, source string) {
 		totalRank += rank
 		quality.TopRankScore = maxFloat(quality.TopRankScore, rank)
 		quality.TopTextScore = maxFloat(quality.TopTextScore, text)
@@ -186,20 +191,33 @@ func retrievalQuality(facts []store.ClaimResult, docs []store.DocumentResult) Re
 		if rank <= 0 && text <= 0 && vector <= 0 {
 			quality.ZeroScoreResults++
 		}
+		source = strings.TrimSpace(source)
+		if source != "" {
+			sourceCounts[source]++
+		}
 	}
 	for _, fact := range facts {
-		observe(fact.Rank, fact.TextScore, fact.VectorScore)
+		observe(fact.Rank, fact.TextScore, fact.VectorScore, pointerString(fact.Source))
 	}
 	for _, doc := range docs {
-		observe(doc.Rank, doc.TextScore, doc.VectorScore)
+		observe(doc.Rank, doc.TextScore, doc.VectorScore, doc.Source)
 	}
 	if quality.ResultCount > 0 {
 		quality.AverageRankScore = round2(totalRank / float64(quality.ResultCount))
+	}
+	maxSourceCount := 0
+	for _, count := range sourceCounts {
+		maxSourceCount = maxInt(maxSourceCount, count)
+	}
+	quality.UniqueSources = len(sourceCounts)
+	if quality.ResultCount > 0 && maxSourceCount > 0 {
+		quality.DominantSourceShare = round2(float64(maxSourceCount) / float64(quality.ResultCount))
 	}
 	quality.TopRankScore = round2(quality.TopRankScore)
 	quality.TopTextScore = round2(quality.TopTextScore)
 	quality.TopVectorScore = round2(quality.TopVectorScore)
 	quality.LowConfidence = quality.ResultCount > 0 && quality.TopRankScore < 0.1 && quality.TopTextScore < 0.1 && quality.TopVectorScore < 0.1
+	quality.LowSourceDiversity = quality.ResultCount >= 4 && quality.UniqueSources <= 1
 	return quality
 }
 
@@ -239,6 +257,19 @@ func retrievalQualityCheck(quality RetrievalQuality) VerificationCheck {
 		return VerificationCheck{Name: "retrieval_quality", Status: "pass", Score: 0.9, Message: "retrieval ranking signal is strong enough for verification"}
 	}
 	return VerificationCheck{Name: "retrieval_quality", Status: "partial", Score: 0.65, Message: "retrieval ranking signal is present but narrow"}
+}
+
+func retrievalSourceDiversityCheck(quality RetrievalQuality) VerificationCheck {
+	if quality.ResultCount == 0 {
+		return VerificationCheck{Name: "retrieval_source_diversity", Status: "missing", Score: 0.35, Message: "no retrieval results were available for source diversity"}
+	}
+	if quality.UniqueSources >= 2 {
+		return VerificationCheck{Name: "retrieval_source_diversity", Status: "pass", Score: 1, Message: "retrieval includes corroborating source diversity"}
+	}
+	if quality.LowSourceDiversity {
+		return VerificationCheck{Name: "retrieval_source_diversity", Status: "review", Score: 0.45, Message: "retrieval is concentrated in one source despite several results"}
+	}
+	return VerificationCheck{Name: "retrieval_source_diversity", Status: "partial", Score: 0.75, Message: "retrieval has one source; acceptable for narrow packets but not corroborated"}
 }
 
 func claimCoverageCheck(coverage float64, total int, target int) VerificationCheck {
@@ -338,6 +369,8 @@ func verificationVerdict(report VerificationReport) string {
 		return "weak"
 	case report.RetrievalQuality.LowConfidence:
 		return "weak"
+	case report.RetrievalQuality.LowSourceDiversity:
+		return "partial"
 	case len(report.StaleClaims) > 0 || len(report.UnverifiedClaims) > 0:
 		return "partial"
 	case report.Score >= 0.85 && (report.ClaimCoverage >= 0.95 || report.RetrievalCoverage.Targets.Facts == 0) && report.EvidenceSources > 0:
@@ -375,6 +408,9 @@ func verificationRecommendations(report VerificationReport, facts, graph int) []
 	}
 	if report.RetrievalQuality.LowConfidence {
 		out = append(out, "Rerun retrieval with a more specific query or rebuild embeddings before using low-signal results.")
+	}
+	if report.RetrievalQuality.LowSourceDiversity {
+		out = append(out, "Corroborate this packet with another source before treating one-source retrieval as settled.")
 	}
 	if len(report.GraphWarnings) > 0 {
 		out = append(out, "Review graph warnings before treating dependency or tool choices as settled.")

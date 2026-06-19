@@ -38,8 +38,14 @@ func TestVerifyPacketStrongWhenSourceBackedAndFresh(t *testing.T) {
 	if report.RetrievalQuality.ResultCount != 2 || report.RetrievalQuality.TopTextScore == 0 || report.RetrievalQuality.TopVectorScore == 0 {
 		t.Fatalf("retrieval quality missing score components: %#v", report.RetrievalQuality)
 	}
+	if report.RetrievalQuality.UniqueSources != 1 || report.RetrievalQuality.LowSourceDiversity {
+		t.Fatalf("small narrow packet should report one source without low-diversity gate: %#v", report.RetrievalQuality)
+	}
 	if !containsCheck(report.Checks, "retrieval_quality") {
 		t.Fatalf("retrieval quality check missing: %#v", report.Checks)
+	}
+	if !containsCheck(report.Checks, "retrieval_source_diversity") {
+		t.Fatalf("retrieval source diversity check missing: %#v", report.Checks)
 	}
 	if !containsCheck(report.Checks, "retrieval_coverage") || !report.RetrievalCoverage.Complete {
 		t.Fatalf("retrieval coverage check missing or incomplete: %#v", report)
@@ -232,6 +238,36 @@ func TestVerifyPacketWeakWhenRetrievalSignalIsLow(t *testing.T) {
 	}
 	if !containsRecommendation(report.Recommendations, "Rerun retrieval with a more specific query") {
 		t.Fatalf("low-signal recommendation missing: %#v", report.Recommendations)
+	}
+}
+
+func TestVerifyPacketPartialWhenManyResultsComeFromOneSource(t *testing.T) {
+	source := "file://single-source.md"
+	report := verifyPacket(
+		testSummaries(source),
+		[]store.ClaimResult{
+			{ID: "claim-1", Claim: "First claim.", Status: "verified", Source: &source, Rank: 1.2, TextScore: 0.3, VectorScore: 0.2, Freshness: "fresh"},
+			{ID: "claim-2", Claim: "Second claim.", Status: "verified", Source: &source, Rank: 1.1, TextScore: 0.2, VectorScore: 0.2, Freshness: "fresh"},
+		},
+		[]store.DocumentResult{
+			{ID: "doc-1", Title: "Single", Source: source, Content: "First source chunk.", Rank: 1, TextScore: 0.4, VectorScore: 0.1},
+			{ID: "doc-2", Title: "Single", Source: source, Content: "Second source chunk.", Rank: 0.9, TextScore: 0.3, VectorScore: 0.1},
+		},
+		[]store.RelationResult{{FromEntity: "A", ToEntity: "B", Type: "supports", Confidence: 0.8, SourceURL: &source}},
+		[]EvidenceItem{{SourceURL: source, Count: 4}},
+		testRetrievalPlan(1),
+		nil,
+		nil,
+		nil,
+	)
+	if report.Verdict != "partial" || !report.ActionRequired || !report.RetrievalQuality.LowSourceDiversity {
+		t.Fatalf("single-source dominant packet should be partial/action-required: %#v", report)
+	}
+	if report.RetrievalQuality.UniqueSources != 1 || report.RetrievalQuality.DominantSourceShare != 1 {
+		t.Fatalf("source diversity metrics wrong: %#v", report.RetrievalQuality)
+	}
+	if !containsRecommendation(report.Recommendations, "Corroborate this packet with another source") {
+		t.Fatalf("source diversity recommendation missing: %#v", report.Recommendations)
 	}
 }
 

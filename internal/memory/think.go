@@ -229,6 +229,9 @@ func thinkGaps(packet ComposeResult) []ThinkGap {
 	if packet.Verification.RetrievalQuality.LowConfidence {
 		add("low_confidence_retrieval", "medium", "Retrieved evidence had low lexical/vector confidence.", "rerun with a more specific query")
 	}
+	if packet.Verification.RetrievalQuality.LowSourceDiversity {
+		add("low_source_diversity", "medium", "Retrieved evidence is concentrated in one source.", "corroborate with another source before treating it as settled")
+	}
 	if len(packet.Verification.UnverifiedClaims) > 0 {
 		add("unverified_claims", "medium", "Unverified claims are present.", "add evidence or request review before trusting them")
 	}

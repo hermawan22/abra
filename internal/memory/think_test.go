@@ -84,7 +84,7 @@ func TestBuildThinkResultSurfacesGovernanceGaps(t *testing.T) {
 				Complete: false,
 				Missing:  []string{"facts", "evidence_sources"},
 			},
-			RetrievalQuality: RetrievalQuality{LowConfidence: true},
+			RetrievalQuality: RetrievalQuality{LowConfidence: true, LowSourceDiversity: true},
 			UnverifiedClaims: []string{"claim-unverified"},
 		},
 		AgentDecision: AgentDecision{
@@ -102,7 +102,7 @@ func TestBuildThinkResultSurfacesGovernanceGaps(t *testing.T) {
 	for _, gap := range result.Gaps {
 		codes[gap.Code] = true
 	}
-	for _, want := range []string{"no_source_backed_facts", "coverage_facts", "coverage_evidence_sources", "low_confidence_retrieval", "unverified_claims", "memory_health_needs_review"} {
+	for _, want := range []string{"no_source_backed_facts", "coverage_facts", "coverage_evidence_sources", "low_confidence_retrieval", "low_source_diversity", "unverified_claims", "memory_health_needs_review"} {
 		if !codes[want] {
 			t.Fatalf("gap %q missing from %#v", want, result.Gaps)
 		}

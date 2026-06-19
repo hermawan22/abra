@@ -321,6 +321,9 @@ func normalizeRetrievalQuality(quality memory.RetrievalQuality, verdict string) 
 	if quality.LowConfidence {
 		return "low_confidence"
 	}
+	if quality.LowSourceDiversity {
+		return "low_source_diversity"
+	}
 	if quality.ResultCount > 0 {
 		return "ok"
 	}

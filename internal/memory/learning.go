@@ -136,6 +136,26 @@ func learningSuggestions(result ComposeResult) []LearningSuggestion {
 			},
 		})
 	}
+	if result.Verification.RetrievalQuality.LowSourceDiversity {
+		add(LearningSuggestion{
+			ProposalType: "ingestion",
+			Title:        "Corroborate single-source retrieval",
+			Rationale:    "Working-memory retrieval returned several results, but they were dominated by one source; add or refresh corroborating sources before treating the packet as settled.",
+			TargetType:   "scope",
+			TargetID:     result.Scope,
+			Confidence:   0.72,
+			Payload: map[string]any{
+				"task":              result.Task,
+				"verdict":           result.Verification.Verdict,
+				"retrieval_quality": result.Verification.RetrievalQuality,
+				"suggested_actions": []string{
+					"ingest_corroborating_sources",
+					"rerun_with_source_diversity",
+					"challenge_single_source_assumptions",
+				},
+			},
+		})
+	}
 	if len(result.Summaries) == 0 && len(result.Facts)+len(result.SupportingDocuments) > 0 {
 		add(LearningSuggestion{
 			ProposalType: "summary_rebuild",

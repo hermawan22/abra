@@ -629,6 +629,29 @@ func TestComposeSuggestsLearningForLowConfidenceRetrieval(t *testing.T) {
 	}
 }
 
+func TestLearningSuggestionsIncludeLowSourceDiversityRepair(t *testing.T) {
+	result := ComposeResult{
+		Task:  "decide deployment convention",
+		Scope: "repo:test/app",
+		Verification: VerificationReport{
+			Verdict: "partial",
+			RetrievalQuality: RetrievalQuality{
+				ResultCount:         4,
+				UniqueSources:       1,
+				DominantSourceShare: 1,
+				LowSourceDiversity:  true,
+			},
+		},
+	}
+	suggestions := learningSuggestions(result)
+	if !containsLearningTitle(suggestions, "Corroborate single-source retrieval") {
+		t.Fatalf("low-source-diversity learning suggestion missing: %#v", suggestions)
+	}
+	if !containsLearningType(suggestions, "ingestion") {
+		t.Fatalf("low-source-diversity suggestion should be ingestion typed: %#v", suggestions)
+	}
+}
+
 func TestComposeBlocksAutonomyWhenActiveConflictSurfaces(t *testing.T) {
 	db := &fakeStore{
 		conflicts: []store.ConflictResult{{

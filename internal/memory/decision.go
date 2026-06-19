@@ -242,6 +242,9 @@ func reviewActions(result ComposeResult) []string {
 	if result.Verification.RetrievalQuality.LowConfidence {
 		actions = append(actions, "rerun_with_more_specific_query")
 	}
+	if result.Verification.RetrievalQuality.LowSourceDiversity {
+		actions = append(actions, "corroborate_with_additional_source")
+	}
 	if len(result.Verification.GraphWarnings) > 0 {
 		actions = append(actions, "review_graph_warnings")
 	}

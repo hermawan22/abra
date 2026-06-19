@@ -67,6 +67,16 @@ func TestSmartPathMetricsPrometheus(t *testing.T) {
 			},
 		},
 	})
+	collector.observeMemory("ok", 13*time.Millisecond, memory.ComposeResult{
+		Verification: memory.VerificationReport{
+			Verdict: "partial",
+			RetrievalQuality: memory.RetrievalQuality{
+				ResultCount:        4,
+				LowSourceDiversity: true,
+			},
+		},
+		AgentDecision: memory.AgentDecision{Decision: "caution"},
+	})
 	collector.observeMemory("error", 3*time.Millisecond, memory.ComposeResult{})
 	collector.observeAgentPolicyDecision("decision_api", "forget_claim", "deny")
 
@@ -79,6 +89,7 @@ func TestSmartPathMetricsPrometheus(t *testing.T) {
 		`abra_smart_path_requests_total{operation="working_memory",status="ok",verdict="strong",decision="proceed"} 1`,
 		`abra_smart_path_requests_total{operation="working_memory",status="error",verdict="",decision=""} 1`,
 		`abra_working_memory_retrieval_quality_total{status="ok",verdict="strong",quality="ok"} 1`,
+		`abra_working_memory_retrieval_quality_total{status="ok",verdict="partial",quality="low_source_diversity"} 1`,
 		`abra_working_memory_retrieval_quality_total{status="error",verdict="unknown",quality="unknown"} 1`,
 		`abra_working_memory_retrieval_top_rank_score_sum{status="ok",verdict="strong",quality="ok"} 1.250000`,
 		`abra_working_memory_retrieval_last_result_count{status="ok",verdict="strong",quality="ok"} 3`,
