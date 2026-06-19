@@ -33,6 +33,8 @@ x-api-key: <api-key>
 
 Set `ABRA_WEBHOOK_SECRETS` and include connector metadata such as `connector_kind`, event type, source authority, and source updated time.
 
+Webhook ingestion is asynchronous. A successful response means Abra has accepted durable ingestion jobs, not that embeddings are already written. Use the returned `ingestion_job_id` values, `abra jobs --scope <scope>`, or `GET /ingestion/jobs` to wait for `succeeded` before expecting recall or `working_memory_compose` to include the new content.
+
 ## ACL And Policy Pattern
 
 Identity gateways can call:

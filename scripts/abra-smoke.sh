@@ -52,6 +52,34 @@ json_post_signed() {
     "${BASE_URL}${path}"
 }
 
+wait_ingestion_job() {
+  local job_id="$1"
+  local output="$2"
+  local timeout="${ABRA_SMOKE_JOB_TIMEOUT:-120}"
+  local deadline=$((SECONDS + timeout))
+  while true; do
+    json_get "/ingestion/jobs?scope=${SCOPE}&limit=100" >"${output}"
+    local status
+    status="$(JOB_ID="$job_id" node -e 'let d="";process.stdin.on("data",x=>d+=x);process.stdin.on("end",()=>{const jobs=(JSON.parse(d).ingestion_jobs)||[]; const job=jobs.find((item)=>item.id===process.env.JOB_ID); if(!job){process.stdout.write("missing"); return;} process.stdout.write(String(job.status||""));})' <"${output}")"
+    case "$status" in
+      succeeded)
+        return 0
+        ;;
+      failed|canceled)
+        echo "ingestion job ${job_id} ended with status ${status}" >&2
+        cat "${output}" >&2 || true
+        exit 1
+        ;;
+    esac
+    if (( SECONDS >= deadline )); then
+      echo "ingestion job ${job_id} did not finish within ${timeout}s; last status: ${status}" >&2
+      cat "${output}" >&2 || true
+      exit 1
+    fi
+    sleep 1
+  done
+}
+
 expect_get_status() {
   local expected="$1"
   local path="$2"
@@ -611,6 +639,9 @@ json_post_signed "/ingest/webhooks" "{
   \"metadata\":{\"owner\":\"smoke\",\"connector\":\"jira\"}
 }" >"${tmpdir}/webhook-duplicate.json"
 
+webhook_job_id="$(node -e 'let d="";process.stdin.on("data",x=>d+=x);process.stdin.on("end",()=>{const r=JSON.parse(d); console.log(r.documents[0].ingestion_job_id);})' <"${tmpdir}/webhook.json")"
+wait_ingestion_job "$webhook_job_id" "${tmpdir}/webhook-job.json"
+
 json_post "/recall" "{
   \"query\":\"source-cited connector memory\",
   \"scope\":\"${SCOPE}\",
@@ -954,6 +985,7 @@ const codeRefreshRelationsInitial = read("code-refresh-relations-initial.json");
 const codeRefreshRelationsUpdated = read("code-refresh-relations-updated.json");
 const webhook = read("webhook.json");
 const webhookDuplicate = read("webhook-duplicate.json");
+const webhookJob = read("webhook-job.json");
 const recall = read("recall.json");
 const policy = read("policy.json");
 const memory = read("memory.json");
@@ -1116,8 +1148,11 @@ if (!Array.isArray(codeRefreshRelationsUpdated.relations) || !codeRefreshRelatio
 if (webhook.accepted !== 1 || !Array.isArray(webhook.documents) || webhook.documents[0].source_url !== "https://jira.example.invalid/browse/ABRA-" + process.env.STAMP) {
   throw new Error("signed webhook did not ingest exactly one connector document");
 }
-if (!webhook.documents[0].ingestion_job_id || webhook.documents[0].job_status !== "succeeded") {
-  throw new Error("signed webhook did not return a succeeded ingestion job");
+if (!webhook.documents[0].ingestion_job_id || !["queued", "retry", "running", "succeeded"].includes(webhook.documents[0].job_status)) {
+  throw new Error("signed webhook did not return an accepted ingestion job");
+}
+if (!Array.isArray(webhookJob.ingestion_jobs) || !webhookJob.ingestion_jobs.some((job) => job.id === webhook.documents[0].ingestion_job_id && job.status === "succeeded")) {
+  throw new Error("signed webhook ingestion job did not finish through the worker");
 }
 if (webhookDuplicate.accepted !== 1 || !Array.isArray(webhookDuplicate.documents) || webhookDuplicate.documents[0].duplicate !== true || webhookDuplicate.documents[0].ingestion_job_id !== webhook.documents[0].ingestion_job_id) {
   throw new Error("signed webhook redelivery was not treated as an idempotent duplicate");

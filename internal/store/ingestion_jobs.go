@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -30,16 +32,20 @@ type CancelIngestionJobInput struct {
 }
 
 type StartWebhookIngestionJobInput struct {
-	Scope         string         `json:"scope"`
-	SourceType    string         `json:"source_type"`
-	SourceURL     string         `json:"source_url"`
-	Authority     string         `json:"authority"`
-	ConnectorKind string         `json:"connector_kind"`
-	EventType     string         `json:"event_type"`
-	DeliveryID    string         `json:"delivery_id"`
-	DocumentIndex int            `json:"document_index"`
-	CreatedBy     string         `json:"created_by"`
-	Metadata      map[string]any `json:"metadata"`
+	Scope           string         `json:"scope"`
+	SourceType      string         `json:"source_type"`
+	SourceURL       string         `json:"source_url"`
+	SourceID        string         `json:"source_id"`
+	Title           string         `json:"title"`
+	Content         string         `json:"content"`
+	SourceUpdatedAt string         `json:"source_updated_at"`
+	Authority       string         `json:"authority"`
+	ConnectorKind   string         `json:"connector_kind"`
+	EventType       string         `json:"event_type"`
+	DeliveryID      string         `json:"delivery_id"`
+	DocumentIndex   int            `json:"document_index"`
+	CreatedBy       string         `json:"created_by"`
+	Metadata        map[string]any `json:"metadata"`
 }
 
 type FinishWebhookIngestionJobInput struct {
@@ -92,8 +98,10 @@ func (s *Store) StartWebhookIngestionJob(ctx context.Context, input StartWebhook
 	input.Scope = strings.TrimSpace(input.Scope)
 	input.SourceType = strings.TrimSpace(input.SourceType)
 	input.SourceURL = strings.TrimSpace(input.SourceURL)
-	if input.Scope == "" || input.SourceType == "" || input.SourceURL == "" {
-		return IngestionJobRecord{}, false, fmt.Errorf("scope, source_type, and source_url are required")
+	input.Title = strings.TrimSpace(input.Title)
+	input.Content = strings.TrimSpace(input.Content)
+	if input.Scope == "" || input.SourceType == "" || input.SourceURL == "" || input.Title == "" || input.Content == "" {
+		return IngestionJobRecord{}, false, fmt.Errorf("scope, source_type, source_url, title, and content are required")
 	}
 	authority := strings.TrimSpace(input.Authority)
 	if authority == "" {
@@ -107,15 +115,22 @@ func (s *Store) StartWebhookIngestionJob(ctx context.Context, input StartWebhook
 		"webhook_doc_index":   input.DocumentIndex,
 		"started_at":          time.Now().UTC().Format(time.RFC3339Nano),
 	})
-	tag, err := s.pool.Exec(ctx, `
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return IngestionJobRecord{}, false, err
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+	tag, err := tx.Exec(ctx, `
 		INSERT INTO ingestion_jobs (
 		  id, source_config_id, scope, source_type, source_url, trigger_type,
-		  status, authority, lease_owner, heartbeat_at, started_at, attempts,
+		  status, authority, attempts,
 		  max_attempts, created_by, metadata
 		)
 		VALUES (
 		  $1, NULL, $2, $3, $4, 'webhook',
-		  'running', $5, 'abra-api', now(), now(), 1,
+		  'queued', $5, 0,
 		  3, NULLIF($6, ''), $7::jsonb
 		)
 		ON CONFLICT DO NOTHING
@@ -124,25 +139,46 @@ func (s *Store) StartWebhookIngestionJob(ctx context.Context, input StartWebhook
 		return IngestionJobRecord{}, false, err
 	}
 	if tag.RowsAffected() > 0 {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO ingestion_job_documents (
+			  job_id, document_index, scope, source_type, source_url, source_id,
+			  title, content, source_updated_at, content_checksum, metadata
+			)
+			VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7, $8, NULLIF($9, ''), $10, $11::jsonb)
+			ON CONFLICT (job_id, document_index) DO UPDATE SET
+			  title = EXCLUDED.title,
+			  content = EXCLUDED.content,
+			  source_updated_at = EXCLUDED.source_updated_at,
+			  content_checksum = EXCLUDED.content_checksum,
+			  metadata = EXCLUDED.metadata,
+			  updated_at = now()
+		`, jobID, input.DocumentIndex, input.Scope, input.SourceType, input.SourceURL, strings.TrimSpace(input.SourceID), input.Title, input.Content, strings.TrimSpace(input.SourceUpdatedAt), checksum(input.Content), jsonb(input.Metadata)); err != nil {
+			return IngestionJobRecord{}, false, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return IngestionJobRecord{}, false, err
+		}
 		job, getErr := s.GetIngestionJob(ctx, jobID)
 		return job, false, getErr
 	}
-	job, err := s.restartRetryableWebhookJob(ctx, jobID, metadata)
+	if err := tx.Commit(ctx); err != nil {
+		return IngestionJobRecord{}, false, err
+	}
+	job, requeued, err := s.restartRetryableWebhookJob(ctx, jobID, metadata)
 	if err != nil {
 		return IngestionJobRecord{}, false, err
 	}
-	return job, job.Status != "running" || job.Attempts == 1, nil
+	return job, !requeued, nil
 }
 
-func (s *Store) restartRetryableWebhookJob(ctx context.Context, jobID string, metadata map[string]any) (IngestionJobRecord, error) {
+func (s *Store) restartRetryableWebhookJob(ctx context.Context, jobID string, metadata map[string]any) (IngestionJobRecord, bool, error) {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE ingestion_jobs
-		SET status = 'running',
-		    lease_owner = 'abra-api',
-		    heartbeat_at = now(),
-		    started_at = now(),
+		SET status = 'queued',
+		    lease_owner = NULL,
+		    heartbeat_at = NULL,
+		    started_at = NULL,
 		    finished_at = NULL,
-		    attempts = attempts + 1,
 		    error_message = NULL,
 		    metadata = metadata || $2::jsonb,
 		    updated_at = now()
@@ -154,16 +190,13 @@ func (s *Store) restartRetryableWebhookJob(ctx context.Context, jobID string, me
 		"redelivered_at": time.Now().UTC().Format(time.RFC3339Nano),
 	})))
 	if err != nil {
-		return IngestionJobRecord{}, err
+		return IngestionJobRecord{}, false, err
 	}
 	job, getErr := s.GetIngestionJob(ctx, jobID)
 	if getErr != nil {
-		return IngestionJobRecord{}, getErr
+		return IngestionJobRecord{}, false, getErr
 	}
-	if tag.RowsAffected() > 0 {
-		return job, nil
-	}
-	return job, nil
+	return job, tag.RowsAffected() > 0, nil
 }
 
 func (s *Store) FinishWebhookIngestionJob(ctx context.Context, jobID string, input FinishWebhookIngestionJobInput) (IngestionJobRecord, error) {
@@ -384,6 +417,11 @@ func webhookIngestionJobID(input StartWebhookIngestionJobInput) string {
 		return stableID("webhook-job", scope, sourceType, sourceURL, documentIndex, time.Now().UTC().Format(time.RFC3339Nano))
 	}
 	return stableID("webhook-job", strings.TrimSpace(input.ConnectorKind), strings.TrimSpace(input.EventType), deliveryID, scope, sourceType, sourceURL, documentIndex)
+}
+
+func checksum(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
 }
 
 func mergeMetadata(base map[string]any, extra map[string]any) map[string]any {

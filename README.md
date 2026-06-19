@@ -623,7 +623,7 @@ curl -X POST "$ABRA_BASE_URL/ingest/webhooks" \
   -d "$body"
 ```
 
-`POST /ingest/webhooks` accepts either one document at the top level or a `documents` array for batches up to 50 items. It still requires API authentication. When `ABRA_WEBHOOK_SECRETS` is configured, the request body must match `x-abra-signature` or `x-hub-signature-256` using HMAC SHA-256.
+`POST /ingest/webhooks` accepts either one document at the top level or a `documents` array for batches up to 50 items. It still requires API authentication. When `ABRA_WEBHOOK_SECRETS` is configured, the request body must match `x-abra-signature` or `x-hub-signature-256` using HMAC SHA-256. Webhook ingestion is queue-first: the endpoint returns accepted `ingestion_job_id` values, and the worker performs embedding and graph extraction. Check completion with `abra jobs --scope <scope>` or `GET /ingestion/jobs`.
 
 Example recall payload:
 
@@ -826,7 +826,7 @@ The OSS surface is generic document ingestion through `POST /ingest/documents` o
 - Preserve ACL and scope metadata before records become available to agents.
 - Keep connector-specific auth and normalization in a private overlay or fork.
 
-Worker runs are written to `ingestion_jobs` and exposed through `GET /ingestion/jobs`. Operators and agent gateways can manually enqueue a source with `POST /ingestion/jobs` or MCP `enqueue_ingestion_job`, list jobs with `list_ingestion_jobs`, retry failed/canceled jobs with `POST /ingestion/jobs/:jobId/retry` or MCP `retry_ingestion_job`, and cancel queued/retry jobs with `POST /ingestion/jobs/:jobId/cancel` or MCP `cancel_ingestion_job`. Source configs can be written and listed through both HTTP and MCP (`upsert_source_config`, `list_source_configs`). Source configs also keep the latest success/error timestamps for quick operator checks over HTTP or MCP. Source config changes, including pause/resume status changes, write `source_config.upserted` audit events so operators can review lifecycle changes through `GET /audit/events`.
+Worker runs are written to `ingestion_jobs` and exposed through `GET /ingestion/jobs`. Signed webhook documents also create durable queued jobs so slow embedding providers do not block webhook responses. Operators and agent gateways can manually enqueue a source with `POST /ingestion/jobs` or MCP `enqueue_ingestion_job`, list jobs with `list_ingestion_jobs`, retry failed/canceled jobs with `POST /ingestion/jobs/:jobId/retry` or MCP `retry_ingestion_job`, and cancel queued/retry jobs with `POST /ingestion/jobs/:jobId/cancel` or MCP `cancel_ingestion_job`. Source configs can be written and listed through both HTTP and MCP (`upsert_source_config`, `list_source_configs`). Source configs also keep the latest success/error timestamps for quick operator checks over HTTP or MCP. Source config changes, including pause/resume status changes, write `source_config.upserted` audit events so operators can review lifecycle changes through `GET /audit/events`.
 
 ### Git/local-repo source configs
 

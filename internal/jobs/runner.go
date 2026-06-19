@@ -28,6 +28,7 @@ type SourceStore interface {
 	ClaimQueuedIngestionJobs(ctx context.Context, limit int, leaseOwner string) ([]QueuedIngestionJob, error)
 	HeartbeatIngestionJob(ctx context.Context, jobID string, leaseOwner string) error
 	FinishIngestionJob(ctx context.Context, jobID string, leaseOwner string, stats SourceStats, runErr error) (string, error)
+	GetWebhookDocument(ctx context.Context, jobID string) (IngestDocumentInput, error)
 	DocumentState(ctx context.Context, doc ingest.Document) (DocumentState, error)
 	MarkSourceSuccess(ctx context.Context, sourceID string, stats SourceStats) error
 	MarkSourceError(ctx context.Context, sourceID string, err error) error
@@ -161,7 +162,13 @@ func (r *Runner) RunOnce(ctx context.Context) (RunStats, error) {
 	for _, queuedJob := range queuedJobs {
 		source := queuedJob.Source
 		jobID := queuedJob.ID
-		sourceStats, err := r.runSource(ctx, source, jobID)
+		var sourceStats SourceStats
+		var err error
+		if queuedJob.TriggerType == "webhook" {
+			sourceStats, err = r.runWebhookDocument(ctx, jobID)
+		} else {
+			sourceStats, err = r.runSource(ctx, source, jobID)
+		}
 		stats.DocumentsSeen += sourceStats.DocumentsSeen
 		stats.DocumentsChanged += sourceStats.DocumentsChanged
 		stats.DocumentsSkipped += sourceStats.DocumentsSkipped
@@ -190,6 +197,9 @@ func (r *Runner) RunOnce(ctx context.Context) (RunStats, error) {
 			continue
 		}
 		stats.SourcesSucceeded++
+		if queuedJob.TriggerType == "webhook" || source.ID == "" {
+			continue
+		}
 		if err := r.store.MarkSourceSuccess(ctx, source.ID, sourceStats); err != nil {
 			r.options.Logger.Error("source success update failed", "source_config_id", source.ID, "error", err)
 		}
@@ -207,6 +217,53 @@ func (r *Runner) RunOnce(ctx context.Context) (RunStats, error) {
 		attribute.Int("abra.worker.claims_written", stats.ClaimsWritten),
 	)
 	return stats, runErr
+}
+
+func (r *Runner) runWebhookDocument(ctx context.Context, jobID string) (SourceStats, error) {
+	ctx, span := observability.Start(ctx, "abra.worker.webhook_document")
+	var runErr error
+	defer func() {
+		observability.End(span, runErr)
+	}()
+	sourceCtx, cancel := context.WithTimeout(ctx, r.options.SourceTimeout)
+	defer cancel()
+	heartbeatErrs := r.startHeartbeatLoop(sourceCtx, jobID, cancel)
+	if err := r.heartbeatJob(sourceCtx, jobID); err != nil {
+		runErr = err
+		return SourceStats{}, err
+	}
+	doc, err := r.store.GetWebhookDocument(sourceCtx, jobID)
+	if err != nil {
+		runErr = err
+		return SourceStats{}, err
+	}
+	doc.Metadata = mergeJobMetadata(doc.Metadata, map[string]any{"ingestion_job_id": jobID})
+	result, err := r.ingestor.IngestDocument(sourceCtx, doc)
+	if err != nil {
+		if heartbeatErr := heartbeatLoopErr(heartbeatErrs); heartbeatErr != nil {
+			runErr = heartbeatErr
+			return SourceStats{}, heartbeatErr
+		}
+		runErr = err
+		return SourceStats{DocumentsSeen: 1}, err
+	}
+	if heartbeatErr := heartbeatLoopErr(heartbeatErrs); heartbeatErr != nil {
+		runErr = heartbeatErr
+		return SourceStats{}, heartbeatErr
+	}
+	stats := SourceStats{
+		DocumentsSeen:    1,
+		DocumentsChanged: 1,
+		ChunksWritten:    result.Chunks,
+		ClaimsWritten:    result.Claims,
+	}
+	span.SetAttributes(
+		attribute.Int("abra.source.documents_seen", stats.DocumentsSeen),
+		attribute.Int("abra.source.documents_changed", stats.DocumentsChanged),
+		attribute.Int("abra.source.chunks_written", stats.ChunksWritten),
+		attribute.Int("abra.source.claims_written", stats.ClaimsWritten),
+	)
+	return stats, nil
 }
 
 func (r *Runner) runSource(ctx context.Context, source SourceConfig, jobID string) (SourceStats, error) {
@@ -423,4 +480,15 @@ func documentInput(source SourceConfig, doc ingest.Document, jobID string) Inges
 		Content:    doc.Content,
 		Metadata:   metadata,
 	}
+}
+
+func mergeJobMetadata(base map[string]any, extra map[string]any) map[string]any {
+	out := map[string]any{}
+	for key, value := range base {
+		out[key] = value
+	}
+	for key, value := range extra {
+		out[key] = value
+	}
+	return out
 }

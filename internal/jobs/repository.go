@@ -169,14 +169,20 @@ func (r *Repository) ClaimQueuedIngestionJobs(ctx context.Context, limit int, le
 		WITH next_jobs AS (
 		  SELECT ij.id
 		  FROM ingestion_jobs ij
-		  JOIN source_configs sc ON sc.id = ij.source_config_id
+		  LEFT JOIN source_configs sc ON sc.id = ij.source_config_id
 		  WHERE ij.status IN ('queued', 'retry')
 		    AND ij.attempts < ij.max_attempts
-		    AND sc.status IN ('active', 'error')
-		    AND sc.source_type IN ('local_repo', 'markdown', 'git_repo')
-		  ORDER BY sc.priority ASC, ij.created_at ASC, ij.id ASC
+		    AND (
+		      (sc.status IN ('active', 'error') AND sc.source_type IN ('local_repo', 'markdown', 'git_repo'))
+		      OR (ij.trigger_type = 'webhook' AND EXISTS (
+		        SELECT 1 FROM ingestion_job_documents payload WHERE payload.job_id = ij.id
+		      ))
+		    )
+		  ORDER BY CASE WHEN ij.trigger_type = 'webhook' THEN -1 ELSE COALESCE(sc.priority, 1000) END ASC,
+		           ij.created_at ASC,
+		           ij.id ASC
 		  LIMIT $2
-		  FOR UPDATE SKIP LOCKED
+		  FOR UPDATE OF ij SKIP LOCKED
 		),
 		claimed AS (
 		  UPDATE ingestion_jobs ij
@@ -194,25 +200,29 @@ func (r *Repository) ClaimQueuedIngestionJobs(ctx context.Context, limit int, le
 		    ij.trigger_type,
 		    ij.attempts,
 		    ij.max_attempts,
-		    ij.source_config_id
+		    COALESCE(ij.source_config_id, '') AS source_config_id,
+		    ij.scope,
+		    ij.source_type,
+		    ij.authority
 		)
 		SELECT
 		  claimed.id,
 		  claimed.trigger_type,
 		  claimed.attempts,
 		  claimed.max_attempts,
-		  sc.id,
-		  sc.scope,
-		  sc.source_type,
-		  sc.name,
+		  COALESCE(sc.id, ''),
+		  COALESCE(sc.scope, claimed.scope),
+		  COALESCE(sc.source_type, claimed.source_type),
+		  COALESCE(sc.name, claimed.trigger_type || ':' || claimed.id),
 		  COALESCE(sc.base_url, ''),
-		  sc.authority,
-		  sc.authority_score,
-		  sc.config,
-		  sc.metadata
+		  COALESCE(sc.authority, claimed.authority),
+		  COALESCE(sc.authority_score, 0),
+		  COALESCE(sc.config, '{}'::jsonb),
+		  COALESCE(sc.metadata, '{}'::jsonb)
 		FROM claimed
-		JOIN source_configs sc ON sc.id = claimed.source_config_id
-		ORDER BY sc.priority ASC, claimed.id ASC
+		LEFT JOIN source_configs sc ON sc.id = claimed.source_config_id
+		ORDER BY CASE WHEN claimed.trigger_type = 'webhook' THEN -1 ELSE COALESCE(sc.priority, 1000) END ASC,
+		         claimed.id ASC
 	`, leaseOwner, limit)
 	if err != nil {
 		return nil, err
@@ -295,6 +305,43 @@ func (r *Repository) HeartbeatIngestionJob(ctx context.Context, jobID string, le
 		return fmt.Errorf("job %q is no longer running for lease owner %q (status %q)", jobID, leaseOwner, status)
 	}
 	return nil
+}
+
+func (r *Repository) GetWebhookDocument(ctx context.Context, jobID string) (IngestDocumentInput, error) {
+	var doc IngestDocumentInput
+	var metadataRaw []byte
+	err := r.pool.QueryRow(ctx, `
+		SELECT
+		  scope,
+		  source_type,
+		  source_url,
+		  COALESCE(source_id, ''),
+		  title,
+		  content,
+		  COALESCE(source_updated_at, ''),
+		  metadata
+		FROM ingestion_job_documents
+		WHERE job_id = $1
+		ORDER BY document_index ASC
+		LIMIT 1
+	`, jobID).Scan(
+		&doc.Scope,
+		&doc.SourceType,
+		&doc.SourceURL,
+		&doc.SourceID,
+		&doc.Title,
+		&doc.Content,
+		&doc.SourceUpdatedAt,
+		&metadataRaw,
+	)
+	if err == pgx.ErrNoRows {
+		return IngestDocumentInput{}, fmt.Errorf("webhook payload for job %q not found", jobID)
+	}
+	if err != nil {
+		return IngestDocumentInput{}, err
+	}
+	doc.Metadata = decodeJSONMap(metadataRaw)
+	return doc, nil
 }
 
 func (r *Repository) FinishIngestionJob(ctx context.Context, jobID string, leaseOwner string, stats SourceStats, runErr error) (string, error) {

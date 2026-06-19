@@ -312,9 +312,61 @@ func TestRunnerIngestsGitRepoSource(t *testing.T) {
 	}
 }
 
+func TestRunnerProcessesWebhookDocumentJob(t *testing.T) {
+	store := &fakeStore{
+		queuedJobs: []QueuedIngestionJob{{
+			ID:          "webhook-job",
+			TriggerType: "webhook",
+			Attempts:    1,
+			MaxAttempts: 3,
+		}},
+		webhookDocument: IngestDocumentInput{
+			SourceType: "jira",
+			SourceURL:  "https://jira.example.invalid/browse/ABRA-1",
+			SourceID:   "ABRA-1",
+			Title:      "Webhook doc",
+			Scope:      "repo:demo",
+			Content:    "Webhook ingestion should be handled by the worker.",
+			Metadata:   map[string]any{"connector_kind": "jira"},
+		},
+	}
+	brain := &fakeIngestor{}
+	runner := NewRunner(store, brain, Options{
+		MaxSourcesPerRun:             10,
+		MaxChangedDocumentsPerSource: 10,
+		SourceTimeout:                time.Second,
+	})
+
+	stats, err := runner.RunOnce(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Sources != 1 || stats.SourcesSucceeded != 1 || stats.SourcesFailed != 0 {
+		t.Fatalf("stats = %+v", stats)
+	}
+	if stats.DocumentsSeen != 1 || stats.DocumentsChanged != 1 || stats.ChunksWritten != 2 || stats.ClaimsWritten != 1 {
+		t.Fatalf("stats = %+v", stats)
+	}
+	if len(brain.inputs) != 1 {
+		t.Fatalf("ingested %d documents", len(brain.inputs))
+	}
+	input := brain.inputs[0]
+	if input.SourceURL != "https://jira.example.invalid/browse/ABRA-1" {
+		t.Fatalf("source url = %q", input.SourceURL)
+	}
+	if input.Metadata["connector_kind"] != "jira" || input.Metadata["ingestion_job_id"] != "webhook-job" {
+		t.Fatalf("missing webhook metadata: %#v", input.Metadata)
+	}
+	if store.success {
+		t.Fatal("webhook job should not mark a source config successful")
+	}
+}
+
 type fakeStore struct {
 	sources             []SourceConfig
 	states              map[string]DocumentState
+	queuedJobs          []QueuedIngestionJob
+	webhookDocument     IngestDocumentInput
 	success             bool
 	markedError         bool
 	jobs                []string
@@ -335,6 +387,9 @@ func (f *fakeStore) EnqueueScheduledSources(context.Context, int) (int, error) {
 }
 
 func (f *fakeStore) ClaimQueuedIngestionJobs(context.Context, int, string) ([]QueuedIngestionJob, error) {
+	if len(f.queuedJobs) > 0 {
+		return f.queuedJobs, nil
+	}
 	jobs := make([]QueuedIngestionJob, 0, len(f.sources))
 	for _, source := range f.sources {
 		f.jobs = append(f.jobs, "job")
@@ -367,6 +422,13 @@ func (f *fakeStore) DocumentState(_ context.Context, doc ingest.Document) (Docum
 		return DocumentState{}, f.err
 	}
 	return f.states[doc.Path], nil
+}
+
+func (f *fakeStore) GetWebhookDocument(context.Context, string) (IngestDocumentInput, error) {
+	if f.err != nil {
+		return IngestDocumentInput{}, f.err
+	}
+	return f.webhookDocument, nil
 }
 
 func (f *fakeStore) MarkSourceSuccess(context.Context, string, SourceStats) error {
