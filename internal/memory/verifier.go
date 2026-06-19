@@ -9,25 +9,27 @@ import (
 )
 
 type VerificationReport struct {
-	Verdict               string                 `json:"verdict"`
-	Score                 float64                `json:"score"`
-	ActionRequired        bool                   `json:"action_required"`
-	Checks                []VerificationCheck    `json:"checks"`
-	RetrievalCoverage     RetrievalCoverage      `json:"retrieval_coverage"`
-	RetrievalQuality      RetrievalQuality       `json:"retrieval_quality"`
-	EvidenceSources       int                    `json:"evidence_sources"`
-	ClaimCoverage         float64                `json:"claim_coverage"`
-	VerifiedClaims        int                    `json:"verified_claims"`
-	UnverifiedClaims      []string               `json:"unverified_claims,omitempty"`
-	StaleClaims           []string               `json:"stale_claims,omitempty"`
-	ChallengedClaims      []string               `json:"challenged_claims,omitempty"`
-	ConflictClaims        []string               `json:"conflict_claims,omitempty"`
-	ActiveConflicts       []store.ConflictResult `json:"active_conflicts,omitempty"`
-	RetrievalWarnings     []RetrievalWarning     `json:"retrieval_warnings,omitempty"`
-	GraphWarnings         []GraphWarning         `json:"graph_warnings,omitempty"`
-	MissingEvidenceClaims []string               `json:"missing_evidence_claims,omitempty"`
-	RequiredActions       []string               `json:"required_actions,omitempty"`
-	Recommendations       []string               `json:"recommendations"`
+	Verdict               string                     `json:"verdict"`
+	Score                 float64                    `json:"score"`
+	ActionRequired        bool                       `json:"action_required"`
+	Checks                []VerificationCheck        `json:"checks"`
+	RetrievalCoverage     RetrievalCoverage          `json:"retrieval_coverage"`
+	RetrievalQuality      RetrievalQuality           `json:"retrieval_quality"`
+	EvidenceSources       int                        `json:"evidence_sources"`
+	ClaimCoverage         float64                    `json:"claim_coverage"`
+	VerifiedClaims        int                        `json:"verified_claims"`
+	UnverifiedClaims      []string                   `json:"unverified_claims,omitempty"`
+	StaleClaims           []string                   `json:"stale_claims,omitempty"`
+	ChallengedClaims      []string                   `json:"challenged_claims,omitempty"`
+	ConflictClaims        []string                   `json:"conflict_claims,omitempty"`
+	ActiveConflicts       []store.ConflictResult     `json:"active_conflicts,omitempty"`
+	RetrievalWarnings     []RetrievalWarning         `json:"retrieval_warnings,omitempty"`
+	GraphWarnings         []GraphWarning             `json:"graph_warnings,omitempty"`
+	MemoryHealthStatus    string                     `json:"memory_health_status,omitempty"`
+	MemoryHealthSignals   []store.MemoryHealthSignal `json:"memory_health_signals,omitempty"`
+	MissingEvidenceClaims []string                   `json:"missing_evidence_claims,omitempty"`
+	RequiredActions       []string                   `json:"required_actions,omitempty"`
+	Recommendations       []string                   `json:"recommendations"`
 }
 
 type VerificationCheck struct {
@@ -59,16 +61,19 @@ type RetrievalCoverage struct {
 	Missing  []string                `json:"missing,omitempty"`
 }
 
-func verifyPacket(summaries []store.MemorySummaryResult, facts []store.ClaimResult, docs []store.DocumentResult, graph []store.RelationResult, evidence []EvidenceItem, plan RetrievalPlan, conflicts []store.ConflictResult, retrievalWarnings []RetrievalWarning, graphWarnings []GraphWarning) VerificationReport {
+func verifyPacket(summaries []store.MemorySummaryResult, facts []store.ClaimResult, docs []store.DocumentResult, graph []store.RelationResult, evidence []EvidenceItem, plan RetrievalPlan, conflicts []store.ConflictResult, retrievalWarnings []RetrievalWarning, graphWarnings []GraphWarning, healthInput ...store.MemoryHealthResult) VerificationReport {
+	health := verificationMemoryHealth(healthInput)
 	report := VerificationReport{
-		Checks:            []VerificationCheck{},
-		RetrievalCoverage: retrievalCoverage(summaries, facts, docs, graph, evidence, plan.CoverageTargets),
-		RetrievalQuality:  retrievalQuality(facts, docs),
-		EvidenceSources:   len(evidence),
-		Recommendations:   []string{},
-		ActiveConflicts:   conflicts,
-		RetrievalWarnings: retrievalWarnings,
-		GraphWarnings:     graphWarnings,
+		Checks:              []VerificationCheck{},
+		RetrievalCoverage:   retrievalCoverage(summaries, facts, docs, graph, evidence, plan.CoverageTargets),
+		RetrievalQuality:    retrievalQuality(facts, docs),
+		EvidenceSources:     len(evidence),
+		Recommendations:     []string{},
+		ActiveConflicts:     conflicts,
+		RetrievalWarnings:   retrievalWarnings,
+		GraphWarnings:       graphWarnings,
+		MemoryHealthStatus:  strings.TrimSpace(health.Status),
+		MemoryHealthSignals: append([]store.MemoryHealthSignal(nil), health.Signals...),
 	}
 	sourceSet := map[string]struct{}{}
 	for _, item := range evidence {
@@ -116,6 +121,7 @@ func verifyPacket(summaries []store.MemorySummaryResult, facts []store.ClaimResu
 		retrievalCoverageCheck(report.RetrievalCoverage),
 		retrievalQualityCheck(report.RetrievalQuality),
 		retrievalSourceDiversityCheck(report.RetrievalQuality),
+		memoryHealthCheck(health),
 	)
 	report.Checks = append(report.Checks, unsafeSignalCheck("unverified_claims", len(report.UnverifiedClaims), "unverified claims are present"))
 	report.Checks = append(report.Checks, unsafeSignalCheck("stale_claims", len(report.StaleClaims), "stale or expired claims are present"))
@@ -134,7 +140,7 @@ func verifyPacket(summaries []store.MemorySummaryResult, facts []store.ClaimResu
 		score = score / float64(len(report.Checks))
 	}
 	report.Score = round2(score)
-	report.ActionRequired = len(report.ActiveConflicts) > 0 || len(report.ChallengedClaims) > 0 || len(report.StaleClaims) > 0 || len(report.RetrievalWarnings) > 0 || len(report.GraphWarnings) > 0 || len(report.MissingEvidenceClaims) > 0 || report.RetrievalQuality.LowConfidence || report.RetrievalQuality.LowSourceDiversity || !report.RetrievalCoverage.Complete
+	report.ActionRequired = len(report.ActiveConflicts) > 0 || len(report.ChallengedClaims) > 0 || len(report.StaleClaims) > 0 || len(report.RetrievalWarnings) > 0 || len(report.GraphWarnings) > 0 || len(report.MissingEvidenceClaims) > 0 || report.RetrievalQuality.LowConfidence || report.RetrievalQuality.LowSourceDiversity || !report.RetrievalCoverage.Complete || memoryHealthActionRequired(report.MemoryHealthStatus)
 	report.Verdict = verificationVerdict(report)
 	report.RequiredActions = verificationRequiredActions(report, len(facts), len(graph))
 	report.Recommendations = verificationRecommendations(report, len(facts), len(graph))
@@ -298,6 +304,32 @@ func graphConsistencyCheck(warnings int) VerificationCheck {
 	return VerificationCheck{Name: "graph_consistency", Status: "review", Score: 0.25, Message: "graph context contains competing or opposing relations"}
 }
 
+func memoryHealthCheck(health store.MemoryHealthResult) VerificationCheck {
+	status := strings.TrimSpace(health.Status)
+	switch status {
+	case "", "healthy":
+		return VerificationCheck{Name: "memory_health", Status: "pass", Score: 1, Message: "scoped memory health is healthy"}
+	case "needs_review":
+		return VerificationCheck{Name: "memory_health", Status: "review", Score: 0.45, Message: "scoped memory health needs review"}
+	case "critical":
+		return VerificationCheck{Name: "memory_health", Status: "fail", Score: 0.1, Message: "scoped memory health is critical"}
+	default:
+		return VerificationCheck{Name: "memory_health", Status: "review", Score: 0.35, Message: "scoped memory health status is " + status}
+	}
+}
+
+func verificationMemoryHealth(values []store.MemoryHealthResult) store.MemoryHealthResult {
+	if len(values) == 0 {
+		return store.MemoryHealthResult{Status: "healthy", Score: 100}
+	}
+	return values[0]
+}
+
+func memoryHealthActionRequired(status string) bool {
+	status = strings.TrimSpace(status)
+	return status != "" && status != "healthy"
+}
+
 func coverageCheck(name string, coverage float64, total int, message string) VerificationCheck {
 	if total == 0 {
 		return VerificationCheck{Name: name, Status: "missing", Score: 0, Message: "no claims were retrieved"}
@@ -364,9 +396,13 @@ func verificationVerdict(report VerificationReport) string {
 	switch {
 	case len(report.ActiveConflicts) > 0:
 		return "unsafe"
+	case report.MemoryHealthStatus == "critical":
+		return "unsafe"
 	case len(report.ChallengedClaims) > 0 || len(report.MissingEvidenceClaims) > 0:
 		return "unsafe"
 	case len(report.RetrievalWarnings) > 0:
+		return "partial"
+	case memoryHealthActionRequired(report.MemoryHealthStatus):
 		return "partial"
 	case len(report.GraphWarnings) > 0:
 		return "partial"
@@ -422,6 +458,12 @@ func verificationRequiredActions(report VerificationReport, facts, graph int) []
 	}
 	if len(report.GraphWarnings) > 0 {
 		actions = appendUnique(actions, "review_graph_warnings")
+	}
+	if memoryHealthActionRequired(report.MemoryHealthStatus) {
+		actions = appendUnique(actions, healthRequiredActions(store.MemoryHealthResult{
+			Status:  report.MemoryHealthStatus,
+			Signals: report.MemoryHealthSignals,
+		})...)
 	}
 	if len(report.StaleClaims) > 0 {
 		actions = appendUnique(actions, "refresh_stale_sources")
@@ -488,6 +530,9 @@ func verificationRecommendations(report VerificationReport, facts, graph int) []
 	}
 	if len(report.GraphWarnings) > 0 {
 		out = append(out, "Review graph warnings before treating dependency or tool choices as settled.")
+	}
+	if memoryHealthActionRequired(report.MemoryHealthStatus) {
+		out = append(out, "Inspect memory health signals before treating this packet as safe for autonomous work.")
 	}
 	if len(report.StaleClaims) > 0 {
 		out = append(out, "Refresh stale or expired sources before using the affected claims.")

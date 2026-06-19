@@ -400,7 +400,7 @@ func (c *Composer) Compose(ctx context.Context, input ComposeInput) (ComposeResu
 	result.GraphWarnings = graphWarnings(result.GraphContext)
 	result.Risks = applyMemoryHealthRisks(risks(result.Facts, result.GraphContext, result.Conflicts, result.RetrievalWarnings, result.GraphWarnings), result.MemoryHealth)
 	result.Evidence = evidence(result.Facts, result.SupportingDocuments)
-	result.Verification = verifyPacket(result.Summaries, result.Facts, result.SupportingDocuments, result.GraphContext, result.Evidence, result.RetrievalPlan, result.Conflicts, result.RetrievalWarnings, result.GraphWarnings)
+	result.Verification = verifyPacket(result.Summaries, result.Facts, result.SupportingDocuments, result.GraphContext, result.Evidence, result.RetrievalPlan, result.Conflicts, result.RetrievalWarnings, result.GraphWarnings, result.MemoryHealth)
 	addTrace("compile", "evidence_impact_and_verification", false, len(result.Facts)+len(result.SupportingDocuments)+len(result.GraphContext), len(result.Evidence)+len(result.ImpactMap)+len(result.Risks), stageStart, nil)
 	stageStart = time.Now()
 	agentPolicyDecisions, err := c.agentPolicyDecisions(ctx, input)

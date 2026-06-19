@@ -55,6 +55,51 @@ func TestVerifyPacketStrongWhenSourceBackedAndFresh(t *testing.T) {
 	}
 }
 
+func TestVerifyPacketUnsafeWhenMemoryHealthIsCritical(t *testing.T) {
+	source := "file://source.md"
+	report := verifyPacket(
+		testSummaries(source),
+		[]store.ClaimResult{
+			{ID: "claim-1", Claim: "Frontend uses Playwright.", Status: "verified", Source: &source, Rank: 1.2, TextScore: 0.3, VectorScore: 0.2, Freshness: "fresh"},
+		},
+		[]store.DocumentResult{
+			{ID: "doc-1", Title: "Frontend", Source: source, Content: "Frontend uses Playwright.", Rank: 1, TextScore: 0.4, VectorScore: 0.1},
+		},
+		[]store.RelationResult{
+			{FromEntity: "Frontend", ToEntity: "Playwright", Type: "uses", Confidence: 0.8, SourceURL: &source},
+		},
+		[]EvidenceItem{{SourceURL: source, Count: 2}},
+		testRetrievalPlan(1),
+		nil,
+		nil,
+		nil,
+		store.MemoryHealthResult{
+			Status: "critical",
+			Score:  35,
+			Signals: []store.MemoryHealthSignal{{
+				Code:     "ingestion_jobs_stale_running",
+				Severity: "critical",
+				Action:   "inspect_ingestion_liveness",
+			}},
+		},
+	)
+	if report.Verdict != "unsafe" || !report.ActionRequired {
+		t.Fatalf("critical memory health should block strong verification: %#v", report)
+	}
+	if report.MemoryHealthStatus != "critical" {
+		t.Fatalf("memory health status missing: %#v", report)
+	}
+	if check, ok := findCheck(report.Checks, "memory_health"); !ok || check.Status != "fail" {
+		t.Fatalf("memory health check wrong: %#v ok=%v", check, ok)
+	}
+	if !contains(report.RequiredActions, "inspect_ingestion_liveness") {
+		t.Fatalf("memory health required action missing: %#v", report.RequiredActions)
+	}
+	if !containsRecommendation(report.Recommendations, "Inspect memory health signals") {
+		t.Fatalf("memory health recommendation missing: %#v", report.Recommendations)
+	}
+}
+
 func TestVerifyPacketUnsafeWhenClaimHasNoEvidence(t *testing.T) {
 	report := verifyPacket(
 		nil,

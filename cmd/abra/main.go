@@ -1091,7 +1091,7 @@ func ingestCommand(ctx context.Context, args cliArgs) error {
 	if flag(args, "git", "") != "" || flag(args, "repo", "") != "" {
 		return sourceIngest(ctx, args)
 	}
-	scope := required(args, "scope")
+	scope := scopeOrDefault(args, ".")
 	content := flag(args, "text", "")
 	sourceURL := flag(args, "source-url", "")
 	title := flag(args, "title", "CLI Note")
@@ -1422,9 +1422,12 @@ func ingest(ctx context.Context, args cliArgs, body map[string]any) error {
 func think(ctx context.Context, args cliArgs) error {
 	question := strings.TrimSpace(strings.Join(args.Rest, " "))
 	if question == "" {
-		question = required(args, "question")
+		question = flag(args, "question", "")
 	}
-	scope := required(args, "scope")
+	if question == "" {
+		return errors.New("think requires a question, for example: abra think \"what should I know?\"")
+	}
+	scope := scopeOrDefault(args, ".")
 	result, err := postJSON(ctx, args, "/brain/think", map[string]any{
 		"question":           question,
 		"scope":              scope,
@@ -1447,11 +1450,15 @@ func think(ctx context.Context, args cliArgs) error {
 func recall(ctx context.Context, args cliArgs) error {
 	query := strings.TrimSpace(strings.Join(args.Rest, " "))
 	if query == "" {
-		query = required(args, "query")
+		query = flag(args, "query", "")
 	}
+	if query == "" {
+		return errors.New("recall requires a query, for example: abra recall \"agent memory\"")
+	}
+	scope := scopeOrDefault(args, ".")
 	result, err := postJSON(ctx, args, "/recall", map[string]any{
 		"query":              query,
-		"scope":              required(args, "scope"),
+		"scope":              scope,
 		"limit":              intFlag(args, "limit", 5),
 		"include_unverified": boolFlag(args, "include-unverified"),
 	})
@@ -1476,11 +1483,15 @@ func recall(ctx context.Context, args cliArgs) error {
 func composeMemory(ctx context.Context, args cliArgs) error {
 	task := strings.TrimSpace(strings.Join(args.Rest, " "))
 	if task == "" {
-		task = required(args, "task")
+		task = flag(args, "task", "")
 	}
+	if task == "" {
+		return errors.New("compose requires a task, for example: abra compose \"ship a change\"")
+	}
+	scope := scopeOrDefault(args, ".")
 	result, err := postJSON(ctx, args, "/memory/compose", map[string]any{
 		"task":               task,
-		"scope":              required(args, "scope"),
+		"scope":              scope,
 		"hook":               flag(args, "hook", "before_task"),
 		"agent":              flag(args, "agent", ""),
 		"limit":              intFlag(args, "limit", 5),
@@ -1498,7 +1509,7 @@ func composeMemory(ctx context.Context, args cliArgs) error {
 	decision, _ := result["agent_decision"].(map[string]any)
 	stats, _ := result["stats"].(map[string]any)
 	health, _ := result["memory_health"].(map[string]any)
-	scope := stringValue(result["scope"], required(args, "scope"))
+	scope = stringValue(result["scope"], scope)
 	fmt.Printf("Compose: %s / %s\n", stringValue(verification["verdict"], "unknown"), stringValue(decision["decision"], "unknown"))
 	fmt.Println("scope: " + scope)
 	if len(stats) > 0 {
@@ -2501,17 +2512,6 @@ func flag(args cliArgs, name, fallback string) string {
 		return value
 	}
 	return fallback
-}
-
-func required(args cliArgs, name string) string {
-	value := flag(args, name, "")
-	if value == "" && name == "scope" {
-		value = scopeOrDefault(args, ".")
-	}
-	if value == "" {
-		panic(fmt.Sprintf("missing --%s", name))
-	}
-	return value
 }
 
 func scopeOrDefault(args cliArgs, pathHint string) string {

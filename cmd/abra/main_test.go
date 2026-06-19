@@ -957,6 +957,31 @@ func TestStatusPrintsReadyFailureDetail(t *testing.T) {
 	}
 }
 
+func TestQueryCommandsReturnFriendlyMissingInputErrors(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "think", args: []string{"think"}, want: "think requires a question"},
+		{name: "recall", args: []string{"recall"}, want: "recall requires a query"},
+		{name: "compose", args: []string{"compose"}, want: "compose requires a task"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					t.Fatalf("command panicked: %v", recovered)
+				}
+			}()
+			err := run(context.Background(), tc.args)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestWaitReadyReturnsLastReadinessDetailOnCancel(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("ABRA_HOME", home)

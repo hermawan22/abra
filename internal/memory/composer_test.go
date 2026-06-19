@@ -640,6 +640,9 @@ func TestComposeBlocksAutonomyWhenMemoryHealthCritical(t *testing.T) {
 	if result.AgentDecision.Decision != "blocked" || result.AgentDecision.AutonomousAllowed || !result.AgentDecision.ReviewRequired {
 		t.Fatalf("critical health should block autonomy: %#v", result.AgentDecision)
 	}
+	if result.Verification.Verdict != "unsafe" || !result.Verification.ActionRequired || result.Verification.MemoryHealthStatus != "critical" {
+		t.Fatalf("critical health should block verification: %#v", result.Verification)
+	}
 	if !contains(result.AgentDecision.RequiredActions, "clean_up_trust_guard") {
 		t.Fatalf("critical health action missing: %#v", result.AgentDecision)
 	}
