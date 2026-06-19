@@ -7,6 +7,7 @@ const suffix = `${stamp}-${Math.random().toString(36).slice(2, 8)}`;
 const scope = process.env.ABRA_TIER1_SCOPE || `team:eval-tier1-${suffix}`;
 const isolatedScope = process.env.ABRA_TIER1_ISOLATED_SCOPE || `${scope}:isolated`;
 const sourceUrl = `file://abra-tier1-${suffix}.md`;
+const corroboratingSourceUrl = `file://abra-tier1-corroborating-${suffix}.md`;
 const isolatedSourceUrl = `file://abra-tier1-isolated-${suffix}.md`;
 const memoryMaxMs = Number(process.env.ABRA_TIER1_MEMORY_MAX_MS || "2500");
 
@@ -17,6 +18,7 @@ const artifacts = {
   scope,
   isolated_scope: isolatedScope,
   source_url: sourceUrl,
+  corroborating_source_url: corroboratingSourceUrl,
   isolated_source_url: isolatedSourceUrl
 };
 
@@ -96,6 +98,7 @@ async function runCheck(name, fn) {
 }
 
 let ingest;
+let corroboratingIngest;
 let isolatedIngest;
 let recall;
 let isolatedRecall;
@@ -155,16 +158,38 @@ await runCheck("seed_fixture_documents", async () => {
       }
     }
   });
+  corroboratingIngest = await request("/ingest/documents", {
+    method: "POST",
+    body: {
+      source_type: "markdown",
+      source_url: corroboratingSourceUrl,
+      source_id: `abra-tier1-corroborating-${suffix}`,
+      title: "Abra Tier 1 Design System Fixture",
+      scope,
+      content: [
+        "- Design System Handbook says Example Web App should use `Shared UI Tokens` for reusable UI primitives.",
+        "- Release reviewers should inspect critical user journey evidence before approving frontend changes."
+      ].join("\n"),
+      metadata: {
+        authority: "design-system-handbook",
+        authority_score: 0.75,
+        eval_tier: "tier1"
+      }
+    }
+  });
   assert(ingest.document_id, "primary ingest did not return document_id");
+  assert(corroboratingIngest.document_id, "corroborating ingest did not return document_id");
   assert(ingest.claims >= 3, `primary fixture produced too few claims: ${ingest.claims}`);
   assert(isolatedIngest.document_id, "isolated ingest did not return document_id");
   artifacts.document_id = ingest.document_id;
+  artifacts.corroborating_document_id = corroboratingIngest.document_id;
   artifacts.isolated_document_id = isolatedIngest.document_id;
   return {
     document_id: ingest.document_id,
     claims: ingest.claims,
     entities: ingest.entities,
     relations: ingest.relations,
+    corroborating_document_id: corroboratingIngest.document_id,
     isolated_document_id: isolatedIngest.document_id
   };
 });

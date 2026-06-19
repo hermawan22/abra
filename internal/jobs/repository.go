@@ -272,7 +272,35 @@ func (r *Repository) StartIngestionJob(ctx context.Context, source SourceConfig,
 	return jobID, nil
 }
 
-func (r *Repository) FinishIngestionJob(ctx context.Context, jobID string, stats SourceStats, runErr error) (string, error) {
+func (r *Repository) HeartbeatIngestionJob(ctx context.Context, jobID string, leaseOwner string) error {
+	if leaseOwner == "" {
+		leaseOwner = DefaultLeaseOwner
+	}
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE ingestion_jobs
+		SET heartbeat_at = now(),
+		    updated_at = now()
+		WHERE id = $1
+		  AND status = 'running'
+		  AND lease_owner = $2
+	`, jobID, leaseOwner)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		status, statusErr := r.jobStatus(ctx, jobID)
+		if statusErr != nil {
+			return statusErr
+		}
+		return fmt.Errorf("job %q is no longer running for lease owner %q (status %q)", jobID, leaseOwner, status)
+	}
+	return nil
+}
+
+func (r *Repository) FinishIngestionJob(ctx context.Context, jobID string, leaseOwner string, stats SourceStats, runErr error) (string, error) {
+	if leaseOwner == "" {
+		leaseOwner = DefaultLeaseOwner
+	}
 	if runErr != nil {
 		var status string
 		err := r.pool.QueryRow(ctx, `
@@ -290,11 +318,12 @@ func (r *Repository) FinishIngestionJob(ctx context.Context, jobID string, stats
 			    updated_at = now()
 			WHERE id = $1
 			  AND status = 'running'
+			  AND lease_owner = $8
 			RETURNING status
 		`, jobID, stats.DocumentsSeen, stats.DocumentsChanged, stats.ChunksWritten, stats.ClaimsWritten, runErr.Error(), jsonb(map[string]any{
 			"documents_skipped":  stats.DocumentsSkipped,
 			"documents_deferred": stats.DocumentsDeferred,
-		})).Scan(&status)
+		}), leaseOwner).Scan(&status)
 		if err == pgx.ErrNoRows {
 			return r.jobStatus(ctx, jobID)
 		}
@@ -316,11 +345,12 @@ func (r *Repository) FinishIngestionJob(ctx context.Context, jobID string, stats
 		    updated_at = now()
 		WHERE id = $1
 		  AND status = 'running'
+		  AND lease_owner = $7
 		RETURNING status
 	`, jobID, stats.DocumentsSeen, stats.DocumentsChanged, stats.ChunksWritten, stats.ClaimsWritten, jsonb(map[string]any{
 		"documents_skipped":  stats.DocumentsSkipped,
 		"documents_deferred": stats.DocumentsDeferred,
-	})).Scan(&status)
+	}), leaseOwner).Scan(&status)
 	if err == pgx.ErrNoRows {
 		return r.jobStatus(ctx, jobID)
 	}

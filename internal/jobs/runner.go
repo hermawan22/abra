@@ -26,7 +26,8 @@ type SourceStore interface {
 	RecoverStaleIngestionJobs(ctx context.Context, leaseTimeout time.Duration) (int64, error)
 	EnqueueScheduledSources(ctx context.Context, limit int) (int, error)
 	ClaimQueuedIngestionJobs(ctx context.Context, limit int, leaseOwner string) ([]QueuedIngestionJob, error)
-	FinishIngestionJob(ctx context.Context, jobID string, stats SourceStats, runErr error) (string, error)
+	HeartbeatIngestionJob(ctx context.Context, jobID string, leaseOwner string) error
+	FinishIngestionJob(ctx context.Context, jobID string, leaseOwner string, stats SourceStats, runErr error) (string, error)
 	DocumentState(ctx context.Context, doc ingest.Document) (DocumentState, error)
 	MarkSourceSuccess(ctx context.Context, sourceID string, stats SourceStats) error
 	MarkSourceError(ctx context.Context, sourceID string, err error) error
@@ -166,7 +167,7 @@ func (r *Runner) RunOnce(ctx context.Context) (RunStats, error) {
 		stats.DocumentsDeferred += sourceStats.DocumentsDeferred
 		stats.ChunksWritten += sourceStats.ChunksWritten
 		stats.ClaimsWritten += sourceStats.ClaimsWritten
-		finalStatus, finishErr := r.store.FinishIngestionJob(ctx, jobID, sourceStats, err)
+		finalStatus, finishErr := r.store.FinishIngestionJob(ctx, jobID, r.options.LeaseOwner, sourceStats, err)
 		if finishErr != nil {
 			r.options.Logger.Error("source ingestion job finish failed", "source_config_id", source.ID, "job_id", jobID, "error", finishErr)
 		}
@@ -182,11 +183,12 @@ func (r *Runner) RunOnce(ctx context.Context) (RunStats, error) {
 			}
 			continue
 		}
-		stats.SourcesSucceeded++
 		if finalStatus != "succeeded" {
+			stats.SourcesFailed++
 			r.options.Logger.Warn("source ingestion completed but job was not marked succeeded", "source_config_id", source.ID, "job_id", jobID, "status", finalStatus)
 			continue
 		}
+		stats.SourcesSucceeded++
 		if err := r.store.MarkSourceSuccess(ctx, source.ID, sourceStats); err != nil {
 			r.options.Logger.Error("source success update failed", "source_config_id", source.ID, "error", err)
 		}
@@ -216,6 +218,7 @@ func (r *Runner) runSource(ctx context.Context, source SourceConfig, jobID strin
 	}()
 	sourceCtx, cancel := context.WithTimeout(ctx, r.options.SourceTimeout)
 	defer cancel()
+	heartbeatErrs := r.startHeartbeatLoop(sourceCtx, jobID, cancel)
 
 	spec, err := source.IngestSpec()
 	if err != nil {
@@ -224,6 +227,10 @@ func (r *Runner) runSource(ctx context.Context, source SourceConfig, jobID strin
 	}
 	spec, err = r.prepareIngestSpec(sourceCtx, spec)
 	if err != nil {
+		if heartbeatErr := heartbeatLoopErr(heartbeatErrs); heartbeatErr != nil {
+			runErr = heartbeatErr
+			return SourceStats{}, heartbeatErr
+		}
 		runErr = err
 		return SourceStats{}, err
 	}
@@ -234,6 +241,10 @@ func (r *Runner) runSource(ctx context.Context, source SourceConfig, jobID strin
 	}
 	docs, err := localIngestor.Ingest(sourceCtx)
 	if err != nil {
+		if heartbeatErr := heartbeatLoopErr(heartbeatErrs); heartbeatErr != nil {
+			runErr = heartbeatErr
+			return SourceStats{}, heartbeatErr
+		}
 		runErr = err
 		return SourceStats{}, err
 	}
@@ -242,6 +253,14 @@ func (r *Runner) runSource(ctx context.Context, source SourceConfig, jobID strin
 	span.SetAttributes(attribute.Int("abra.source.documents_seen", len(docs)))
 	for _, doc := range docs {
 		if err := sourceCtx.Err(); err != nil {
+			if heartbeatErr := heartbeatLoopErr(heartbeatErrs); heartbeatErr != nil {
+				runErr = heartbeatErr
+				return stats, heartbeatErr
+			}
+			runErr = err
+			return stats, err
+		}
+		if err := r.heartbeatJob(sourceCtx, jobID); err != nil {
 			runErr = err
 			return stats, err
 		}
@@ -260,12 +279,24 @@ func (r *Runner) runSource(ctx context.Context, source SourceConfig, jobID strin
 		}
 		result, err := r.ingestor.IngestDocument(sourceCtx, documentInput(source, doc, jobID))
 		if err != nil {
+			if heartbeatErr := heartbeatLoopErr(heartbeatErrs); heartbeatErr != nil {
+				runErr = heartbeatErr
+				return stats, heartbeatErr
+			}
 			runErr = err
 			return stats, fmt.Errorf("ingest %s: %w", doc.SourceURL, err)
 		}
 		stats.DocumentsChanged++
 		stats.ChunksWritten += result.Chunks
 		stats.ClaimsWritten += result.Claims
+		if err := r.heartbeatJob(sourceCtx, jobID); err != nil {
+			runErr = err
+			return stats, err
+		}
+	}
+	if heartbeatErr := heartbeatLoopErr(heartbeatErrs); heartbeatErr != nil {
+		runErr = heartbeatErr
+		return stats, heartbeatErr
 	}
 	span.SetAttributes(
 		attribute.Int("abra.source.documents_changed", stats.DocumentsChanged),
@@ -275,6 +306,73 @@ func (r *Runner) runSource(ctx context.Context, source SourceConfig, jobID strin
 		attribute.Int("abra.source.claims_written", stats.ClaimsWritten),
 	)
 	return stats, nil
+}
+
+func (r *Runner) startHeartbeatLoop(ctx context.Context, jobID string, cancel context.CancelFunc) <-chan error {
+	if jobID == "" {
+		return nil
+	}
+	errs := make(chan error, 1)
+	ticker := time.NewTicker(r.heartbeatInterval())
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := r.heartbeatJob(ctx, jobID); err != nil {
+					select {
+					case errs <- err:
+					default:
+					}
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	return errs
+}
+
+func (r *Runner) heartbeatInterval() time.Duration {
+	leaseTimeout := r.options.LeaseTimeout
+	if leaseTimeout <= 0 {
+		leaseTimeout = DefaultLeaseTimeout
+	}
+	interval := leaseTimeout / 3
+	if interval <= 0 {
+		return time.Second
+	}
+	if interval > 30*time.Second {
+		return 30 * time.Second
+	}
+	if interval < time.Second {
+		return interval
+	}
+	return interval
+}
+
+func (r *Runner) heartbeatJob(ctx context.Context, jobID string) error {
+	if jobID == "" {
+		return nil
+	}
+	if err := r.store.HeartbeatIngestionJob(ctx, jobID, r.options.LeaseOwner); err != nil {
+		return fmt.Errorf("heartbeat ingestion job %s: %w", jobID, err)
+	}
+	return nil
+}
+
+func heartbeatLoopErr(errs <-chan error) error {
+	if errs == nil {
+		return nil
+	}
+	select {
+	case err := <-errs:
+		return err
+	default:
+		return nil
+	}
 }
 
 func unchanged(doc ingest.Document, state DocumentState) bool {

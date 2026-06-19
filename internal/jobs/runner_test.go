@@ -149,6 +149,81 @@ func TestRunnerDoesNotMarkSourceErrorForRetryableJob(t *testing.T) {
 	}
 }
 
+func TestRunnerStopsWhenJobLeaseIsLost(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, root, "README.md", "# Lease\n\nLong ingestion should stop when the worker loses its job lease.")
+
+	store := &fakeStore{
+		sources: []SourceConfig{{
+			ID:         "docs",
+			Scope:      "company",
+			SourceType: ingest.SourceTypeMarkdown,
+			Name:       "Docs",
+			Config:     map[string]any{"root": root},
+		}},
+		states:       map[string]DocumentState{},
+		heartbeatErr: errors.New("lease lost"),
+	}
+	brain := &fakeIngestor{}
+	runner := NewRunner(store, brain, Options{
+		MaxSourcesPerRun:             10,
+		MaxChangedDocumentsPerSource: 10,
+		SourceTimeout:                time.Second,
+		LeaseOwner:                   "worker-a",
+	})
+
+	stats, err := runner.RunOnce(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.SourcesFailed != 1 || stats.DocumentsChanged != 0 {
+		t.Fatalf("stats = %+v", stats)
+	}
+	if len(brain.inputs) != 0 {
+		t.Fatalf("ingested %d documents after lease loss", len(brain.inputs))
+	}
+	if store.success {
+		t.Fatal("source was marked successful after lease loss")
+	}
+	if store.finishLeaseOwner != "worker-a" {
+		t.Fatalf("finish lease owner = %q", store.finishLeaseOwner)
+	}
+}
+
+func TestRunnerDoesNotCountSourceSucceededWhenJobFinishStatusIsNotSucceeded(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, root, "README.md", "# Finish\n\nThe source should not be marked successful unless the job is succeeded.")
+
+	store := &fakeStore{
+		sources: []SourceConfig{{
+			ID:         "docs",
+			Scope:      "company",
+			SourceType: ingest.SourceTypeMarkdown,
+			Name:       "Docs",
+			Config:     map[string]any{"root": root},
+		}},
+		states:       map[string]DocumentState{},
+		finishStatus: "running",
+	}
+	brain := &fakeIngestor{}
+	runner := NewRunner(store, brain, Options{
+		MaxSourcesPerRun:             10,
+		MaxChangedDocumentsPerSource: 10,
+		SourceTimeout:                time.Second,
+	})
+
+	stats, err := runner.RunOnce(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.SourcesSucceeded != 0 || stats.SourcesFailed != 1 {
+		t.Fatalf("stats = %+v", stats)
+	}
+	if store.success {
+		t.Fatal("source was marked successful despite non-succeeded job status")
+	}
+}
+
 func TestRunnerIngestsGitRepoSource(t *testing.T) {
 	gitPath, err := exec.LookPath("git")
 	if err != nil {
@@ -224,6 +299,9 @@ type fakeStore struct {
 	err                 error
 	finishStatus        string
 	finishStatusOnError string
+	heartbeatErr        error
+	heartbeats          int
+	finishLeaseOwner    string
 }
 
 func (f *fakeStore) RecoverStaleIngestionJobs(context.Context, time.Duration) (int64, error) {
@@ -243,7 +321,13 @@ func (f *fakeStore) ClaimQueuedIngestionJobs(context.Context, int, string) ([]Qu
 	return jobs, nil
 }
 
-func (f *fakeStore) FinishIngestionJob(_ context.Context, _ string, _ SourceStats, runErr error) (string, error) {
+func (f *fakeStore) HeartbeatIngestionJob(context.Context, string, string) error {
+	f.heartbeats++
+	return f.heartbeatErr
+}
+
+func (f *fakeStore) FinishIngestionJob(_ context.Context, _ string, leaseOwner string, _ SourceStats, runErr error) (string, error) {
+	f.finishLeaseOwner = leaseOwner
 	if runErr != nil {
 		if f.finishStatusOnError != "" {
 			return f.finishStatusOnError, nil

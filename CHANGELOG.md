@@ -42,6 +42,8 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 
 ### Fixed
 
+- Keep worker ingestion jobs heartbeated during document processing and only allow the owning worker lease to finish a running job.
+- Make the Tier 1 working-memory eval seed corroborating evidence so its strong-verification expectation matches source-diversity gates.
 - Align the self-host smoke test with the query-form working-memory MCP resource template used to preserve scopes containing slashes.
 - Validate the Abra MCP endpoint before mutating Codex MCP config during `abra mcp install-codex`.
 - Treat summary-only and graph/context-only packets as usable source-backed context in CLI and governed think output.
