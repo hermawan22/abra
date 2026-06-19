@@ -904,12 +904,12 @@ Deployment-specific identity, ACL sync, private connector automation, SIEM routi
 
 Keep OSS Abra generic. Add deployment-specific behavior in an extension, private connector, or overlay:
 
-- internal agent UI auth
+- private identity gateway auth
 - Confluence/Jira/source-system connector automation
 - Slack thread source URLs
 - team ACL mapping
 - source authority rules
-- Helm/Vault deployment
+- platform-specific deployment and secret-manager integration
 
 ## License
 
