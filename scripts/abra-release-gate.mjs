@@ -6,7 +6,10 @@ const startedAt = new Date().toISOString();
 const runId = startedAt.replace(/[^0-9A-Za-z]/g, "").slice(0, 18);
 const profile = (process.env.ABRA_RELEASE_PROFILE || "full").trim();
 const baseUrl = process.env.ABRA_BASE_URL || "http://127.0.0.1:18080";
-const token = process.env.ABRA_API_TOKEN || "dev-token";
+const defaultReleaseToken = "release-gate-local-api-token";
+const token = placeholderSecret(process.env.ABRA_API_TOKEN) ? defaultReleaseToken : process.env.ABRA_API_TOKEN;
+const defaultWebhookSecret = "release-gate-webhook-secret";
+const webhookSecret = placeholderSecret(process.env.ABRA_WEBHOOK_SECRET) ? defaultWebhookSecret : process.env.ABRA_WEBHOOK_SECRET;
 const quick = profile === "quick";
 const commandTimeoutMs = numberEnv("ABRA_RELEASE_COMMAND_TIMEOUT_MS", quick ? 120_000 : 600_000);
 const outputLimit = numberEnv("ABRA_RELEASE_OUTPUT_LIMIT", 12_000);
@@ -15,17 +18,36 @@ const prepareDogfoodSource = !quick && boolEnv("ABRA_RELEASE_PREPARE_DOGFOOD_SOU
 const approvalEnforcementGate = !quick && boolEnv("ABRA_RELEASE_APPROVAL_ENFORCEMENT_GATE", manageStack);
 const dogfoodContainerSourceRoot = process.env.ABRA_RELEASE_DOGFOOD_SOURCE_ROOT || "/tmp/abra-src";
 const checks = [];
+const managedApiKeys = placeholderSecret(process.env.ABRA_API_KEYS) ? token : process.env.ABRA_API_KEYS;
+const managedWebhookSecrets = placeholderSecret(process.env.ABRA_WEBHOOK_SECRETS) ? webhookSecret : process.env.ABRA_WEBHOOK_SECRETS;
 const managedStackEnv = {
-  ABRA_API_KEYS: process.env.ABRA_API_KEYS || token,
-  ABRA_WEBHOOK_SECRETS: process.env.ABRA_WEBHOOK_SECRETS || "release-gate-webhook-secret",
+  ABRA_API_KEYS: managedApiKeys,
+  ABRA_WEBHOOK_SECRETS: managedWebhookSecrets,
   ABRA_APPROVAL_MODE: process.env.ABRA_APPROVAL_MODE || "advisory",
   ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION: process.env.ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION || "true",
   EMBEDDING_PROVIDER: process.env.EMBEDDING_PROVIDER || "local",
-  EMBEDDING_BASE_URL: process.env.EMBEDDING_BASE_URL || "http://127.0.0.1/unused-local-embeddings",
+  EMBEDDING_BASE_URL: process.env.EMBEDDING_BASE_URL || "http://host.docker.internal:8080/v1",
   EMBEDDING_API_KEY: process.env.EMBEDDING_API_KEY || "unused-local-embedding-key",
   RATE_LIMIT_MAX: process.env.RATE_LIMIT_MAX || "1000",
   WORKER_INTERVAL: process.env.WORKER_INTERVAL || "30s"
 };
+
+function placeholderSecret(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) {
+    return true;
+  }
+  const primary = normalized.split(/[|,;]/, 1)[0].trim();
+  return [
+    "dev-token",
+    "dev-webhook-secret",
+    "changeme",
+    "change-me",
+    "replace-me",
+    "replace-with-token",
+    "placeholder"
+  ].includes(primary) || primary.includes("placeholder") || primary.includes("example");
+}
 
 function numberEnv(name, fallback) {
   const value = Number(process.env[name] || fallback);
@@ -77,6 +99,7 @@ async function runCommand(name, command, args = [], options = {}) {
     ...process.env,
     ABRA_BASE_URL: baseUrl,
     ABRA_API_TOKEN: token,
+    ABRA_WEBHOOK_SECRET: webhookSecret,
     ...options.env
   };
   const result = await new Promise((resolve) => {
@@ -126,6 +149,7 @@ function quickPerfEnv() {
     ABRA_PERF_DOCS: process.env.ABRA_PERF_DOCS || "12",
     ABRA_PERF_ITERATIONS: process.env.ABRA_PERF_ITERATIONS || "8",
     ABRA_PERF_CAPACITY_ITERATIONS: process.env.ABRA_PERF_CAPACITY_ITERATIONS || "16",
+    ABRA_PERF_MEMORY_P95_MS: process.env.ABRA_PERF_MEMORY_P95_MS || "4000",
     ABRA_PERF_SOAK_SECONDS: process.env.ABRA_PERF_SOAK_SECONDS || "0"
   };
 }
@@ -151,6 +175,7 @@ async function main() {
     });
   }
 
+  await runCommand("agent_context_files", "go", ["run", "./cmd/abra", "agents", "verify", ".", "--scope", "repo:abra", "--files-only", "--strict"]);
   await runCommand("script_checks", "npm", ["test"]);
   await runCommand("go_tests", "go", ["test", "./..."]);
   await runCommand("docker_compose_config", "docker", ["compose", "config"], {

@@ -53,6 +53,8 @@ abra agents verify
 
 This writes `AGENTS.md` with the exact Abra scope and `CLAUDE.md` as an import for tools that read Claude Code instructions.
 `abra agents verify` checks both files, validates the MCP endpoint, and calls `discover_scopes` with the exact project scope. If a coding agent says Abra has no context, run this before changing prompts or env files.
+For CI or release checks that should not contact a live MCP server, run
+`abra agents verify --files-only --strict`.
 
 After changing model config, restart the stack:
 
@@ -222,6 +224,7 @@ From a source checkout, run the CLI as `go run ./cmd/abra <command>`. In a relea
 | guided first-run setup | `abra setup` |
 | generate agent instruction files | `abra agents init --agent codex` |
 | verify agent context setup | `abra agents verify` |
+| verify agent instruction files in CI | `abra agents verify --files-only --strict` |
 | start local Qwen embedding runner | `abra models up` |
 | check local embedding runner | `abra models status` |
 | start local stack | `abra up` |

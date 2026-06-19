@@ -28,7 +28,7 @@ type Store interface {
 
 const defaultHealthCacheTTL = 2 * time.Second
 const (
-	defaultRecallConcurrency = 4
+	defaultRecallConcurrency = 1
 	defaultGraphConcurrency  = 4
 	maxStageConcurrency      = 32
 )

@@ -1554,11 +1554,20 @@ func agentsCommand(ctx context.Context, args cliArgs) error {
 }
 
 func verifyAgentContext(ctx context.Context, args cliArgs, path, scope string) error {
+	filesOnly := boolFlag(args, "files-only")
+	strict := boolFlag(args, "strict")
 	checks := []map[string]any{
 		agentFileCheck(filepath.Join(path, "AGENTS.md"), scope, []string{"working_memory_compose", "discover_scopes"}),
 		optionalAgentFileCheck(filepath.Join(path, "CLAUDE.md"), "@AGENTS.md"),
 	}
-	if toolCount, err := validateMCPTools(ctx, args); err != nil {
+	if filesOnly {
+		checks = append(checks, map[string]any{
+			"name":   "mcp",
+			"ok":     true,
+			"level":  "skip",
+			"detail": "skipped by --files-only",
+		})
+	} else if toolCount, err := validateMCPTools(ctx, args); err != nil {
 		checks = append(checks, map[string]any{
 			"name":  "mcp",
 			"ok":    false,
@@ -1573,13 +1582,15 @@ func verifyAgentContext(ctx context.Context, args cliArgs, path, scope string) e
 		})
 		checks = append(checks, discoverScopeCheck(ctx, args, scope))
 	}
-	ok := checksOK(checks)
+	ok := checksOK(checks, strict)
 	if boolFlag(args, "json") {
 		if err := printJSON(map[string]any{
-			"ok":     ok,
-			"scope":  scope,
-			"path":   path,
-			"checks": checks,
+			"ok":         ok,
+			"scope":      scope,
+			"path":       path,
+			"files_only": filesOnly,
+			"strict":     strict,
+			"checks":     checks,
 		}); err != nil {
 			return err
 		}
@@ -1593,6 +1604,9 @@ func verifyAgentContext(ctx context.Context, args cliArgs, path, scope string) e
 		status := "ok"
 		if stringValue(check["level"], "") == "warn" {
 			status = "warn"
+		}
+		if stringValue(check["level"], "") == "skip" {
+			status = "skip"
 		}
 		if !boolValue(check["ok"], false) {
 			status = "fail"
@@ -1610,7 +1624,14 @@ func verifyAgentContext(ctx context.Context, args cliArgs, path, scope string) e
 		}
 	}
 	if !ok {
+		if filesOnly {
+			return errors.New("agent instruction verification failed; run `abra agents init --force` after confirming local custom instructions are backed up")
+		}
 		return errors.New("agent context verification failed; run `abra agents init`, `abra ingest . --code --scope " + scope + "`, and `abra doctor`")
+	}
+	if filesOnly {
+		fmt.Println("Ready: agent instruction files are ready for scope " + scope + ".")
+		return nil
 	}
 	fmt.Println("Ready: MCP clients can use scope " + scope + " with working_memory_compose.")
 	return nil
@@ -1691,9 +1712,12 @@ func discoverScopeCheck(ctx context.Context, args cliArgs, scope string) map[str
 	}
 }
 
-func checksOK(checks []map[string]any) bool {
+func checksOK(checks []map[string]any, strict bool) bool {
 	for _, check := range checks {
 		if !boolValue(check["ok"], false) {
+			return false
+		}
+		if strict && stringValue(check["level"], "") == "warn" {
 			return false
 		}
 	}
@@ -2759,7 +2783,7 @@ is missing, ingest the project with the printed command and retry.
 	case "agents", "agent":
 		return `Usage:
   abra agents init [path] [--agent codex] [--force] [--dry-run] [--json]
-  abra agents verify [path] [--json]
+  abra agents verify [path] [--files-only] [--strict] [--json]
 
 Writes repo-local AI agent instruction files that point every client at the
 same Abra scope. It creates AGENTS.md for agent-neutral instructions and
@@ -2768,7 +2792,9 @@ duplicating content. Existing files are skipped unless --force is set.
 
 ` + "`abra agents verify`" + ` checks AGENTS.md, CLAUDE.md, the MCP endpoint, required
 agent tools, and discover_scopes for the exact project scope. Use it when an AI
-client says Abra has no context.
+client says Abra has no context. Use --files-only for CI checks that should not
+contact a live Abra MCP server. Use --strict when warning-level compatibility
+checks should fail the command.
 `
 	case "mcp", "mcp-config":
 		return `Usage:

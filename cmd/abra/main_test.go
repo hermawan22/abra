@@ -208,6 +208,49 @@ func TestAgentsVerifyChecksMCPAndScopeDiscovery(t *testing.T) {
 	}
 }
 
+func TestAgentsVerifyFilesOnlyStrictSkipsMCP(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "demo project")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wantScope := "repo:" + slug(filepath.Base(root))
+	if err := run(context.Background(), []string{"agents", "init", root, "--agent", "codex"}); err != nil {
+		t.Fatalf("agents init error = %v", err)
+	}
+
+	output := captureStdout(t, func() {
+		if err := run(context.Background(), []string{"agents", "verify", root, "--scope", wantScope, "--files-only", "--strict"}); err != nil {
+			t.Fatalf("agents verify --files-only --strict error = %v", err)
+		}
+	})
+	for _, want := range []string{"ok  AGENTS.md", "ok  CLAUDE.md", "skip  mcp skipped by --files-only", "Ready: agent instruction files are ready"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("files-only verify output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestAgentsVerifyFilesOnlyStrictFailsOnWarning(t *testing.T) {
+	root := t.TempDir()
+	wantScope := "repo:" + slug(filepath.Base(root))
+	if err := run(context.Background(), []string{"agents", "init", root, "--agent", "codex"}); err != nil {
+		t.Fatalf("agents init error = %v", err)
+	}
+	if err := os.Remove(filepath.Join(root, "CLAUDE.md")); err != nil {
+		t.Fatalf("remove CLAUDE.md: %v", err)
+	}
+
+	output := captureStdout(t, func() {
+		err := run(context.Background(), []string{"agents", "verify", root, "--scope", wantScope, "--files-only", "--strict"})
+		if err == nil || !strings.Contains(err.Error(), "agent instruction verification failed") {
+			t.Fatalf("agents verify --files-only --strict error = %v", err)
+		}
+	})
+	if !strings.Contains(output, "warn  CLAUDE.md") || !strings.Contains(output, "skip  mcp skipped by --files-only") {
+		t.Fatalf("strict files-only verify output did not explain warning failure:\n%s", output)
+	}
+}
+
 func TestAgentsVerifyFailsWhenScopeIsMissing(t *testing.T) {
 	root := t.TempDir()
 	if err := run(context.Background(), []string{"agents", "init", root}); err != nil {

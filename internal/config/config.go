@@ -152,7 +152,7 @@ func Load() (Config, error) {
 		WorkerLeaseTimeout:                 durationEnv("WORKER_LEASE_TIMEOUT", defaultWorkerLeaseTimeout),
 		WorkerMaxChangedDocumentsPerSource: intEnv("WORKER_MAX_CHANGED_DOCUMENTS_PER_SOURCE", 100),
 		ComposeHealthCacheTTL:              durationEnv("ABRA_COMPOSE_HEALTH_CACHE_TTL", 2*time.Second),
-		ComposeRecallConcurrency:           intEnv("ABRA_COMPOSE_RECALL_CONCURRENCY", 4),
+		ComposeRecallConcurrency:           intEnv("ABRA_COMPOSE_RECALL_CONCURRENCY", 1),
 		ComposeGraphConcurrency:            intEnv("ABRA_COMPOSE_GRAPH_CONCURRENCY", 4),
 		GitCacheDir:                        env("ABRA_GIT_CACHE_DIR", "/tmp/abra-git-cache"),
 		GitCloneDepth:                      intEnv("ABRA_GIT_CLONE_DEPTH", 1),

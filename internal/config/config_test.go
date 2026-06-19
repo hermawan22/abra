@@ -245,7 +245,7 @@ func TestLoadComposeConcurrencyLimits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ComposeRecallConcurrency != 4 || cfg.ComposeGraphConcurrency != 4 {
+	if cfg.ComposeRecallConcurrency != 1 || cfg.ComposeGraphConcurrency != 4 {
 		t.Fatalf("default compose concurrency = recall:%d graph:%d", cfg.ComposeRecallConcurrency, cfg.ComposeGraphConcurrency)
 	}
 

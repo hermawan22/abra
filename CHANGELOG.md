@@ -23,6 +23,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Add webhook ingestion job lineage and idempotent delivery handling so connector events are visible in ingestion job history.
 - Add `abra agents init` to generate AGENTS.md and CLAUDE.md instructions that point coding agents at the exact Abra scope.
 - Add `abra agents verify` to check repo instruction files, MCP readiness, required agent tools, and exact-scope discovery before using an AI coding agent.
+- Add `abra agents verify --files-only --strict` and run it in the release gate so agent instruction files cannot regress without a live MCP server.
 
 ### Changed
 
@@ -36,6 +37,11 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Make setup next steps print the exact project scope for ingest and think commands.
 - Make setup and ready banners include `abra agents init` and `abra agents verify` so agent context readiness is part of the default CLI onboarding path.
 - Make `abra scope` print agent init, agent verification, MCP install, and exact-scope recovery commands when AI clients say Abra has no context.
+- Lower default working-memory recall fan-out to one to reduce local embedding oversubscription and stabilize compose p95 under concurrent agents.
+- Make managed release-gate stacks use a non-placeholder local API token so production secret validation runs during bootstrap.
+- Point managed release-gate local embeddings at the host Qwen endpoint so containerized smoke, eval, and perf checks exercise the built-in model path.
+- Use one managed release-gate webhook secret for both the API stack and signed smoke webhook requests.
+- Give the quick release profile a local-Qwen working-memory p95 threshold while keeping the full perf gate's default threshold unchanged.
 - Align runtime build version reporting across MCP server info, Prometheus metrics, and tracing resources.
 - Prefer query-form working-memory MCP resources so scopes containing slashes are preserved.
 - Make `abra upgrade` download the install script before executing it so wrong installer URLs produce actionable recovery guidance instead of a raw curl pipe failure.
