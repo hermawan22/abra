@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"golang.org/x/term"
 )
@@ -36,6 +37,9 @@ func setup(ctx context.Context, args cliArgs) error {
 	fmt.Println("Env file: " + envPath(args))
 
 	if err := ensureEnv(args); err != nil {
+		return err
+	}
+	if err := normalizeLocalRuntimeDefaults(args); err != nil {
 		return err
 	}
 	if err := setupEmbeddingConfig(args, reader, interactive); err != nil {
@@ -92,6 +96,22 @@ func setupUsesLocalEmbeddings(args cliArgs) bool {
 		return false
 	}
 	return strings.TrimSpace(values["EMBEDDING_PROVIDER"]) == "local"
+}
+
+func normalizeLocalRuntimeDefaults(args cliArgs) error {
+	values, err := readEnvValues(envPath(args))
+	if err != nil {
+		return err
+	}
+	raw := strings.TrimSpace(values["WORKER_INTERVAL"])
+	if raw == "" {
+		return updateEnvValues(args, map[string]string{"WORKER_INTERVAL": defaultWorkerInterval.String()})
+	}
+	interval, err := time.ParseDuration(raw)
+	if err != nil || interval < 10*time.Second {
+		return updateEnvValues(args, map[string]string{"WORKER_INTERVAL": defaultWorkerInterval.String()})
+	}
+	return nil
 }
 
 func printSetupPrerequisites() {

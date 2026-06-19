@@ -23,13 +23,14 @@ import (
 )
 
 const (
-	checkoutEnvPath      = ".tmp/quickstart.env"
-	defaultBaseURL       = "http://127.0.0.1:18080"
-	defaultToken         = "dev-token"
-	defaultHTTPTimeout   = 30 * time.Second
-	defaultIngestTimeout = 10 * time.Minute
-	maxCLIResponseBody   = 8 << 20
-	installScript        = "https://raw.githubusercontent.com/hermawan22/abra/main/scripts/install.sh"
+	checkoutEnvPath       = ".tmp/quickstart.env"
+	defaultBaseURL        = "http://127.0.0.1:18080"
+	defaultToken          = "dev-token"
+	defaultHTTPTimeout    = 30 * time.Second
+	defaultIngestTimeout  = 10 * time.Minute
+	defaultWorkerInterval = 30 * time.Second
+	maxCLIResponseBody    = 8 << 20
+	installScript         = "https://raw.githubusercontent.com/hermawan22/abra/main/scripts/install.sh"
 )
 
 var (
@@ -187,12 +188,38 @@ func upgrade(args cliArgs) error {
 	if target := flag(args, "version", ""); target != "" {
 		env = append(env, "ABRA_VERSION="+target)
 	}
-	cmd := exec.Command("sh", "-c", "curl -fsSL \"$ABRA_INSTALL_SCRIPT\" | sh")
+	tmpDir, err := os.MkdirTemp("", "abra-upgrade-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmpDir)
+	scriptPath := filepath.Join(tmpDir, "install.sh")
+	download := exec.Command("curl", "-fsSL", script, "-o", scriptPath)
+	download.Env = env
+	if output, err := download.CombinedOutput(); err != nil {
+		return installScriptDownloadError(script, err, output)
+	}
+	cmd := exec.Command("sh", scriptPath)
 	cmd.Env = append(env, "ABRA_INSTALL_SCRIPT="+script)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 	return cmd.Run()
+}
+
+func installScriptDownloadError(script string, err error, output []byte) error {
+	detail := strings.TrimSpace(string(output))
+	if detail != "" {
+		detail = "\n" + detail
+	}
+	return fmt.Errorf(`download Abra install script failed: %w
+script: %s%s
+
+Recovery:
+  1. Check the installer URL. The official script is:
+     %s
+  2. If you are using a fork, set ABRA_INSTALL_SCRIPT to that fork's raw install.sh URL.
+  3. If you want a specific release, run: abra upgrade --version vX.Y.Z`, err, script, detail, installScript)
 }
 
 func uninstall(args cliArgs) error {
@@ -470,6 +497,7 @@ func updateEnvValues(args cliArgs, updates map[string]string) error {
 		"RERANKER_API_KEY",
 		"RERANKER_MODEL",
 		"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION",
+		"WORKER_INTERVAL",
 	} {
 		if value, exists := updates[key]; exists && !applied[key] {
 			lines = append(lines, key+"="+value)
@@ -627,6 +655,7 @@ func doctor(ctx context.Context, args cliArgs) error {
 	checks = append(checks, map[string]any{"name": "go_native_cli", "ok": true, "version": version})
 	if envPath(args) != "" {
 		checks = append(checks, envFileCheck(envPath(args)))
+		checks = append(checks, workerIntervalCheck(args))
 	}
 	checks = append(checks, modelConfigCheck(args))
 	checks = append(checks, localEmbeddingCheck(ctx, args))
@@ -668,6 +697,49 @@ func envFileCheck(path string) map[string]any {
 		check["hint"] = "run: chmod 600 " + path
 	}
 	return check
+}
+
+func workerIntervalCheck(args cliArgs) map[string]any {
+	path := envPath(args)
+	values, err := readEnvValues(path)
+	if err != nil {
+		return map[string]any{
+			"name":   "worker_interval",
+			"ok":     false,
+			"detail": "runtime env is not readable: " + path,
+			"hint":   "run: abra setup",
+		}
+	}
+	raw := strings.TrimSpace(values["WORKER_INTERVAL"])
+	if raw == "" {
+		return map[string]any{
+			"name":   "worker_interval",
+			"ok":     true,
+			"detail": "WORKER_INTERVAL is unset; Compose will use its production default",
+		}
+	}
+	interval, err := time.ParseDuration(raw)
+	if err != nil {
+		return map[string]any{
+			"name":   "worker_interval",
+			"ok":     false,
+			"detail": "WORKER_INTERVAL=" + raw + " is not a valid Go duration",
+			"hint":   "set WORKER_INTERVAL=30s in " + path + ", then run: abra down && abra up",
+		}
+	}
+	if interval < 10*time.Second {
+		return map[string]any{
+			"name":   "worker_interval",
+			"ok":     false,
+			"detail": "WORKER_INTERVAL=" + raw + " is very aggressive and can compete with recall and working-memory latency on local stacks",
+			"hint":   "set WORKER_INTERVAL=30s in " + path + ", then run: abra down && abra up",
+		}
+	}
+	return map[string]any{
+		"name":   "worker_interval",
+		"ok":     true,
+		"detail": "WORKER_INTERVAL=" + raw,
+	}
 }
 
 func modelConfigCheck(args cliArgs) map[string]any {
@@ -2471,7 +2543,7 @@ RATE_LIMIT_MAX=1000
 RATE_LIMIT_WINDOW=1 minute
 ABRA_API_READ_TIMEOUT=10m
 ABRA_MAX_REQUEST_BODY_BYTES=26214400
-WORKER_INTERVAL=1s
+WORKER_INTERVAL=30s
 ABRA_DEPLOYMENT_ENVIRONMENT=development
 `
 

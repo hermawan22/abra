@@ -33,6 +33,9 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Make setup next steps print the exact project scope for ingest and think commands.
 - Align runtime build version reporting across MCP server info, Prometheus metrics, and tracing resources.
 - Prefer query-form working-memory MCP resources so scopes containing slashes are preserved.
+- Make `abra upgrade` download the install script before executing it so wrong installer URLs produce actionable recovery guidance instead of a raw curl pipe failure.
+- Raise local demo/setup and managed release-gate worker intervals to reduce background ingestion contention during recall and working-memory latency gates.
+- Warn on overly aggressive `WORKER_INTERVAL` values in `abra doctor` and normalize stale local setup env files back to the safer default.
 - Improve chunk splitting and embedding batch token estimation for oversized paragraphs, minified JSON, and dense code.
 - Expand default `--code` ingestion includes to supported code files repo-wide instead of only `src` JavaScript/TypeScript paths.
 - Gate low-confidence retrieval on lexical and semantic relevance signal instead of allowing boosted rank alone to make weak matches look strong, while preserving moderate rank-only compatibility paths.

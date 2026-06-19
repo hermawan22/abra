@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -142,6 +143,26 @@ func TestModelConfigCheckExplainsLocalModel(t *testing.T) {
 	}
 }
 
+func TestWorkerIntervalCheckWarnsAggressiveLocalDefault(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+	mustWrite(t, filepath.Join(home, "quickstart.env"), "WORKER_INTERVAL=1s\n")
+
+	check := workerIntervalCheck(parseArgs([]string{"doctor"}))
+	if check["ok"] != false {
+		t.Fatalf("check = %#v", check)
+	}
+	detail := stringValue(check["detail"], "")
+	if !strings.Contains(detail, "WORKER_INTERVAL=1s") || !strings.Contains(detail, "compete with recall") {
+		t.Fatalf("detail = %q", detail)
+	}
+	if hint := stringValue(check["hint"], ""); !strings.Contains(hint, "WORKER_INTERVAL=30s") {
+		t.Fatalf("hint = %q", hint)
+	}
+}
+
 func TestPrintDoctorIncludesDetailsAndHints(t *testing.T) {
 	output := captureStdout(t, func() {
 		if err := printDoctor(parseArgs([]string{"doctor"}), []map[string]any{
@@ -164,6 +185,51 @@ func TestCodexInstallCommandIncludesCustomTokenEnv(t *testing.T) {
 	}
 	if got := codexInstallCommand("ABRA_OTHER_TOKEN"); got != "abra mcp install-codex --token-env ABRA_OTHER_TOKEN" {
 		t.Fatalf("custom command = %q", got)
+	}
+}
+
+func TestSetupNormalizesAggressiveWorkerInterval(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+	mustWrite(t, filepath.Join(home, "quickstart.env"), strings.Join([]string{
+		"ABRA_API_KEYS=dev-token",
+		"WORKER_INTERVAL=1s",
+		"",
+	}, "\n"))
+
+	output := captureStdout(t, func() {
+		if err := run(context.Background(), []string{"setup", "--yes", "--no-start"}); err != nil {
+			t.Fatalf("setup error = %v", err)
+		}
+	})
+	values, err := readEnvValues(filepath.Join(home, "quickstart.env"))
+	if err != nil {
+		t.Fatalf("read env: %v", err)
+	}
+	if values["WORKER_INTERVAL"] != "30s" {
+		t.Fatalf("worker interval = %q\noutput:\n%s", values["WORKER_INTERVAL"], output)
+	}
+}
+
+func TestInstallScriptDownloadErrorExplainsRecovery(t *testing.T) {
+	err := installScriptDownloadError(
+		"https://raw.githubusercontent.com/abra-brain/abra/main/scripts/install.sh",
+		errors.New("exit status 22"),
+		[]byte("curl: (22) The requested URL returned error: 404"),
+	)
+	message := err.Error()
+	for _, want := range []string{
+		"download Abra install script failed",
+		"404",
+		installScript,
+		"ABRA_INSTALL_SCRIPT",
+		"abra upgrade --version vX.Y.Z",
+	} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("error missing %q:\n%s", want, message)
+		}
 	}
 }
 
@@ -284,6 +350,9 @@ func TestSetupYesNoStartDefaultsLocalQwen(t *testing.T) {
 	}
 	if values["EMBEDDING_TIMEOUT"] != "10m" {
 		t.Fatalf("timeout = %q", values["EMBEDDING_TIMEOUT"])
+	}
+	if values["WORKER_INTERVAL"] != "30s" {
+		t.Fatalf("worker interval = %q", values["WORKER_INTERVAL"])
 	}
 	if values["RERANKER_PROVIDER"] != "" {
 		t.Fatalf("reranker provider = %q", values["RERANKER_PROVIDER"])

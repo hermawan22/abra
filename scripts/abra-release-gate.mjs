@@ -24,7 +24,7 @@ const managedStackEnv = {
   EMBEDDING_BASE_URL: process.env.EMBEDDING_BASE_URL || "http://127.0.0.1/unused-local-embeddings",
   EMBEDDING_API_KEY: process.env.EMBEDDING_API_KEY || "unused-local-embedding-key",
   RATE_LIMIT_MAX: process.env.RATE_LIMIT_MAX || "1000",
-  WORKER_INTERVAL: process.env.WORKER_INTERVAL || "1s"
+  WORKER_INTERVAL: process.env.WORKER_INTERVAL || "30s"
 };
 
 function numberEnv(name, fallback) {

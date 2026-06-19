@@ -30,7 +30,7 @@ abra setup
 
 `abra setup` checks prerequisites, creates an env file, asks which embedding provider to use, can start the built-in local Qwen embedding runner, and can start Postgres, migrations, API, and worker. From a source checkout it uses `.tmp/quickstart.env`; from a global CLI install it stores runtime files under your Abra config directory and can be run from any folder. `abra install` is kept as a compatibility alias for `abra setup`; the curl script installs the CLI binary.
 
-If setup finishes but ingest or Codex still cannot use Abra, run `abra doctor` before changing config by hand. Doctor separates runtime env issues, API/MCP readiness, Codex token-env visibility, model config, and local model readiness. With the default local provider, `abra models status` shows whether the embedding endpoint is serving requests, and `abra models up` starts or repairs it.
+If setup finishes but ingest or Codex still cannot use Abra, run `abra doctor` before changing config by hand. Doctor separates runtime env issues, worker interval problems, API/MCP readiness, Codex token-env visibility, model config, and local model readiness. With the default local provider, `abra models status` shows whether the embedding endpoint is serving requests, and `abra models up` starts or repairs it.
 
 View or change the important runtime config without opening the env file:
 
