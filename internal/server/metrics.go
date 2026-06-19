@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/hermawan22/abra/internal/memory"
+	"github.com/hermawan22/abra/internal/observability"
 	"github.com/hermawan22/abra/internal/store"
 	"github.com/hermawan22/abra/internal/version"
 )
@@ -532,6 +533,7 @@ func (m *metricsCollector) prometheus() string {
 	out.WriteString("# HELP abra_uptime_seconds Seconds since this API process started.\n")
 	out.WriteString("# TYPE abra_uptime_seconds gauge\n")
 	out.WriteString(fmt.Sprintf("abra_uptime_seconds %.0f\n", time.Since(m.started).Seconds()))
+	writeAIProviderMetrics(&out, observability.AIProviderMetricsSnapshot())
 	out.WriteString("# HELP abra_http_requests_total Total HTTP requests by method, route, and status.\n")
 	out.WriteString("# TYPE abra_http_requests_total counter\n")
 
@@ -844,6 +846,154 @@ func writeSmartPathCounter(out *strings.Builder, name, help string, keys []strin
 			parts[2],
 			parts[3],
 			value(metric),
+		))
+	}
+}
+
+func writeAIProviderMetrics(out *strings.Builder, metrics []observability.AIProviderMetric) {
+	out.WriteString("# HELP abra_ai_provider_calls_total Total AI provider calls by bounded operation, provider, and status.\n")
+	out.WriteString("# TYPE abra_ai_provider_calls_total counter\n")
+	for _, metric := range metrics {
+		if metric.Status == "" || metric.Calls == 0 {
+			continue
+		}
+		out.WriteString(fmt.Sprintf(
+			"abra_ai_provider_calls_total{operation=%q,provider=%q,status=%q} %d\n",
+			metric.Operation,
+			metric.Provider,
+			metric.Status,
+			metric.Calls,
+		))
+	}
+
+	out.WriteString("# HELP abra_ai_provider_call_duration_milliseconds_sum Total AI provider call duration in milliseconds.\n")
+	out.WriteString("# TYPE abra_ai_provider_call_duration_milliseconds_sum counter\n")
+	for _, metric := range metrics {
+		if metric.Status == "" || metric.Calls == 0 {
+			continue
+		}
+		out.WriteString(fmt.Sprintf(
+			"abra_ai_provider_call_duration_milliseconds_sum{operation=%q,provider=%q,status=%q} %d\n",
+			metric.Operation,
+			metric.Provider,
+			metric.Status,
+			metric.DurationMS,
+		))
+	}
+
+	out.WriteString("# HELP abra_ai_provider_last_call_duration_milliseconds Last AI provider call duration in milliseconds.\n")
+	out.WriteString("# TYPE abra_ai_provider_last_call_duration_milliseconds gauge\n")
+	for _, metric := range metrics {
+		if metric.Status == "" || metric.Calls == 0 {
+			continue
+		}
+		out.WriteString(fmt.Sprintf(
+			"abra_ai_provider_last_call_duration_milliseconds{operation=%q,provider=%q,status=%q} %d\n",
+			metric.Operation,
+			metric.Provider,
+			metric.Status,
+			metric.LastDurationMS,
+		))
+	}
+
+	out.WriteString("# HELP abra_ai_provider_waits_total Total waits for an AI provider concurrency slot by bounded operation, provider, and status.\n")
+	out.WriteString("# TYPE abra_ai_provider_waits_total counter\n")
+	for _, metric := range metrics {
+		if metric.Status == "" || metric.Waits == 0 {
+			continue
+		}
+		out.WriteString(fmt.Sprintf(
+			"abra_ai_provider_waits_total{operation=%q,provider=%q,status=%q} %d\n",
+			metric.Operation,
+			metric.Provider,
+			metric.Status,
+			metric.Waits,
+		))
+	}
+
+	out.WriteString("# HELP abra_ai_provider_wait_duration_milliseconds_sum Total time spent waiting for an AI provider concurrency slot in milliseconds.\n")
+	out.WriteString("# TYPE abra_ai_provider_wait_duration_milliseconds_sum counter\n")
+	for _, metric := range metrics {
+		if metric.Status == "" || metric.Waits == 0 {
+			continue
+		}
+		out.WriteString(fmt.Sprintf(
+			"abra_ai_provider_wait_duration_milliseconds_sum{operation=%q,provider=%q,status=%q} %d\n",
+			metric.Operation,
+			metric.Provider,
+			metric.Status,
+			metric.WaitMS,
+		))
+	}
+
+	out.WriteString("# HELP abra_ai_provider_last_wait_duration_milliseconds Last time spent waiting for an AI provider concurrency slot in milliseconds.\n")
+	out.WriteString("# TYPE abra_ai_provider_last_wait_duration_milliseconds gauge\n")
+	for _, metric := range metrics {
+		if metric.Status == "" || metric.Waits == 0 {
+			continue
+		}
+		out.WriteString(fmt.Sprintf(
+			"abra_ai_provider_last_wait_duration_milliseconds{operation=%q,provider=%q,status=%q} %d\n",
+			metric.Operation,
+			metric.Provider,
+			metric.Status,
+			metric.LastWaitMS,
+		))
+	}
+
+	out.WriteString("# HELP abra_ai_provider_in_flight Current in-flight AI provider calls by bounded operation and provider.\n")
+	out.WriteString("# TYPE abra_ai_provider_in_flight gauge\n")
+	for _, metric := range metrics {
+		if metric.Status != "" {
+			continue
+		}
+		out.WriteString(fmt.Sprintf(
+			"abra_ai_provider_in_flight{operation=%q,provider=%q} %d\n",
+			metric.Operation,
+			metric.Provider,
+			metric.InFlight,
+		))
+	}
+
+	out.WriteString("# HELP abra_ai_provider_waiting Current AI provider calls waiting for a concurrency slot by bounded operation and provider.\n")
+	out.WriteString("# TYPE abra_ai_provider_waiting gauge\n")
+	for _, metric := range metrics {
+		if metric.Status != "" {
+			continue
+		}
+		out.WriteString(fmt.Sprintf(
+			"abra_ai_provider_waiting{operation=%q,provider=%q} %d\n",
+			metric.Operation,
+			metric.Provider,
+			metric.Waiting,
+		))
+	}
+
+	out.WriteString("# HELP abra_ai_provider_max_in_flight Maximum in-flight AI provider calls observed by bounded operation and provider.\n")
+	out.WriteString("# TYPE abra_ai_provider_max_in_flight gauge\n")
+	for _, metric := range metrics {
+		if metric.Status != "" {
+			continue
+		}
+		out.WriteString(fmt.Sprintf(
+			"abra_ai_provider_max_in_flight{operation=%q,provider=%q} %d\n",
+			metric.Operation,
+			metric.Provider,
+			metric.MaxInFlight,
+		))
+	}
+
+	out.WriteString("# HELP abra_ai_provider_max_waiting Maximum AI provider calls observed waiting for a concurrency slot by bounded operation and provider.\n")
+	out.WriteString("# TYPE abra_ai_provider_max_waiting gauge\n")
+	for _, metric := range metrics {
+		if metric.Status != "" {
+			continue
+		}
+		out.WriteString(fmt.Sprintf(
+			"abra_ai_provider_max_waiting{operation=%q,provider=%q} %d\n",
+			metric.Operation,
+			metric.Provider,
+			metric.MaxWaiting,
 		))
 	}
 }

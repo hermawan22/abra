@@ -10,6 +10,7 @@ import (
 
 	"github.com/hermawan22/abra/internal/ai"
 	"github.com/hermawan22/abra/internal/config"
+	"github.com/hermawan22/abra/internal/observability"
 	"github.com/hermawan22/abra/internal/store"
 )
 
@@ -184,9 +185,10 @@ func TestEmbedTextsBatchesLargeRequests(t *testing.T) {
 }
 
 func TestProviderLimiterSerializesEmbeddingCalls(t *testing.T) {
+	observability.ResetAIProviderMetricsForTest()
 	provider := &concurrentEmbeddingProvider{delay: 20 * time.Millisecond}
 	service := Service{
-		cfg:           config.Config{Embedding: config.AIProviderConfig{Dimensions: 3}},
+		cfg:           config.Config{Embedding: config.AIProviderConfig{Provider: "local", Dimensions: 3}},
 		embeddings:    provider,
 		providerSlots: make(chan struct{}, 1),
 	}
@@ -213,6 +215,34 @@ func TestProviderLimiterSerializesEmbeddingCalls(t *testing.T) {
 	if provider.maxConcurrent != 1 {
 		t.Fatalf("max concurrent provider calls = %d, want 1", provider.maxConcurrent)
 	}
+	metrics := observability.AIProviderMetricsSnapshot()
+	if got := aiProviderMetricValue(metrics, "embedding", "local", "ok", "calls"); got != 4 {
+		t.Fatalf("provider call metric = %d, want 4 in %#v", got, metrics)
+	}
+	if got := aiProviderMetricValue(metrics, "embedding", "local", "ok", "waits"); got != 4 {
+		t.Fatalf("provider wait metric = %d, want 4 in %#v", got, metrics)
+	}
+	if got := aiProviderMetricValue(metrics, "embedding", "local", "", "max_in_flight"); got != 1 {
+		t.Fatalf("max in-flight metric = %d, want 1 in %#v", got, metrics)
+	}
+}
+
+func aiProviderMetricValue(metrics []observability.AIProviderMetric, operation, provider, status, field string) int64 {
+	var total int64
+	for _, metric := range metrics {
+		if metric.Operation != operation || metric.Provider != provider || metric.Status != status {
+			continue
+		}
+		switch field {
+		case "calls":
+			total += metric.Calls
+		case "waits":
+			total += metric.Waits
+		case "max_in_flight":
+			total += metric.MaxInFlight
+		}
+	}
+	return total
 }
 
 type recordingEmbeddingProvider struct {

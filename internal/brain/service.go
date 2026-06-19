@@ -4,16 +4,19 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/hermawan22/abra/internal/ai"
 	"github.com/hermawan22/abra/internal/config"
 	"github.com/hermawan22/abra/internal/graph"
+	"github.com/hermawan22/abra/internal/observability"
 	"github.com/hermawan22/abra/internal/store"
 )
 
@@ -159,37 +162,65 @@ func newRerankerProvider(cfg config.Config) (ai.RerankerProvider, error) {
 	}
 }
 
-func (s *Service) withProviderSlot(ctx context.Context) (func(), error) {
+func (s *Service) withProviderSlot(ctx context.Context, operation, provider string) (func(), error) {
 	if s.providerSlots == nil {
 		return func() {}, nil
 	}
+	started := time.Now()
+	observability.AIProviderWaitingStart(operation, provider)
 	select {
 	case s.providerSlots <- struct{}{}:
-		return func() { <-s.providerSlots }, nil
+		observability.AIProviderWaitingDone(operation, provider, "ok", time.Since(started))
+		observability.AIProviderInFlightStart(operation, provider)
+		return func() {
+			<-s.providerSlots
+			observability.AIProviderInFlightDone(operation, provider)
+		}, nil
 	case <-ctx.Done():
+		observability.AIProviderWaitingDone(operation, provider, providerMetricStatus(ctx.Err()), time.Since(started))
 		return nil, ctx.Err()
 	}
 }
 
 func (s *Service) embed(ctx context.Context, request ai.EmbeddingRequest) (ai.EmbeddingResponse, error) {
-	release, err := s.withProviderSlot(ctx)
+	operation := "embedding"
+	provider := s.cfg.Embedding.Provider
+	release, err := s.withProviderSlot(ctx, operation, provider)
 	if err != nil {
 		return ai.EmbeddingResponse{}, err
 	}
 	defer release()
-	return s.embeddings.Embed(ctx, request)
+	started := time.Now()
+	response, err := s.embeddings.Embed(ctx, request)
+	observability.ObserveAIProviderCall(operation, provider, providerMetricStatus(err), time.Since(started))
+	return response, err
 }
 
 func (s *Service) rerank(ctx context.Context, request ai.RerankRequest) (ai.RerankResponse, error) {
 	if s.reranker == nil {
 		return ai.RerankResponse{}, fmt.Errorf("reranker is not configured")
 	}
-	release, err := s.withProviderSlot(ctx)
+	operation := "rerank"
+	provider := s.cfg.Reranker.Provider
+	release, err := s.withProviderSlot(ctx, operation, provider)
 	if err != nil {
 		return ai.RerankResponse{}, err
 	}
 	defer release()
-	return s.reranker.Rerank(ctx, request)
+	started := time.Now()
+	response, err := s.reranker.Rerank(ctx, request)
+	observability.ObserveAIProviderCall(operation, provider, providerMetricStatus(err), time.Since(started))
+	return response, err
+}
+
+func providerMetricStatus(err error) string {
+	if err == nil {
+		return "ok"
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return "canceled"
+	}
+	return "error"
 }
 
 func (s *Service) CheckEmbeddingReady(ctx context.Context) error {

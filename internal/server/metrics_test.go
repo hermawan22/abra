@@ -6,11 +6,18 @@ import (
 	"time"
 
 	"github.com/hermawan22/abra/internal/memory"
+	"github.com/hermawan22/abra/internal/observability"
 	"github.com/hermawan22/abra/internal/store"
 )
 
 func TestSmartPathMetricsPrometheus(t *testing.T) {
+	observability.ResetAIProviderMetricsForTest()
 	collector := newMetricsCollector()
+	observability.AIProviderWaitingStart("embedding", "local")
+	observability.AIProviderWaitingDone("embedding", "local", "ok", 3*time.Millisecond)
+	observability.AIProviderInFlightStart("embedding", "local")
+	observability.ObserveAIProviderCall("embedding", "local", "ok", 9*time.Millisecond)
+	observability.AIProviderInFlightDone("embedding", "local")
 	collector.observeRecall("ok", 12*time.Millisecond, store.RecallResult{
 		Claims:              []store.ClaimResult{{ID: "claim-1"}},
 		SupportingDocuments: []store.DocumentResult{{ID: "doc-1"}},
@@ -88,6 +95,13 @@ func TestSmartPathMetricsPrometheus(t *testing.T) {
 	out := collector.prometheus()
 	for _, want := range []string{
 		`abra_smart_path_requests_total{operation="recall",status="ok",verdict="",decision=""} 1`,
+		`abra_ai_provider_calls_total{operation="embedding",provider="local",status="ok"} 1`,
+		`abra_ai_provider_call_duration_milliseconds_sum{operation="embedding",provider="local",status="ok"} 9`,
+		`abra_ai_provider_waits_total{operation="embedding",provider="local",status="ok"} 1`,
+		`abra_ai_provider_wait_duration_milliseconds_sum{operation="embedding",provider="local",status="ok"} 3`,
+		`abra_ai_provider_in_flight{operation="embedding",provider="local"} 0`,
+		`abra_ai_provider_max_in_flight{operation="embedding",provider="local"} 1`,
+		`abra_ai_provider_max_waiting{operation="embedding",provider="local"} 1`,
 		`abra_smart_path_requests_total{operation="recall",status="error",verdict="",decision=""} 1`,
 		`abra_recall_retrieval_mode_total{mode="hybrid",status="ok"} 1`,
 		`abra_recall_retrieval_mode_total{mode="unknown",status="error"} 1`,
