@@ -71,9 +71,9 @@ Then run the guided CLI onboarding:
 abra setup
 ```
 
-`abra setup` checks required commands, creates the runtime env file, asks which embedding provider to use, can start the built-in local Qwen embedding runner, and can start the local stack. From a source checkout it uses `.tmp/quickstart.env`; from a global CLI install it stores runtime files under your Abra config directory and can be run from any folder. `abra install` is a compatibility alias for `abra setup`; the curl script is what installs the CLI binary.
+`abra setup` checks required commands, creates the runtime env file, asks which embedding provider to use, can start the built-in local Qwen embedding runner, and can start the local stack. From a source checkout it uses `.tmp/quickstart.env`; from a global CLI install it stores runtime files under your Abra config directory and can be run from any folder. `abra install` is a compatibility alias for `abra setup`; the curl script is what installs the CLI binary. If you skip setup startup and later run `abra up`, the default local provider starts the Qwen embedding runner automatically before API readiness is checked.
 
-If setup completes but ingest or Codex still cannot use Abra, run `abra doctor` before editing env files. It separates runtime env issues, worker interval problems, API/MCP readiness, Codex token-env visibility, model config, and local model readiness. With the default local provider, use `abra models status` to check the embedding endpoint and `abra models up` to start or repair it.
+If setup completes but ingest or Codex still cannot use Abra, run `abra doctor` before editing env files. It separates runtime env issues, worker interval problems, API/MCP readiness, Codex token-env visibility, model config, and local model readiness. With the default local provider, `abra up` starts the embedding runner automatically; use `abra models status` to inspect it and `abra models up` to repair or manage it directly.
 
 For non-interactive local setup:
 
@@ -81,7 +81,7 @@ For non-interactive local setup:
 abra setup --yes
 ```
 
-If you skipped startup or need to recover a stopped local model, start the default self-hosted embedding runner:
+Use `abra setup --yes --no-models` only when you intentionally manage the embedding endpoint yourself. If you skipped startup or need to recover a stopped local model, start the default self-hosted embedding runner directly:
 
 ```sh
 abra models up
@@ -280,7 +280,7 @@ Reset demo data:
 go run ./cmd/abra down --reset
 ```
 
-The demo uses the default local neural embedding path. Run `abra models up` before ingesting documents if the local embedding runner is not already active. For production, keep approval enforcement on and either self-host compatible embedding/rerank endpoints or configure a managed compatible custom provider.
+The demo uses the default local neural embedding path. `abra setup` and `abra up` start the local embedding runner automatically for the default local provider; use `abra models status` and `abra models up` only when you need to inspect or repair that runner directly. For production, keep approval enforcement on and either self-host compatible embedding/rerank endpoints or configure a managed compatible custom provider.
 
 For command-by-command local and self-host usage, read [docs/CLI.md](./docs/CLI.md).
 

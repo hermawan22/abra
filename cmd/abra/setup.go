@@ -64,6 +64,7 @@ func setup(ctx context.Context, args cliArgs) error {
 			if err := modelsUp(ctx, args); err != nil {
 				return err
 			}
+			args.Bools["skip-models"] = true
 		} else {
 			fmt.Println("Skipped local model runner.")
 			fmt.Println("Run before ingest: abra models up")

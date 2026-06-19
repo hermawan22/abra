@@ -598,6 +598,12 @@ func up(ctx context.Context, args cliArgs) error {
 	if !hasLocalCompose(".") {
 		fmt.Println("Using runtime: " + projectDir)
 	}
+	if shouldStartLocalModelsForUp(args) {
+		fmt.Println("Starting local embedding runner for provider=local.")
+		if err := modelsUp(ctx, args); err != nil {
+			return err
+		}
+	}
 	steps := [][]string{
 		{"compose", "--project-name", "abra", "--env-file", env, "build", "api", "worker", "migrate"},
 		{"compose", "--project-name", "abra", "--env-file", env, "up", "-d", "postgres"},
@@ -616,6 +622,23 @@ func up(ctx context.Context, args cliArgs) error {
 		printReady(args)
 	}
 	return nil
+}
+
+func shouldStartLocalModelsForUp(args cliArgs) bool {
+	if boolFlag(args, "no-models") || boolFlag(args, "skip-models") {
+		return false
+	}
+	values, err := readEnvValues(envPath(args))
+	if err != nil {
+		return false
+	}
+	if strings.TrimSpace(values["EMBEDDING_PROVIDER"]) != "local" {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(values["NODE_ENV"]), "production") && !yesish(values["ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION"]) {
+		return false
+	}
+	return true
 }
 
 func down(args cliArgs) error {
@@ -2954,6 +2977,8 @@ abra mcp install-codex when Codex cannot connect.
 	case "setup":
 		return `Usage:
   abra setup
+  abra setup --yes
+  abra setup --yes --no-models
   abra setup --local
   abra setup --openai --api-key-stdin
   abra setup --compatible --base-url <url> --embedding-model <model> [--api-key-stdin]
@@ -2966,8 +2991,9 @@ local provider uses abra models up to serve Qwen/Qwen3-Embedding-0.6B through a
 local OpenAI-compatible endpoint.
 
 If setup writes config but later commands cannot embed, run abra doctor first.
-For the default local provider, model readiness is checked with
-abra models status and repaired with abra models up before restarting the stack.
+For the default local provider, abra up starts the model runner automatically;
+use abra models status and abra models up when you want to inspect or repair it
+directly.
 
 Common setup flags:
   --base-url            embedding provider base URL
@@ -2986,14 +3012,16 @@ Common setup flags:
 	case "install", "up", "quickstart", "demo":
 		return `Usage:
   abra setup
-  abra up
+  abra up [--no-models]
   abra demo
   abra install
 
-abra setup is the guided first-run path. abra up starts the local Docker Compose
-stack non-interactively: Postgres, migrations, API, and worker. abra install is
-kept as a compatibility alias for abra setup; the curl installer is what installs
-the CLI binary.
+abra setup is the guided first-run path. abra up starts the default local Qwen
+embedding runner when the env uses EMBEDDING_PROVIDER=local, then starts the
+local Docker Compose stack non-interactively: Postgres, migrations, API, and
+worker. Use --no-models when you intentionally manage the embedding endpoint
+yourself. abra install is kept as a compatibility alias for abra setup; the curl
+installer is what installs the CLI binary.
 `
 	case "upgrade", "update":
 		return `Usage:

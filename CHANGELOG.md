@@ -40,6 +40,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Add `--tracked` local path ingestion for worker-visible paths while keeping direct local `abra ingest <path>` as the Docker-safe default.
 - Make setup next steps print the exact project scope for ingest and think commands.
 - Make setup and ready banners include `abra agents init` and `abra agents verify` so agent context readiness is part of the default CLI onboarding path.
+- Make `abra up` start the default local Qwen embedding runner automatically when the env uses `EMBEDDING_PROVIDER=local`.
 - Make `abra scope` print agent init, agent verification, MCP install, and exact-scope recovery commands when AI clients say Abra has no context.
 - Make CLI docs and generated agent instructions treat `abra scope` as the source of truth and recover empty agent context by ingesting and verifying the exact scope.
 - Make `abra agents verify` call `working_memory_compose` and fail when the exact scope returns no source-backed context.

@@ -27,6 +27,21 @@ func TestCommandHelpDoesNotRequireFlags(t *testing.T) {
 	}
 }
 
+func TestSetupAndUpHelpMentionModelAutomation(t *testing.T) {
+	setupHelp := commandUsage("setup")
+	for _, want := range []string{"abra setup --yes", "abra setup --yes --no-models", "--skip-models"} {
+		if !strings.Contains(setupHelp, want) {
+			t.Fatalf("setup help missing %q:\n%s", want, setupHelp)
+		}
+	}
+	upHelp := commandUsage("up")
+	for _, want := range []string{"abra up [--no-models]", "starts the default local Qwen", "--no-models"} {
+		if !strings.Contains(upHelp, want) {
+			t.Fatalf("up help missing %q:\n%s", want, upHelp)
+		}
+	}
+}
+
 func TestScopeCommandPrintsAgentGuidance(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "project with spaces")
 	if err := os.MkdirAll(root, 0o755); err != nil {
@@ -753,6 +768,36 @@ func TestSetupYesNoStartDefaultsLocalQwen(t *testing.T) {
 	if !strings.Contains(output, "abra ingest . --code --scope "+shellQuote(wantScope)) ||
 		!strings.Contains(output, `abra think "What should I know before changing this project?" --scope `+shellQuote(wantScope)) {
 		t.Fatalf("setup next steps should include exact scope %s:\n%s", wantScope, output)
+	}
+}
+
+func TestUpAutoStartsLocalModelsOnlyForLocalProvider(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	localEnv := filepath.Join(home, "quickstart.env")
+	mustWrite(t, localEnv, "EMBEDDING_PROVIDER=local\n")
+	if !shouldStartLocalModelsForUp(parseArgs([]string{"up"})) {
+		t.Fatal("up should start local models when provider is local")
+	}
+	if shouldStartLocalModelsForUp(parseArgs([]string{"up", "--no-models"})) {
+		t.Fatal("up --no-models should not start local models")
+	}
+	if shouldStartLocalModelsForUp(parseArgs([]string{"up", "--skip-models"})) {
+		t.Fatal("up --skip-models should not start local models")
+	}
+
+	mustWrite(t, localEnv, "EMBEDDING_PROVIDER=compatible\n")
+	if shouldStartLocalModelsForUp(parseArgs([]string{"up"})) {
+		t.Fatal("up should not start local models for compatible providers")
+	}
+
+	mustWrite(t, localEnv, "NODE_ENV=production\nEMBEDDING_PROVIDER=local\nALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=false\n")
+	if shouldStartLocalModelsForUp(parseArgs([]string{"up"})) {
+		t.Fatal("up should not auto-start local models in production without explicit local-embedding override")
+	}
+	mustWrite(t, localEnv, "NODE_ENV=production\nEMBEDDING_PROVIDER=local\nALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=true\n")
+	if !shouldStartLocalModelsForUp(parseArgs([]string{"up"})) {
+		t.Fatal("up should auto-start local models in production when local embeddings are explicitly allowed")
 	}
 }
 

@@ -28,9 +28,9 @@ Run the guided first-run setup:
 abra setup
 ```
 
-`abra setup` checks prerequisites, creates an env file, asks which embedding provider to use, can start the built-in local Qwen embedding runner, and can start Postgres, migrations, API, and worker. From a source checkout it uses `.tmp/quickstart.env`; from a global CLI install it stores runtime files under your Abra config directory and can be run from any folder. `abra install` is kept as a compatibility alias for `abra setup`; the curl script installs the CLI binary.
+`abra setup` checks prerequisites, creates an env file, asks which embedding provider to use, can start the built-in local Qwen embedding runner, and can start Postgres, migrations, API, and worker. From a source checkout it uses `.tmp/quickstart.env`; from a global CLI install it stores runtime files under your Abra config directory and can be run from any folder. `abra install` is kept as a compatibility alias for `abra setup`; the curl script installs the CLI binary. If setup writes local config but you start later, `abra up` starts the default Qwen embedding runner automatically before checking API readiness.
 
-If setup finishes but ingest or Codex still cannot use Abra, run `abra doctor` before changing config by hand. Doctor separates runtime env issues, worker interval problems, API/MCP readiness, Codex token-env visibility, model config, and local model readiness. With the default local provider, `abra models status` shows whether the embedding endpoint is serving requests, and `abra models up` starts or repairs it.
+If setup finishes but ingest or Codex still cannot use Abra, run `abra doctor` before changing config by hand. Doctor separates runtime env issues, worker interval problems, API/MCP readiness, Codex token-env visibility, model config, and local model readiness. With the default local provider, `abra up` starts the embedding runner automatically; `abra models status` shows whether the embedding endpoint is serving requests, and `abra models up` starts or repairs it directly.
 
 View or change the important runtime config without opening the env file:
 
@@ -43,6 +43,7 @@ abra config model compatible --base-url https://api.example.com/v1 --model embed
 ```
 
 For non-interactive local setup, use `abra setup --yes`. For authenticated compatible providers during onboarding, use `printf '%s' "$PROVIDER_API_KEY" | abra setup --compatible --base-url https://api.example.com/v1 --embedding-model embedding-model --api-key-stdin`.
+Use `abra setup --yes --no-models` only when you intentionally manage the embedding endpoint yourself; otherwise the default local provider is started for you by setup or `abra up`.
 
 Generate repo-local AI agent instruction files after setup:
 
@@ -229,7 +230,7 @@ From a source checkout, run the CLI as `go run ./cmd/abra <command>`. In a relea
 | verify agent instruction files in CI | `abra agents verify --files-only --strict` |
 | start local Qwen embedding runner | `abra models up` |
 | check local embedding runner | `abra models status` |
-| start local stack | `abra up` |
+| start local stack and default local embedding runner | `abra up` |
 | init env only | `abra init` |
 | compatibility setup alias | `abra install` |
 | ingest one document | `abra ingest --text "source-backed content"` |
