@@ -989,7 +989,13 @@ func printDoctor(args cliArgs, checks []map[string]any) error {
 		}
 	}
 	if boolFlag(args, "json") {
-		return printJSON(map[string]any{"ok": ok, "checks": checks})
+		if err := printJSON(map[string]any{"ok": ok, "checks": checks}); err != nil {
+			return err
+		}
+		if boolFlag(args, "strict") && !ok {
+			return errors.New("doctor checks failed")
+		}
+		return nil
 	}
 	for _, check := range checks {
 		status := "ok"
@@ -1006,6 +1012,9 @@ func printDoctor(args cliArgs, checks []map[string]any) error {
 		if errText := stringValue(check["error"], ""); errText != "" {
 			fmt.Println("err  " + errText)
 		}
+	}
+	if boolFlag(args, "strict") && !ok {
+		return errors.New("doctor checks failed")
 	}
 	return nil
 }
@@ -3010,12 +3019,13 @@ readiness, model config/readiness, and the current shell token env.
 `
 	case "doctor":
 		return `Usage:
-  abra doctor [--json] [--token-env ABRA_API_TOKEN]
+  abra doctor [--json] [--strict] [--token-env ABRA_API_TOKEN]
 
 Checks local commands, runtime env permissions, embedding model config, local
 embedding readiness, API readiness, MCP tools, and Codex token-env hints. Use it
 after abra setup, after changing model config, and before rerunning
-abra mcp install-codex when Codex cannot connect.
+abra mcp install-codex when Codex cannot connect. Use --strict for CI or release
+preflight checks that should exit non-zero when any check is not ok.
 `
 	case "setup":
 		return `Usage:

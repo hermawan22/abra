@@ -114,6 +114,8 @@ abra status
 abra doctor
 ```
 
+Use `abra doctor --strict` for CI or preflight scripts that should exit non-zero when any runtime check is not ok.
+
 Connect MCP:
 
 ```sh
@@ -243,6 +245,7 @@ From a source checkout, run the CLI as `go run ./cmd/abra <command>`. In a relea
 | print project scope for agents | `abra scope` |
 | status | `abra status` |
 | doctor | `abra doctor` |
+| strict doctor for CI/preflight | `abra doctor --strict --json` |
 | version | `abra version` |
 | upgrade | `abra upgrade` |
 | uninstall CLI | `abra uninstall --yes` |

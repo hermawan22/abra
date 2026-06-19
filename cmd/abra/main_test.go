@@ -572,6 +572,41 @@ func TestPrintDoctorIncludesDetailsAndHints(t *testing.T) {
 	}
 }
 
+func TestPrintDoctorStrictFailsAfterOutput(t *testing.T) {
+	var err error
+	output := captureStdout(t, func() {
+		err = printDoctor(parseArgs([]string{"doctor", "--strict"}), []map[string]any{
+			{"name": "model_config", "ok": true, "detail": "provider=local model=embed"},
+			{"name": "readyz", "ok": false, "hint": "run: abra up"},
+		})
+	})
+	if err == nil || !strings.Contains(err.Error(), "doctor checks failed") {
+		t.Fatalf("strict doctor error = %v", err)
+	}
+	if !strings.Contains(output, "warn  readyz") || !strings.Contains(output, "hint run: abra up") {
+		t.Fatalf("strict doctor should still print details before failing:\n%s", output)
+	}
+}
+
+func TestPrintDoctorJSONStrictFailsWithMachineReadableOutput(t *testing.T) {
+	var err error
+	output := captureStdout(t, func() {
+		err = printDoctor(parseArgs([]string{"doctor", "--json", "--strict"}), []map[string]any{
+			{"name": "readyz", "ok": false, "hint": "run: abra up"},
+		})
+	})
+	if err == nil || !strings.Contains(err.Error(), "doctor checks failed") {
+		t.Fatalf("strict json doctor error = %v", err)
+	}
+	var payload map[string]any
+	if decodeErr := json.Unmarshal([]byte(output), &payload); decodeErr != nil {
+		t.Fatalf("decode strict json output: %v\n%s", decodeErr, output)
+	}
+	if payload["ok"] != false {
+		t.Fatalf("strict json ok = %#v, want false", payload["ok"])
+	}
+}
+
 func TestCodexInstallCommandIncludesCustomTokenEnv(t *testing.T) {
 	if got := codexInstallCommand("ABRA_API_TOKEN"); got != "abra mcp install-codex" {
 		t.Fatalf("default command = %q", got)
