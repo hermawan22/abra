@@ -25,6 +25,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Add `abra agents verify` to check repo instruction files, MCP readiness, required agent tools, and exact-scope discovery before using an AI coding agent.
 - Add `abra agents verify --files-only --strict` and run it in the release gate so agent instruction files cannot regress without a live MCP server.
 - Add `ABRA_AI_PROVIDER_CONCURRENCY` to bound service-wide embedding and reranker calls across ingest, recall, readiness checks, and working-memory paths.
+- Add CLI setup/config/doctor visibility for `ABRA_AI_PROVIDER_CONCURRENCY`, including local-model overload warnings.
 
 ### Changed
 

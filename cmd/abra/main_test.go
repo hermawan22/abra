@@ -392,6 +392,56 @@ func TestWorkerIntervalCheckWarnsAggressiveLocalDefault(t *testing.T) {
 	}
 }
 
+func TestAIProviderConcurrencyCheckWarnsLocalOversubscription(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+	mustWrite(t, filepath.Join(home, "quickstart.env"), strings.Join([]string{
+		"EMBEDDING_PROVIDER=local",
+		"ABRA_AI_PROVIDER_CONCURRENCY=4",
+		"",
+	}, "\n"))
+
+	check := aiProviderConcurrencyCheck(parseArgs([]string{"doctor"}))
+	if check["ok"] != false {
+		t.Fatalf("check = %#v", check)
+	}
+	detail := stringValue(check["detail"], "")
+	if !strings.Contains(detail, "ABRA_AI_PROVIDER_CONCURRENCY=4") || !strings.Contains(detail, "single local Qwen") {
+		t.Fatalf("detail = %q", detail)
+	}
+	if hint := stringValue(check["hint"], ""); !strings.Contains(hint, "ABRA_AI_PROVIDER_CONCURRENCY=1") {
+		t.Fatalf("hint = %q", hint)
+	}
+}
+
+func TestAIProviderConcurrencyCheckReportsDefaultsAndInvalidValues(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+	envFile := filepath.Join(home, "quickstart.env")
+	mustWrite(t, envFile, "EMBEDDING_PROVIDER=compatible\n")
+
+	check := aiProviderConcurrencyCheck(parseArgs([]string{"doctor"}))
+	if check["ok"] != true {
+		t.Fatalf("check = %#v", check)
+	}
+	if detail := stringValue(check["detail"], ""); !strings.Contains(detail, "runtime default is 4") {
+		t.Fatalf("detail = %q", detail)
+	}
+
+	mustWrite(t, envFile, "EMBEDDING_PROVIDER=compatible\nABRA_AI_PROVIDER_CONCURRENCY=33\n")
+	check = aiProviderConcurrencyCheck(parseArgs([]string{"doctor"}))
+	if check["ok"] != false {
+		t.Fatalf("check = %#v", check)
+	}
+	if detail := stringValue(check["detail"], ""); !strings.Contains(detail, "between 1 and 32") {
+		t.Fatalf("detail = %q", detail)
+	}
+}
+
 func TestPrintDoctorIncludesDetailsAndHints(t *testing.T) {
 	output := captureStdout(t, func() {
 		if err := printDoctor(parseArgs([]string{"doctor"}), []map[string]any{
@@ -579,6 +629,9 @@ func TestSetupYesNoStartDefaultsLocalQwen(t *testing.T) {
 	}
 	if values["EMBEDDING_TIMEOUT"] != "10m" {
 		t.Fatalf("timeout = %q", values["EMBEDDING_TIMEOUT"])
+	}
+	if values["ABRA_AI_PROVIDER_CONCURRENCY"] != "1" {
+		t.Fatalf("provider concurrency = %q", values["ABRA_AI_PROVIDER_CONCURRENCY"])
 	}
 	if values["WORKER_INTERVAL"] != "30s" {
 		t.Fatalf("worker interval = %q", values["WORKER_INTERVAL"])
@@ -844,6 +897,9 @@ func TestConfigModelCompatibleUpdatesEnv(t *testing.T) {
 	if values["ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION"] != "false" {
 		t.Fatalf("local production guard = %q", values["ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION"])
 	}
+	if values["ABRA_AI_PROVIDER_CONCURRENCY"] != "4" {
+		t.Fatalf("provider concurrency = %q", values["ABRA_AI_PROVIDER_CONCURRENCY"])
+	}
 }
 
 func TestConfigModelCompatibleAllowsNoAPIKey(t *testing.T) {
@@ -875,6 +931,9 @@ func TestConfigModelCompatibleAllowsNoAPIKey(t *testing.T) {
 	}
 	if values["EMBEDDING_TIMEOUT"] != "30s" {
 		t.Fatalf("timeout = %q", values["EMBEDDING_TIMEOUT"])
+	}
+	if values["ABRA_AI_PROVIDER_CONCURRENCY"] != "4" {
+		t.Fatalf("provider concurrency = %q", values["ABRA_AI_PROVIDER_CONCURRENCY"])
 	}
 	if values["EMBEDDING_BASE_URL"] != "http://host.docker.internal:9999/v1" {
 		t.Fatalf("base url = %q", values["EMBEDDING_BASE_URL"])
@@ -959,6 +1018,9 @@ func TestConfigModelLocalRestoresQwenDefaults(t *testing.T) {
 	}
 	if values["EMBEDDING_TIMEOUT"] != "10m" {
 		t.Fatalf("timeout = %q", values["EMBEDDING_TIMEOUT"])
+	}
+	if values["ABRA_AI_PROVIDER_CONCURRENCY"] != "1" {
+		t.Fatalf("provider concurrency = %q", values["ABRA_AI_PROVIDER_CONCURRENCY"])
 	}
 	if values["RERANKER_PROVIDER"] != "" || values["RERANKER_BASE_URL"] != "" {
 		t.Fatalf("reranker fields = provider %q base %q", values["RERANKER_PROVIDER"], values["RERANKER_BASE_URL"])

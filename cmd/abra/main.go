@@ -339,6 +339,7 @@ func configShow(args cliArgs) error {
 		"embedding_model":      values["EMBEDDING_MODEL"],
 		"embedding_dimensions": values["EMBEDDING_DIMENSIONS"],
 		"embedding_timeout":    values["EMBEDDING_TIMEOUT"],
+		"provider_concurrency": firstNonEmpty(values["ABRA_AI_PROVIDER_CONCURRENCY"], defaultProviderConcurrency(values["EMBEDDING_PROVIDER"])),
 		"reranker_provider":    values["RERANKER_PROVIDER"],
 		"reranker_base_url":    values["RERANKER_BASE_URL"],
 		"reranker_api_key":     maskSecret(values["RERANKER_API_KEY"]),
@@ -361,6 +362,7 @@ func configShow(args cliArgs) error {
 	if timeout := stringValue(view["embedding_timeout"], ""); timeout != "" {
 		fmt.Println("timeout:   " + timeout)
 	}
+	fmt.Println("provider_concurrency: " + stringValue(view["provider_concurrency"], ""))
 	fmt.Println("api_key:   " + stringValue(view["embedding_api_key"], ""))
 	if rerankerProvider := stringValue(view["reranker_provider"], ""); rerankerProvider != "" {
 		fmt.Println("reranker:  " + rerankerProvider)
@@ -418,6 +420,7 @@ func configModelLocalNeural(args cliArgs, label string) error {
 		"EMBEDDING_MODEL":                      flag(args, "model", defaultServedModelName),
 		"EMBEDDING_DIMENSIONS":                 flag(args, "dimensions", "1024"),
 		"EMBEDDING_TIMEOUT":                    flag(args, "embedding-timeout", "10m"),
+		"ABRA_AI_PROVIDER_CONCURRENCY":         flag(args, "provider-concurrency", "1"),
 		"RERANKER_PROVIDER":                    flag(args, "reranker-provider", ""),
 		"RERANKER_BASE_URL":                    flag(args, "reranker-base-url", ""),
 		"RERANKER_API_KEY":                     apiKey,
@@ -454,6 +457,7 @@ func configModelCompatible(args cliArgs, label string) error {
 		"EMBEDDING_MODEL":                      model,
 		"EMBEDDING_DIMENSIONS":                 flag(args, "dimensions", "1536"),
 		"EMBEDDING_TIMEOUT":                    flag(args, "embedding-timeout", "30s"),
+		"ABRA_AI_PROVIDER_CONCURRENCY":         flag(args, "provider-concurrency", "4"),
 		"RERANKER_PROVIDER":                    "",
 		"RERANKER_BASE_URL":                    "",
 		"RERANKER_API_KEY":                     "",
@@ -494,6 +498,7 @@ func updateEnvValues(args cliArgs, updates map[string]string) error {
 		"EMBEDDING_MODEL",
 		"EMBEDDING_DIMENSIONS",
 		"EMBEDDING_TIMEOUT",
+		"ABRA_AI_PROVIDER_CONCURRENCY",
 		"RERANKER_PROVIDER",
 		"RERANKER_BASE_URL",
 		"RERANKER_API_KEY",
@@ -660,6 +665,7 @@ func doctor(ctx context.Context, args cliArgs) error {
 		checks = append(checks, workerIntervalCheck(args))
 	}
 	checks = append(checks, modelConfigCheck(args))
+	checks = append(checks, aiProviderConcurrencyCheck(args))
 	checks = append(checks, localEmbeddingCheck(ctx, args))
 	checks = append(checks, codexMCPClientCheck(args))
 	checks = append(checks, codexLaunchEnvCheck(args))
@@ -787,6 +793,67 @@ func modelConfigCheck(args cliArgs) map[string]any {
 		}
 	}
 	return map[string]any{"name": "model_config", "ok": true, "detail": detail}
+}
+
+func aiProviderConcurrencyCheck(args cliArgs) map[string]any {
+	values, err := readEnvValues(envPath(args))
+	if err != nil {
+		return map[string]any{
+			"name":   "ai_provider_concurrency",
+			"ok":     false,
+			"detail": "runtime env is not readable: " + envPath(args),
+			"hint":   "run: abra setup",
+		}
+	}
+	path := envPath(args)
+	provider := strings.TrimSpace(values["EMBEDDING_PROVIDER"])
+	raw := strings.TrimSpace(values["ABRA_AI_PROVIDER_CONCURRENCY"])
+	defaultValue := defaultProviderConcurrency(provider)
+	if raw == "" {
+		return map[string]any{
+			"name":   "ai_provider_concurrency",
+			"ok":     true,
+			"detail": "ABRA_AI_PROVIDER_CONCURRENCY is unset; runtime default is " + defaultValue + " for provider=" + valueOr(provider, "<empty>"),
+		}
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 1 || value > 32 {
+		return map[string]any{
+			"name":   "ai_provider_concurrency",
+			"ok":     false,
+			"detail": "ABRA_AI_PROVIDER_CONCURRENCY=" + raw + " must be an integer between 1 and 32",
+			"hint":   "set ABRA_AI_PROVIDER_CONCURRENCY=" + defaultValue + " in " + path + ", then run: abra down && abra up",
+		}
+	}
+	if isLocalProviderName(provider) && value > 1 {
+		return map[string]any{
+			"name":   "ai_provider_concurrency",
+			"ok":     false,
+			"detail": "ABRA_AI_PROVIDER_CONCURRENCY=" + raw + " can overload a single local Qwen model runner",
+			"hint":   "set ABRA_AI_PROVIDER_CONCURRENCY=1 in " + path + ", then run: abra down && abra up",
+		}
+	}
+	return map[string]any{
+		"name":   "ai_provider_concurrency",
+		"ok":     true,
+		"detail": "ABRA_AI_PROVIDER_CONCURRENCY=" + raw,
+	}
+}
+
+func defaultProviderConcurrency(provider string) string {
+	if isLocalProviderName(provider) {
+		return "1"
+	}
+	return "4"
+}
+
+func isLocalProviderName(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "local", "qwen3", "local-smart":
+		return true
+	default:
+		return false
+	}
 }
 
 func mcpCheck(ctx context.Context, args cliArgs) map[string]any {
@@ -2847,6 +2914,7 @@ Common setup flags:
   --model               provider selector or legacy embedding model alias
   --dimensions          embedding dimensions
   --embedding-timeout   provider timeout, default 10m for local and 30s for compatible
+  --provider-concurrency provider call concurrency, default 1 for local and 4 for compatible
   --api-key             embedding provider API key
   --api-key-stdin       read embedding provider API key from stdin
   --no-models           do not start the local embedding runner
@@ -2898,6 +2966,7 @@ EMBEDDING_BASE_URL=http://host.docker.internal:8080/v1
 EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0
 EMBEDDING_DIMENSIONS=1024
 EMBEDDING_TIMEOUT=10m
+ABRA_AI_PROVIDER_CONCURRENCY=1
 RERANKER_PROVIDER=
 RERANKER_BASE_URL=
 RERANKER_MODEL=
@@ -2921,6 +2990,7 @@ EMBEDDING_API_KEY=replace-with-embedding-key
 EMBEDDING_MODEL=embedding-model
 EMBEDDING_DIMENSIONS=1024
 EMBEDDING_TIMEOUT=30s
+ABRA_AI_PROVIDER_CONCURRENCY=4
 RERANKER_PROVIDER=
 RERANKER_BASE_URL=
 RERANKER_API_KEY=
