@@ -1522,7 +1522,7 @@ func extractClaims(content string) []string {
 		}
 	}
 	sentences := regexp.MustCompile(`(?m)([A-Z][^.!?]{39,260}[.!?])`).FindAllString(strings.Join(proseLines, "\n"), -1)
-	keywords := regexp.MustCompile(`(?i)\b(should|must|required|default|standard|use|uses|prefer|avoid|deprecated)\b`)
+	keywords := regexp.MustCompile(`(?i)\b(should|must|required|default|standard|use|uses|prefer|avoid|deprecated|supersedes|replaces|duplicates|derives)\b`)
 	for _, sentence := range sentences {
 		claim := cleanClaim(sentence)
 		if keywords.MatchString(claim) && isExtractableClaim(claim) {

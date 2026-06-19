@@ -90,6 +90,18 @@ func TestRankScopeSummariesPrioritizesExpectedScope(t *testing.T) {
 	}
 }
 
+func TestRankScopeSummariesCountsGraphOnlyScopes(t *testing.T) {
+	scopes := []store.ScopeSummary{
+		{Scope: "repo:empty"},
+		{Scope: "repo:graph-heavy", Entities: 3, Relations: 10},
+		{Scope: "repo:small-doc", Documents: 1},
+	}
+	ordered, _, _ := rankScopeSummaries(scopes, "", "")
+	if ordered[0].Scope != "repo:graph-heavy" {
+		t.Fatalf("first ordered scope = %#v, want graph-heavy", ordered[0])
+	}
+}
+
 func TestIngestDocumentsMCPContinueOnErrorIsOptional(t *testing.T) {
 	schema := mcpToolSchema(t, "ingest_documents")
 	required := requiredSet(t, schema)

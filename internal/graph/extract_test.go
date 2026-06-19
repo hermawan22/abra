@@ -50,6 +50,26 @@ func TestExtractTextKeepsDottedTechNamesInRelations(t *testing.T) {
 	}
 }
 
+func TestExtractTextFindsLifecycleRelationPatterns(t *testing.T) {
+	got := ExtractText("Checkout API replaces Legacy Checkout API. Payment Job duplicates Billing Job. Risk Model derives from Fraud Model.")
+
+	want := []RelationCandidate{
+		{From: "Checkout API", To: "Legacy Checkout API", Type: "supersedes", Evidence: "Checkout API replaces Legacy Checkout API", Confidence: 0.7},
+		{From: "Payment Job", To: "Billing Job", Type: "duplicates", Evidence: "Payment Job duplicates Billing Job", Confidence: 0.7},
+		{From: "Risk Model", To: "Fraud Model", Type: "derives_from", Evidence: "Risk Model derives from Fraud Model", Confidence: 0.7},
+	}
+	if !reflect.DeepEqual(got.Relations, want) {
+		t.Fatalf("relations = %#v, want %#v", got.Relations, want)
+	}
+}
+
+func TestExtractTextSkipsGenericLifecyclePhrases(t *testing.T) {
+	got := ExtractText("This derives from the Work. This duplicates Previous Guidance. Current replaces Previous.")
+	if len(got.Relations) != 0 {
+		t.Fatalf("relations = %#v, want none", got.Relations)
+	}
+}
+
 func TestExtractFromDocumentsCarriesSourceMetadataAndDedupes(t *testing.T) {
 	got := ExtractFromDocuments([]Document{
 		{

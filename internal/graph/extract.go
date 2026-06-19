@@ -51,8 +51,9 @@ var (
 )
 
 var relationPatterns = []struct {
-	relationType string
-	re           *regexp.Regexp
+	relationType     string
+	re               *regexp.Regexp
+	strictEntityEnds bool
 }{
 	{
 		relationType: "should_not_use",
@@ -73,6 +74,21 @@ var relationPatterns = []struct {
 	{
 		relationType: "owns",
 		re:           regexp.MustCompile(`(?i)(` + entityPattern + `)\s+owns\s+(` + entityPattern + listTailPattern + `)`),
+	},
+	{
+		relationType:     "supersedes",
+		re:               regexp.MustCompile(`(?i)(` + entityPattern + `)\s+(?:supersedes|replaces)\s+(` + entityPattern + `)`),
+		strictEntityEnds: true,
+	},
+	{
+		relationType:     "duplicates",
+		re:               regexp.MustCompile(`(?i)(` + entityPattern + `)\s+(?:duplicates|is\s+a\s+duplicate\s+of)\s+(` + entityPattern + `)`),
+		strictEntityEnds: true,
+	},
+	{
+		relationType:     "derives_from",
+		re:               regexp.MustCompile(`(?i)(` + entityPattern + `)\s+derives\s+from\s+(` + entityPattern + `)`),
+		strictEntityEnds: true,
 	},
 }
 
@@ -125,6 +141,7 @@ var entitySuffixes = map[string]struct{}{
 	"gateway":  {},
 	"group":    {},
 	"job":      {},
+	"model":    {},
 	"pipeline": {},
 	"platform": {},
 	"producer": {},
@@ -244,8 +261,14 @@ func extractRelations(source sourceText) []RelationCandidate {
 				if from == "" {
 					continue
 				}
+				if pattern.strictEntityEnds && !looksLikeEntity(from) {
+					continue
+				}
 				for _, to := range splitEntityList(match[2]) {
 					if to == "" || strings.EqualFold(from, to) {
+						continue
+					}
+					if pattern.strictEntityEnds && !looksLikeEntity(to) {
 						continue
 					}
 					relations = append(relations, RelationCandidate{

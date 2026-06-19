@@ -1,11 +1,9 @@
 package ai
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -320,35 +318,28 @@ func (p *OpenAICompatibleProvider) postJSON(ctx context.Context, path string, bo
 		return nil, fmt.Errorf("%w: encode request: %v", ErrInvalidRequest, err)
 	}
 	url := strings.TrimRight(p.config.BaseURL, "/") + path
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
-	if err != nil {
-		return nil, fmt.Errorf("%w: create request: %v", ErrInvalidRequest, err)
-	}
-	request.Header.Set("content-type", "application/json")
-	if strings.TrimSpace(p.config.APIKey) != "" {
-		request.Header.Set("authorization", "Bearer "+p.config.APIKey)
-	}
-	if p.config.Organization != "" {
-		request.Header.Set("OpenAI-Organization", p.config.Organization)
-	}
-	if p.config.Project != "" {
-		request.Header.Set("OpenAI-Project", p.config.Project)
-	}
-	for key, value := range p.config.Headers {
-		request.Header.Set(key, value)
-	}
-
-	response, err := p.client.Do(request)
-	if err != nil {
-		return nil, fmt.Errorf("ai provider request failed: %w", err)
-	}
-	defer response.Body.Close()
-	raw, readErr := io.ReadAll(io.LimitReader(response.Body, 8<<20))
-	if readErr != nil {
-		return nil, fmt.Errorf("%w: read response: %v", ErrInvalidResponse, readErr)
-	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, fmt.Errorf("ai provider request failed: status=%d body=%s", response.StatusCode, string(raw))
-	}
-	return raw, nil
+	requestCtx, cancel := context.WithTimeout(ctx, p.config.Timeout)
+	defer cancel()
+	return doProviderHTTPRequest(requestCtx, p.client, providerHTTPRequest{
+		Method:        http.MethodPost,
+		URL:           url,
+		Body:          payload,
+		FailurePrefix: "ai provider request failed",
+		ReadPrefix:    "read response",
+		Configure: func(request *http.Request) {
+			request.Header.Set("content-type", "application/json")
+			if strings.TrimSpace(p.config.APIKey) != "" {
+				request.Header.Set("authorization", "Bearer "+p.config.APIKey)
+			}
+			if p.config.Organization != "" {
+				request.Header.Set("OpenAI-Organization", p.config.Organization)
+			}
+			if p.config.Project != "" {
+				request.Header.Set("OpenAI-Project", p.config.Project)
+			}
+			for key, value := range p.config.Headers {
+				request.Header.Set(key, value)
+			}
+		},
+	})
 }

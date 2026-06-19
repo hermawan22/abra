@@ -1,11 +1,9 @@
 package ai
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -159,31 +157,29 @@ func (p *CustomHTTPProvider) post(ctx context.Context, endpoint CustomHTTPEndpoi
 	if method == "" {
 		method = http.MethodPost
 	}
-	request, err := http.NewRequestWithContext(ctx, method, endpoint.URL, bytes.NewReader(payload))
-	if err != nil {
-		return nil, fmt.Errorf("%w: create custom request: %v", ErrInvalidRequest, err)
+	requestCtx := ctx
+	cancel := func() {}
+	if endpoint.Timeout > 0 {
+		requestCtx, cancel = context.WithTimeout(ctx, endpoint.Timeout)
 	}
-	request.Header.Set("content-type", "application/json")
-	for key, value := range p.config.Headers {
-		request.Header.Set(key, value)
-	}
-	for key, value := range endpoint.Headers {
-		request.Header.Set(key, value)
-	}
-	applyCustomAuth(request, endpoint.Auth)
-	response, err := p.client.Do(request)
-	if err != nil {
-		return nil, err
-	}
-	defer response.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(response.Body, 8<<20))
-	if err != nil {
-		return nil, fmt.Errorf("%w: read custom response: %v", ErrInvalidResponse, err)
-	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, fmt.Errorf("custom provider failed: status=%d body=%s", response.StatusCode, string(raw))
-	}
-	return raw, nil
+	defer cancel()
+	return doProviderHTTPRequest(requestCtx, p.client, providerHTTPRequest{
+		Method:        method,
+		URL:           endpoint.URL,
+		Body:          payload,
+		FailurePrefix: "custom provider failed",
+		ReadPrefix:    "read custom response",
+		Configure: func(request *http.Request) {
+			request.Header.Set("content-type", "application/json")
+			for key, value := range p.config.Headers {
+				request.Header.Set(key, value)
+			}
+			for key, value := range endpoint.Headers {
+				request.Header.Set(key, value)
+			}
+			applyCustomAuth(request, endpoint.Auth)
+		},
+	})
 }
 
 func applyCustomAuth(request *http.Request, auth *CustomHTTPAuthConfig) {

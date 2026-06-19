@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -77,6 +78,65 @@ func TestOpenAICompatibleProviderRejectsEmbeddingDimensionMismatch(t *testing.T)
 	_, err = provider.Embed(context.Background(), EmbeddingRequest{Input: []string{"hello"}})
 	if !errors.Is(err, ErrInvalidResponse) {
 		t.Fatalf("Embed() error = %v, want ErrInvalidResponse", err)
+	}
+}
+
+func TestOpenAICompatibleProviderRetriesRetryableStatus(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			w.Header().Set("Retry-After", "0")
+			http.Error(w, "slow down", http.StatusTooManyRequests)
+			return
+		}
+		_, _ = w.Write([]byte(`{"model":"embed-model","data":[{"index":0,"embedding":[0.1,0.2]}]}`))
+	}))
+	defer server.Close()
+
+	provider, err := NewOpenAICompatibleProvider(OpenAICompatibleConfig{
+		BaseURL:             server.URL,
+		EmbeddingModel:      "embed-model",
+		EmbeddingDimensions: 2,
+	}, server.Client())
+	if err != nil {
+		t.Fatalf("NewOpenAICompatibleProvider() error = %v", err)
+	}
+
+	response, err := provider.Embed(context.Background(), EmbeddingRequest{Input: []string{"hello"}})
+	if err != nil {
+		t.Fatalf("Embed() error = %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	if len(response.Embeddings) != 1 {
+		t.Fatalf("embeddings = %d, want 1", len(response.Embeddings))
+	}
+}
+
+func TestOpenAICompatibleProviderDoesNotRetryValidationStatus(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		http.Error(w, "bad request", http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	provider, err := NewOpenAICompatibleProvider(OpenAICompatibleConfig{
+		BaseURL:        server.URL,
+		EmbeddingModel: "embed-model",
+	}, server.Client())
+	if err != nil {
+		t.Fatalf("NewOpenAICompatibleProvider() error = %v", err)
+	}
+
+	_, err = provider.Embed(context.Background(), EmbeddingRequest{Input: []string{"hello"}})
+	if err == nil || !strings.Contains(err.Error(), "status=400") {
+		t.Fatalf("Embed() error = %v, want status=400", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
 	}
 }
 
@@ -223,6 +283,43 @@ func TestCustomHTTPProviderMapsEmbeddingResponse(t *testing.T) {
 	}
 	if len(response.Embeddings) != 2 {
 		t.Fatalf("embeddings = %d, want 2", len(response.Embeddings))
+	}
+}
+
+func TestCustomHTTPProviderRetriesRetryableStatus(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			w.Header().Set("Retry-After", "0")
+			http.Error(w, "temporary", http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte(`{"embeddings":[[0.1,0.2]]}`))
+	}))
+	defer server.Close()
+
+	provider, err := NewCustomHTTPProvider(CustomHTTPProviderConfig{
+		Name: "vendor",
+		Embeddings: &CustomHTTPEndpointConfig{
+			URL:               server.URL,
+			ResponseValuePath: "vectors",
+			Dimensions:        2,
+		},
+	}, server.Client())
+	if err != nil {
+		t.Fatalf("NewCustomHTTPProvider() error = %v", err)
+	}
+
+	response, err := provider.Embed(context.Background(), EmbeddingRequest{Input: []string{"a"}})
+	if err != nil {
+		t.Fatalf("Embed() error = %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	if len(response.Embeddings) != 1 {
+		t.Fatalf("embeddings = %d, want 1", len(response.Embeddings))
 	}
 }
 

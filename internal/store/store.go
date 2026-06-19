@@ -24,6 +24,9 @@ type ScopeSummary struct {
 	Documents int    `json:"documents"`
 	Claims    int    `json:"claims"`
 	Summaries int    `json:"summaries"`
+	Entities  int    `json:"entities"`
+	Relations int    `json:"relations"`
+	Conflicts int    `json:"conflicts"`
 	Sources   int    `json:"sources"`
 	Jobs      int    `json:"jobs"`
 }
@@ -3033,6 +3036,12 @@ func (s *Store) ListScopes(ctx context.Context, limit int) ([]ScopeSummary, erro
 		  UNION
 		  SELECT scope FROM memory_summaries
 		  UNION
+		  SELECT scope FROM entities
+		  UNION
+		  SELECT scope FROM relations
+		  UNION
+		  SELECT scope FROM conflicts
+		  UNION
 		  SELECT scope FROM source_configs
 		  UNION
 		  SELECT scope FROM ingestion_jobs
@@ -3042,11 +3051,14 @@ func (s *Store) ListScopes(ctx context.Context, limit int) ([]ScopeSummary, erro
 		  (SELECT COUNT(*) FROM documents WHERE documents.scope = known_scopes.scope) AS documents,
 		  (SELECT COUNT(*) FROM claims WHERE claims.scope = known_scopes.scope) AS claims,
 		  (SELECT COUNT(*) FROM memory_summaries WHERE memory_summaries.scope = known_scopes.scope) AS summaries,
+		  (SELECT COUNT(*) FROM entities WHERE entities.scope = known_scopes.scope) AS entities,
+		  (SELECT COUNT(*) FROM relations WHERE relations.scope = known_scopes.scope) AS relations,
+		  (SELECT COUNT(*) FROM conflicts WHERE conflicts.scope = known_scopes.scope) AS conflicts,
 		  (SELECT COUNT(*) FROM source_configs WHERE source_configs.scope = known_scopes.scope) AS sources,
 		  (SELECT COUNT(*) FROM ingestion_jobs WHERE ingestion_jobs.scope = known_scopes.scope) AS jobs
 		FROM known_scopes
 		WHERE TRIM(known_scopes.scope) <> ''
-		ORDER BY documents DESC, claims DESC, summaries DESC, sources DESC, known_scopes.scope ASC
+		ORDER BY documents DESC, claims DESC, summaries DESC, relations DESC, entities DESC, conflicts DESC, sources DESC, jobs DESC, known_scopes.scope ASC
 		LIMIT $1
 	`, limit)
 	if err != nil {
@@ -3056,7 +3068,7 @@ func (s *Store) ListScopes(ctx context.Context, limit int) ([]ScopeSummary, erro
 	scopes := []ScopeSummary{}
 	for rows.Next() {
 		var scope ScopeSummary
-		if err := rows.Scan(&scope.Scope, &scope.Documents, &scope.Claims, &scope.Summaries, &scope.Sources, &scope.Jobs); err != nil {
+		if err := rows.Scan(&scope.Scope, &scope.Documents, &scope.Claims, &scope.Summaries, &scope.Entities, &scope.Relations, &scope.Conflicts, &scope.Sources, &scope.Jobs); err != nil {
 			return nil, err
 		}
 		scopes = append(scopes, scope)

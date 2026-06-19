@@ -136,9 +136,6 @@ func scopeDiscoveryLimits(requested int, principal *apiPrincipal) (int, int) {
 func rankScopeSummaries(scopes []store.ScopeSummary, expectedScope, query string) ([]store.ScopeSummary, []store.ScopeSummary, string) {
 	expectedScope = strings.ToLower(strings.TrimSpace(expectedScope))
 	query = strings.ToLower(strings.TrimSpace(query))
-	if expectedScope == "" && query == "" {
-		return scopes, nil, ""
-	}
 	type rankedScope struct {
 		scope store.ScopeSummary
 		score int
@@ -173,8 +170,8 @@ func rankScopeSummaries(scopes []store.ScopeSummary, expectedScope, query string
 		}
 		left := ranked[i].scope
 		right := ranked[j].scope
-		leftTotal := left.Documents + left.Claims + left.Summaries + left.Sources + left.Jobs
-		rightTotal := right.Documents + right.Claims + right.Summaries + right.Sources + right.Jobs
+		leftTotal := left.Documents + left.Claims + left.Summaries + left.Entities + left.Relations + left.Conflicts + left.Sources + left.Jobs
+		rightTotal := right.Documents + right.Claims + right.Summaries + right.Entities + right.Relations + right.Conflicts + right.Sources + right.Jobs
 		if leftTotal != rightTotal {
 			return leftTotal > rightTotal
 		}
