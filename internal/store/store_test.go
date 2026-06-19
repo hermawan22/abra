@@ -90,6 +90,46 @@ func TestCleanStringListTrimsAndDeduplicates(t *testing.T) {
 	}
 }
 
+func TestWebhookIngestionJobIDIsStableForDelivery(t *testing.T) {
+	base := StartWebhookIngestionJobInput{
+		Scope:         " repo:abra ",
+		SourceType:    " jira ",
+		SourceURL:     " https://jira.example.local/browse/ABRA-1 ",
+		ConnectorKind: " jira ",
+		EventType:     " issue.updated ",
+		DeliveryID:    " delivery-1 ",
+		DocumentIndex: 0,
+	}
+	same := base
+	same.Scope = "repo:abra"
+	same.SourceType = "jira"
+	same.SourceURL = "https://jira.example.local/browse/ABRA-1"
+	same.ConnectorKind = "jira"
+	same.EventType = "issue.updated"
+
+	if got, want := webhookIngestionJobID(base), webhookIngestionJobID(same); got != want {
+		t.Fatalf("webhookIngestionJobID not stable for same delivery: %q != %q", got, want)
+	}
+}
+
+func TestWebhookIngestionJobIDDifferentiatesBatchDocumentIndex(t *testing.T) {
+	first := StartWebhookIngestionJobInput{
+		Scope:         "repo:abra",
+		SourceType:    "jira",
+		SourceURL:     "https://jira.example.local/browse/ABRA-1",
+		ConnectorKind: "jira",
+		EventType:     "issue.updated",
+		DeliveryID:    "delivery-1",
+		DocumentIndex: 0,
+	}
+	second := first
+	second.DocumentIndex = 1
+
+	if got, other := webhookIngestionJobID(first), webhookIngestionJobID(second); got == other {
+		t.Fatalf("webhookIngestionJobID should differ by document index: %q", got)
+	}
+}
+
 func TestAuditEventsQueryAppliesFilters(t *testing.T) {
 	since := time.Date(2026, 6, 16, 10, 0, 0, 0, time.UTC)
 	until := since.Add(time.Hour)

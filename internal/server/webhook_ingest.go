@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/hermawan22/abra/internal/brain"
+	"github.com/hermawan22/abra/internal/store"
 )
 
 type webhookIngestRequest struct {
@@ -76,20 +77,78 @@ func (h *handler) ingestWebhook(w http.ResponseWriter, r *http.Request) {
 		if !h.requireAccess(w, r, authActionWrite, doc.Scope) {
 			return
 		}
-		result, err := h.brain.IngestDocument(r.Context(), doc)
+		job, duplicate, err := h.db.StartWebhookIngestionJob(r.Context(), store.StartWebhookIngestionJobInput{
+			Scope:         doc.Scope,
+			SourceType:    doc.SourceType,
+			SourceURL:     doc.SourceURL,
+			Authority:     firstNonEmpty(stringMetadata(doc.Metadata, "authority"), input.Authority),
+			ConnectorKind: input.ConnectorKind,
+			EventType:     input.EventType,
+			DeliveryID:    input.DeliveryID,
+			DocumentIndex: index,
+			CreatedBy:     "webhook",
+			Metadata: map[string]any{
+				"webhook_doc_title": doc.Title,
+				"source_id":         doc.SourceID,
+			},
+		})
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "index": index})
 			return
 		}
+		if duplicate {
+			results = append(results, map[string]any{
+				"index":            index,
+				"ingestion_job_id": job.ID,
+				"job_status":       job.Status,
+				"duplicate":        true,
+				"source_url":       doc.SourceURL,
+				"scope":            doc.Scope,
+			})
+			continue
+		}
+		doc.Metadata = mergeWebhookMetadata(doc.Metadata, map[string]any{
+			"ingestion_job_id": job.ID,
+		})
+		result, err := h.brain.IngestDocument(r.Context(), doc)
+		finishInput := store.FinishWebhookIngestionJobInput{
+			DocumentsSeen:    1,
+			DocumentsChanged: 1,
+			Metadata: map[string]any{
+				"document_index": index,
+			},
+			Error: err,
+		}
+		if err == nil {
+			finishInput.ChunksWritten = result.Chunks
+			finishInput.ClaimsWritten = result.Claims
+			finishInput.Metadata["document_id"] = result.DocumentID
+			finishInput.Metadata["entities"] = result.Entities
+			finishInput.Metadata["relations"] = result.Relations
+		}
+		finishedJob, finishErr := h.db.FinishWebhookIngestionJob(r.Context(), job.ID, finishInput)
+		if finishErr != nil && err == nil {
+			err = finishErr
+		}
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error":            err.Error(),
+				"index":            index,
+				"ingestion_job_id": job.ID,
+			})
+			return
+		}
 		results = append(results, map[string]any{
-			"index":       index,
-			"document_id": result.DocumentID,
-			"chunks":      result.Chunks,
-			"claims":      result.Claims,
-			"entities":    result.Entities,
-			"relations":   result.Relations,
-			"source_url":  doc.SourceURL,
-			"scope":       doc.Scope,
+			"index":            index,
+			"ingestion_job_id": job.ID,
+			"job_status":       finishedJob.Status,
+			"document_id":      result.DocumentID,
+			"chunks":           result.Chunks,
+			"claims":           result.Claims,
+			"entities":         result.Entities,
+			"relations":        result.Relations,
+			"source_url":       doc.SourceURL,
+			"scope":            doc.Scope,
 		})
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{
@@ -184,6 +243,14 @@ func webhookDocuments(input webhookIngestRequest) ([]brain.IngestDocumentInput, 
 		})
 	}
 	return docs, nil
+}
+
+func stringMetadata(metadata map[string]any, key string) string {
+	value, ok := metadata[key]
+	if !ok || value == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
 }
 
 func mergeWebhookMetadata(maps ...map[string]any) map[string]any {

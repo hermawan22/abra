@@ -585,6 +585,21 @@ json_post_signed "/ingest/webhooks" "{
   \"metadata\":{\"owner\":\"smoke\",\"connector\":\"jira\"}
 }" >"${tmpdir}/webhook.json"
 
+json_post_signed "/ingest/webhooks" "{
+  \"connector_kind\":\"jira\",
+  \"event_type\":\"issue.updated\",
+  \"delivery_id\":\"smoke-${STAMP}\",
+  \"scope\":\"${SCOPE}\",
+  \"source_type\":\"jira\",
+  \"source_url\":\"${WEBHOOK_SOURCE_URL}\",
+  \"source_id\":\"ABRA-${STAMP}\",
+  \"title\":\"ABRA-${STAMP} signed webhook\",
+  \"content\":\"Signed webhook ingestion should create source-cited connector memory for Abra smoke.\",
+  \"authority\":\"jira-project\",
+  \"authority_score\":0.75,
+  \"metadata\":{\"owner\":\"smoke\",\"connector\":\"jira\"}
+}" >"${tmpdir}/webhook-duplicate.json"
+
 json_post "/recall" "{
   \"query\":\"source-cited connector memory\",
   \"scope\":\"${SCOPE}\",
@@ -927,6 +942,7 @@ const codeRefreshReplacementSummariesUpdated = read("code-refresh-replacement-su
 const codeRefreshRelationsInitial = read("code-refresh-relations-initial.json");
 const codeRefreshRelationsUpdated = read("code-refresh-relations-updated.json");
 const webhook = read("webhook.json");
+const webhookDuplicate = read("webhook-duplicate.json");
 const recall = read("recall.json");
 const policy = read("policy.json");
 const memory = read("memory.json");
@@ -1088,6 +1104,12 @@ if (!Array.isArray(codeRefreshRelationsUpdated.relations) || !codeRefreshRelatio
 }
 if (webhook.accepted !== 1 || !Array.isArray(webhook.documents) || webhook.documents[0].source_url !== "https://jira.example.local/browse/ABRA-" + process.env.STAMP) {
   throw new Error("signed webhook did not ingest exactly one connector document");
+}
+if (!webhook.documents[0].ingestion_job_id || webhook.documents[0].job_status !== "succeeded") {
+  throw new Error("signed webhook did not return a succeeded ingestion job");
+}
+if (webhookDuplicate.accepted !== 1 || !Array.isArray(webhookDuplicate.documents) || webhookDuplicate.documents[0].duplicate !== true || webhookDuplicate.documents[0].ingestion_job_id !== webhook.documents[0].ingestion_job_id) {
+  throw new Error("signed webhook redelivery was not treated as an idempotent duplicate");
 }
 if (!Array.isArray(recall.supporting_documents) || recall.supporting_documents.length < 1) {
   throw new Error("recall did not return supporting documents");

@@ -74,6 +74,26 @@ func TestWebhookDocumentsExpandsBatchDefaults(t *testing.T) {
 	}
 }
 
+func TestStringMetadataTrimsAndFormatsValues(t *testing.T) {
+	metadata := map[string]any{
+		"authority": " jira-project ",
+		"score":     0.75,
+		"empty":     nil,
+	}
+	if got := stringMetadata(metadata, "authority"); got != "jira-project" {
+		t.Fatalf("authority metadata = %q", got)
+	}
+	if got := stringMetadata(metadata, "score"); got != "0.75" {
+		t.Fatalf("score metadata = %q", got)
+	}
+	if got := stringMetadata(metadata, "missing"); got != "" {
+		t.Fatalf("missing metadata = %q", got)
+	}
+	if got := stringMetadata(metadata, "empty"); got != "" {
+		t.Fatalf("nil metadata = %q", got)
+	}
+}
+
 func webhookSignature(secret string, body []byte) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	_, _ = mac.Write(body)

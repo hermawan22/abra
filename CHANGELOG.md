@@ -19,6 +19,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Add configurable `--wait-timeout` / `ABRA_CLI_WAIT_TIMEOUT` for queued source ingestion waits.
 - Add release preflight checks for `package-lock.json` version alignment.
 - Add configurable working-memory recall and graph fan-out caps for predictable compose load under concurrent agents.
+- Add webhook ingestion job lineage and idempotent delivery handling so connector events are visible in ingestion job history.
 
 ### Changed
 
@@ -43,6 +44,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 ### Fixed
 
 - Keep worker ingestion jobs heartbeated during document processing and only allow the owning worker lease to finish a running job.
+- Return webhook ingestion job IDs and detect duplicate signed deliveries in the smoke gate.
 - Make the Tier 1 working-memory eval seed corroborating evidence so its strong-verification expectation matches source-diversity gates.
 - Align the self-host smoke test with the query-form working-memory MCP resource template used to preserve scopes containing slashes.
 - Validate the Abra MCP endpoint before mutating Codex MCP config during `abra mcp install-codex`.
