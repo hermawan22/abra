@@ -53,6 +53,11 @@ func TestScopeCommandPrintsAgentGuidance(t *testing.T) {
 			t.Fatalf("scope output missing %q:\n%s", want, output)
 		}
 	}
+	ingestIndex := strings.Index(output, "Ingest: abra ingest")
+	checkIndex := strings.Index(output, "Check:  abra agents verify")
+	if ingestIndex < 0 || checkIndex < 0 || ingestIndex > checkIndex {
+		t.Fatalf("scope output should list ingest before verify:\n%s", output)
+	}
 }
 
 func TestScopeCommandJSON(t *testing.T) {
