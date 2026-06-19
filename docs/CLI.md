@@ -48,9 +48,11 @@ Generate repo-local AI agent instruction files after setup:
 
 ```sh
 abra agents init --agent codex
+abra agents verify
 ```
 
 This writes `AGENTS.md` with the exact Abra scope and `CLAUDE.md` as an import for tools that read Claude Code instructions.
+`abra agents verify` checks both files, validates the MCP endpoint, and calls `discover_scopes` with the exact project scope. If a coding agent says Abra has no context, run this before changing prompts or env files.
 
 After changing model config, restart the stack:
 
@@ -213,6 +215,7 @@ From a source checkout, run the CLI as `go run ./cmd/abra <command>`. In a relea
 | install CLI from published release | `curl -fsSL https://raw.githubusercontent.com/hermawan22/abra/main/scripts/install.sh \| sh` |
 | guided first-run setup | `abra setup` |
 | generate agent instruction files | `abra agents init --agent codex` |
+| verify agent context setup | `abra agents verify` |
 | start local Qwen embedding runner | `abra models up` |
 | check local embedding runner | `abra models status` |
 | start local stack | `abra up` |

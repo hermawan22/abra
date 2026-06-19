@@ -21,6 +21,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Add configurable working-memory recall and graph fan-out caps for predictable compose load under concurrent agents.
 - Add webhook ingestion job lineage and idempotent delivery handling so connector events are visible in ingestion job history.
 - Add `abra agents init` to generate AGENTS.md and CLAUDE.md instructions that point coding agents at the exact Abra scope.
+- Add `abra agents verify` to check repo instruction files, MCP readiness, required agent tools, and exact-scope discovery before using an AI coding agent.
 
 ### Changed
 

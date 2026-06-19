@@ -94,7 +94,7 @@ func run(ctx context.Context, argv []string) error {
 	case "scope":
 		return scopeCommand(args)
 	case "agents", "agent":
-		return agentsCommand(args)
+		return agentsCommand(ctx, args)
 	case "ui", "dashboard":
 		return errors.New("abra ui was removed; use `abra setup` for guided onboarding or `abra up` for non-interactive start")
 	case "up", "start":
@@ -1471,13 +1471,13 @@ func scopeCommand(args cliArgs) error {
 	return nil
 }
 
-func agentsCommand(args cliArgs) error {
+func agentsCommand(ctx context.Context, args cliArgs) error {
 	action := "init"
 	if len(args.Rest) > 0 {
 		action = strings.ToLower(strings.TrimSpace(args.Rest[0]))
 		args.Rest = args.Rest[1:]
 	}
-	if action != "init" {
+	if action != "init" && action != "verify" && action != "check" {
 		return fmt.Errorf("unknown agents command %q\n\n%s", action, commandUsage("agents"))
 	}
 	path := flag(args, "path", ".")
@@ -1489,6 +1489,9 @@ func agentsCommand(args cliArgs) error {
 		return err
 	}
 	scope := scopeOrDefault(args, abs)
+	if action == "verify" || action == "check" {
+		return verifyAgentContext(ctx, args, abs, scope)
+	}
 	agent := flag(args, "agent", "agent")
 	force := boolFlag(args, "force")
 	dryRun := boolFlag(args, "dry-run")
@@ -1541,6 +1544,153 @@ func agentsCommand(args cliArgs) error {
 	fmt.Println("Next: configure your MCP client with `abra mcp`; for Codex run `abra mcp install-codex`.")
 	fmt.Println("Then: tell your AI agent to read AGENTS.md or CLAUDE.md before changing code.")
 	return nil
+}
+
+func verifyAgentContext(ctx context.Context, args cliArgs, path, scope string) error {
+	checks := []map[string]any{
+		agentFileCheck(filepath.Join(path, "AGENTS.md"), scope, []string{"working_memory_compose", "discover_scopes"}),
+		optionalAgentFileCheck(filepath.Join(path, "CLAUDE.md"), "@AGENTS.md"),
+	}
+	if toolCount, err := validateMCPTools(ctx, args); err != nil {
+		checks = append(checks, map[string]any{
+			"name":  "mcp",
+			"ok":    false,
+			"hint":  "start Abra with `abra up`, check `abra doctor`, then retry",
+			"error": err.Error(),
+		})
+	} else {
+		checks = append(checks, map[string]any{
+			"name":   "mcp",
+			"ok":     true,
+			"detail": fmt.Sprintf("tools=%d required=discover_scopes,working_memory_compose", toolCount),
+		})
+		checks = append(checks, discoverScopeCheck(ctx, args, scope))
+	}
+	ok := checksOK(checks)
+	if boolFlag(args, "json") {
+		if err := printJSON(map[string]any{
+			"ok":     ok,
+			"scope":  scope,
+			"path":   path,
+			"checks": checks,
+		}); err != nil {
+			return err
+		}
+		if !ok {
+			return errors.New("agent context verification failed")
+		}
+		return nil
+	}
+	fmt.Println("Agent context check for scope: " + scope)
+	for _, check := range checks {
+		status := "ok"
+		if stringValue(check["level"], "") == "warn" {
+			status = "warn"
+		}
+		if !boolValue(check["ok"], false) {
+			status = "fail"
+		}
+		line := status + "  " + stringValue(check["name"], "")
+		if detail := stringValue(check["detail"], ""); detail != "" {
+			line += " " + detail
+		}
+		fmt.Println(line)
+		if hint := stringValue(check["hint"], ""); hint != "" {
+			fmt.Println("hint " + hint)
+		}
+		if errText := stringValue(check["error"], ""); errText != "" {
+			fmt.Println("error " + errText)
+		}
+	}
+	if !ok {
+		return errors.New("agent context verification failed; run `abra agents init`, `abra ingest . --code --scope " + scope + "`, and `abra doctor`")
+	}
+	fmt.Println("Ready: MCP clients can use scope " + scope + " with working_memory_compose.")
+	return nil
+}
+
+func optionalAgentFileCheck(path, required string) map[string]any {
+	check := agentFileCheck(path, required, nil)
+	if boolValue(check["ok"], false) {
+		return check
+	}
+	check["ok"] = true
+	check["level"] = "warn"
+	if _, hasDetail := check["detail"]; !hasDetail {
+		check["detail"] = "optional compatibility file missing"
+	}
+	check["hint"] = "run `abra agents init` if this repository should support tools that require " + filepath.Base(path)
+	delete(check, "error")
+	return check
+}
+
+func agentFileCheck(path, required string, extra []string) map[string]any {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return map[string]any{
+			"name":  filepath.Base(path),
+			"ok":    false,
+			"hint":  "run `abra agents init` in the project root",
+			"error": err.Error(),
+		}
+	}
+	text := string(content)
+	missing := []string{}
+	for _, want := range append([]string{required}, extra...) {
+		if strings.TrimSpace(want) != "" && !strings.Contains(text, want) {
+			missing = append(missing, want)
+		}
+	}
+	if len(missing) > 0 {
+		return map[string]any{
+			"name":   filepath.Base(path),
+			"ok":     false,
+			"detail": "missing " + strings.Join(missing, ", "),
+			"hint":   "run `abra agents init --force` after confirming local custom instructions are backed up",
+		}
+	}
+	return map[string]any{"name": filepath.Base(path), "ok": true}
+}
+
+func discoverScopeCheck(ctx context.Context, args cliArgs, scope string) map[string]any {
+	result, err := callMCPTool(ctx, args, "discover_scopes", map[string]any{
+		"expected_scope": scope,
+		"limit":          10,
+	})
+	if err != nil {
+		return map[string]any{
+			"name":  "scope_discovery",
+			"ok":    false,
+			"hint":  "run `abra ingest . --code --scope " + scope + "` and retry",
+			"error": err.Error(),
+		}
+	}
+	if mcpScopeResultHasScope(result, scope) {
+		return map[string]any{
+			"name":   "scope_discovery",
+			"ok":     true,
+			"detail": "discover_scopes returned " + scope,
+		}
+	}
+	hint := "run `abra ingest . --code --scope " + scope + "` and retry with the exact scope"
+	if boolValue(result["candidate_truncated"], false) {
+		hint += "; discovery candidates were truncated"
+	}
+	return map[string]any{
+		"name":   "scope_discovery",
+		"ok":     false,
+		"detail": "discover_scopes did not return " + scope,
+		"hint":   hint,
+	}
+}
+
+func checksOK(checks []map[string]any) bool {
+	for _, check := range checks {
+		if !boolValue(check["ok"], false) {
+			return false
+		}
+	}
+	return true
 }
 
 type agentInstructionFile struct {
@@ -1632,6 +1782,58 @@ func validateMCPTools(ctx context.Context, args cliArgs) (int, error) {
 		}
 	}
 	return len(names), nil
+}
+
+func callMCPTool(ctx context.Context, args cliArgs, name string, arguments map[string]any) (map[string]any, error) {
+	result, err := postJSON(ctx, args, "/mcp", map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      name,
+			"arguments": arguments,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if rawError, ok := result["error"].(map[string]any); ok {
+		return nil, errors.New(stringValue(rawError["message"], "mcp tool call failed"))
+	}
+	rawResult, _ := result["result"].(map[string]any)
+	rawContent, _ := rawResult["content"].([]any)
+	for _, item := range rawContent {
+		content, _ := item.(map[string]any)
+		if stringValue(content["type"], "") != "text" {
+			continue
+		}
+		text := stringValue(content["text"], "")
+		if text == "" {
+			continue
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal([]byte(text), &decoded); err != nil {
+			return nil, fmt.Errorf("decode MCP %s response: %w", name, err)
+		}
+		return decoded, nil
+	}
+	return nil, fmt.Errorf("MCP %s response did not include text JSON content", name)
+}
+
+func mcpScopeResultHasScope(result map[string]any, scope string) bool {
+	if stringValue(result["recommended_scope"], "") == scope {
+		return true
+	}
+	for _, key := range []string{"matches", "scopes"} {
+		rawItems, _ := result[key].([]any)
+		for _, rawItem := range rawItems {
+			item, _ := rawItem.(map[string]any)
+			if stringValue(item["scope"], "") == scope {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func mcpToolNames(result map[string]any) map[string]bool {
@@ -2299,6 +2501,21 @@ func stringValue(value any, fallback string) string {
 	return fallback
 }
 
+func boolValue(value any, fallback bool) bool {
+	switch typed := value.(type) {
+	case bool:
+		return typed
+	case string:
+		switch strings.ToLower(strings.TrimSpace(typed)) {
+		case "1", "true", "yes":
+			return true
+		case "0", "false", "no":
+			return false
+		}
+	}
+	return fallback
+}
+
 func intValue(value any) int {
 	switch typed := value.(type) {
 	case int:
@@ -2532,11 +2749,16 @@ is missing, ingest the project with the printed command and retry.
 	case "agents", "agent":
 		return `Usage:
   abra agents init [path] [--agent codex] [--force] [--dry-run] [--json]
+  abra agents verify [path] [--json]
 
 Writes repo-local AI agent instruction files that point every client at the
 same Abra scope. It creates AGENTS.md for agent-neutral instructions and
 CLAUDE.md importing AGENTS.md so Claude Code reads the same guidance without
 duplicating content. Existing files are skipped unless --force is set.
+
+` + "`abra agents verify`" + ` checks AGENTS.md, CLAUDE.md, the MCP endpoint, required
+agent tools, and discover_scopes for the exact project scope. Use it when an AI
+client says Abra has no context.
 `
 	case "mcp", "mcp-config":
 		return `Usage:

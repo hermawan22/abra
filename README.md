@@ -92,9 +92,11 @@ Generate repo-local agent instructions for Codex, Claude Code, and other MCP-cap
 
 ```sh
 abra agents init --agent codex
+abra agents verify
 ```
 
 This writes `AGENTS.md` with the exact Abra scope and a `CLAUDE.md` import so Claude Code reads the same instructions without duplicating them.
+`abra agents verify` checks the instruction files, MCP endpoint, required agent tools, and `discover_scopes` for the exact scope, so a user can diagnose "Abra has no context" before asking an AI agent to work.
 
 Connect a custom compatible embedding provider during setup without editing env files:
 
