@@ -8,6 +8,10 @@ import (
 	"github.com/hermawan22/abra/internal/store"
 )
 
+func shouldAutoPersistComposeLearning(input memory.ComposeInput) bool {
+	return !input.Diagnostic
+}
+
 func (h *handler) persistComposeLearningSuggestions(ctx context.Context, result *memory.ComposeResult, createdBy string) {
 	if result == nil || len(result.LearningSuggestions) == 0 {
 		return

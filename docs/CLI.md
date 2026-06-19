@@ -51,7 +51,7 @@ abra agents init --agent codex
 ```
 
 This writes `AGENTS.md` with the exact Abra scope and `CLAUDE.md` as an import for tools that read Claude Code instructions.
-After ingesting the project with the exact scope printed by `abra scope`, `abra agents verify` checks both files, validates the MCP endpoint, calls `discover_scopes` with that exact project scope, and confirms `working_memory_compose` returns source-backed context. If a coding agent says Abra has no context, run this before changing prompts or env files.
+After ingesting the project with the exact scope printed by `abra scope`, `abra agents verify` checks both files, validates the MCP endpoint, calls `discover_scopes` with that exact project scope, and confirms `working_memory_compose` returns source-backed context. The compose call runs in diagnostic mode, so verification does not write compose audit events or automatic learning proposals. If a coding agent says Abra has no context, run this before changing prompts or env files.
 For CI or release checks that should not contact a live MCP server, run
 `abra agents verify --files-only --strict`.
 

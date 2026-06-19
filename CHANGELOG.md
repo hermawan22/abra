@@ -43,6 +43,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Make `abra scope` print agent init, agent verification, MCP install, and exact-scope recovery commands when AI clients say Abra has no context.
 - Make CLI docs and generated agent instructions treat `abra scope` as the source of truth and recover empty agent context by ingesting and verifying the exact scope.
 - Make `abra agents verify` call `working_memory_compose` and fail when the exact scope returns no source-backed context.
+- Make `abra agents verify` use diagnostic working-memory compose so context checks do not write compose audit events or automatic learning proposals.
 - Print `abra ingest` before `abra agents verify` in `abra scope` guidance now that verification requires source-backed working memory.
 - Lower default working-memory recall fan-out to one to reduce local embedding oversubscription and stabilize compose p95 under concurrent agents.
 - Make the self-host smoke gate require AI provider call, wait, and gauge metrics for embedding paths so provider observability cannot silently regress.

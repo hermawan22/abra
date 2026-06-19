@@ -512,6 +512,7 @@ func (h *handler) composeMemory(w http.ResponseWriter, r *http.Request) {
 		attribute.Int("abra.max_queries", input.MaxQueries),
 		attribute.Int("abra.token_budget", input.TokenBudget),
 		attribute.Bool("abra.include_unverified", input.IncludeUnverified),
+		attribute.Bool("abra.diagnostic", input.Diagnostic),
 	)
 	result, err := h.memory.Compose(ctx, input)
 	if err != nil {
@@ -533,7 +534,9 @@ func (h *handler) composeMemory(w http.ResponseWriter, r *http.Request) {
 		attribute.Int("abra.memory.context_tokens", result.ContextWindow.EstimatedTokens),
 	)
 	observability.End(span, nil)
-	h.persistComposeLearningSuggestions(ctx, &result, input.Agent)
+	if shouldAutoPersistComposeLearning(input) {
+		h.persistComposeLearningSuggestions(ctx, &result, input.Agent)
+	}
 	h.metrics.observeMemory("ok", time.Since(started), result)
 	writeJSON(w, http.StatusOK, result)
 }
@@ -1179,6 +1182,7 @@ func (h *handler) mcpToolCall(w http.ResponseWriter, r *http.Request, id any, pa
 			MaxQueries:        intArg(args, "max_queries", 0),
 			TokenBudget:       intArg(args, "token_budget", 0),
 			IncludeUnverified: boolArg(args, "include_unverified", false),
+			Diagnostic:        boolArg(args, "diagnostic", false),
 		}
 		var profileErr error
 		input, _, profileErr = h.applyAgentProfileToCompose(r.Context(), input)
@@ -1188,7 +1192,9 @@ func (h *handler) mcpToolCall(w http.ResponseWriter, r *http.Request, id any, pa
 		}
 		packet, composeErr := h.memory.Compose(r.Context(), input)
 		if composeErr == nil {
-			h.persistComposeLearningSuggestions(r.Context(), &packet, stringArg(args, "agent"))
+			if shouldAutoPersistComposeLearning(input) {
+				h.persistComposeLearningSuggestions(r.Context(), &packet, stringArg(args, "agent"))
+			}
 			result = packet
 		}
 		err = composeErr
@@ -1719,6 +1725,7 @@ func mcpTools() []map[string]any {
 				"max_queries":        map[string]any{"type": "integer", "minimum": 1, "maximum": 12},
 				"token_budget":       map[string]any{"type": "integer", "minimum": 300, "maximum": 12000},
 				"include_unverified": map[string]any{"type": "boolean"},
+				"diagnostic":         map[string]any{"type": "boolean", "description": "Read-only compose for health checks; suppresses memory.composed audit events and automatic learning proposal persistence."},
 			}),
 		},
 		{

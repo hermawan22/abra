@@ -34,6 +34,7 @@ type fakeStore struct {
 	activeGraphs      int
 	maxActiveGraphs   int
 	graphDelay        time.Duration
+	auditEvents       int
 }
 
 func (f *fakeStore) Recall(ctx context.Context, query, scope string, limit int, includeUnverified bool) (store.RecallResult, error) {
@@ -275,7 +276,41 @@ func (f *fakeStore) MemoryHealth(ctx context.Context, scope string) (store.Memor
 }
 
 func (f *fakeStore) InsertAuditEvent(ctx context.Context, eventType, targetType, targetID, scope, sourceURL string, metadata map[string]any) error {
+	f.mu.Lock()
+	f.auditEvents++
+	f.mu.Unlock()
 	return nil
+}
+
+func TestComposeDiagnosticDoesNotWriteAuditEvent(t *testing.T) {
+	db := &fakeStore{}
+	_, err := NewComposer(db).Compose(context.Background(), ComposeInput{
+		Task:       "verify agent context",
+		Scope:      "repo:test/app",
+		Agent:      "abra-agent-verify",
+		Diagnostic: true,
+	})
+	if err != nil {
+		t.Fatalf("Compose error = %v", err)
+	}
+	if db.auditEvents != 0 {
+		t.Fatalf("auditEvents = %d, want 0 for diagnostic compose", db.auditEvents)
+	}
+}
+
+func TestComposeWritesAuditEventByDefault(t *testing.T) {
+	db := &fakeStore{}
+	_, err := NewComposer(db).Compose(context.Background(), ComposeInput{
+		Task:  "implement feature",
+		Scope: "repo:test/app",
+		Agent: "codex",
+	})
+	if err != nil {
+		t.Fatalf("Compose error = %v", err)
+	}
+	if db.auditEvents == 0 {
+		t.Fatal("auditEvents = 0, want default compose to write audit event")
+	}
 }
 
 func TestComposeCachesMemoryHealthByScope(t *testing.T) {

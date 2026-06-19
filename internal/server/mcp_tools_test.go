@@ -167,6 +167,25 @@ func TestPolicyPlanMCPRequiresScope(t *testing.T) {
 	}
 }
 
+func TestWorkingMemoryComposeMCPHasDiagnosticMode(t *testing.T) {
+	schema := mcpToolSchema(t, "working_memory_compose")
+	required := requiredSet(t, schema)
+	if required["diagnostic"] {
+		t.Fatalf("working_memory_compose required = %#v, diagnostic must be optional", schema["required"])
+	}
+	properties, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("properties = %#v", schema["properties"])
+	}
+	diagnostic, ok := properties["diagnostic"].(map[string]any)
+	if !ok {
+		t.Fatalf("working_memory_compose missing diagnostic property in %#v", properties)
+	}
+	if diagnostic["type"] != "boolean" {
+		t.Fatalf("diagnostic type = %#v, want boolean", diagnostic["type"])
+	}
+}
+
 func mcpToolSchema(t *testing.T, name string) map[string]any {
 	t.Helper()
 	var tool map[string]any

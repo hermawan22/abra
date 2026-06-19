@@ -195,6 +195,10 @@ func TestAgentsVerifyChecksMCPAndScopeDiscovery(t *testing.T) {
 					"matches":           []map[string]any{{"scope": wantScope}},
 				})
 			case "working_memory_compose":
+				args, _ := params["arguments"].(map[string]any)
+				if args["diagnostic"] != true {
+					t.Fatalf("working_memory_compose diagnostic = %#v, want true", args["diagnostic"])
+				}
 				payload, _ = json.Marshal(map[string]any{
 					"stats": map[string]any{
 						"facts":                1,
@@ -354,6 +358,10 @@ func TestAgentsVerifyFailsWhenWorkingMemoryIsEmpty(t *testing.T) {
 					"matches":           []map[string]any{{"scope": wantScope}},
 				})
 			case "working_memory_compose":
+				args, _ := params["arguments"].(map[string]any)
+				if args["diagnostic"] != true {
+					t.Fatalf("working_memory_compose diagnostic = %#v, want true", args["diagnostic"])
+				}
 				payload, _ = json.Marshal(map[string]any{
 					"stats": map[string]any{
 						"facts":                0,

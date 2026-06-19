@@ -72,6 +72,7 @@ type ComposeInput struct {
 	MaxQueries        int                       `json:"max_queries,omitempty"`
 	TokenBudget       int                       `json:"token_budget,omitempty"`
 	IncludeUnverified bool                      `json:"include_unverified,omitempty"`
+	Diagnostic        bool                      `json:"diagnostic,omitempty"`
 	AgentProfile      *store.AgentProfileRecord `json:"-"`
 }
 
@@ -441,36 +442,38 @@ func (c *Composer) Compose(ctx context.Context, input ComposeInput) (ComposeResu
 		GraphConcurrency:     c.graphConcurrency,
 	}
 
-	_ = c.store.InsertAuditEvent(ctx, "memory.composed", "memory_packet", input.Scope+"\x00"+input.Task, input.Scope, "", map[string]any{
-		"intent":             intent,
-		"agent":              input.Agent,
-		"queries":            len(plan.Queries),
-		"summaries":          len(result.Summaries),
-		"facts":              len(result.Facts),
-		"documents":          len(result.SupportingDocuments),
-		"relations":          len(result.GraphContext),
-		"graph_warnings":     len(result.GraphWarnings),
-		"retrieval_reasons":  len(result.RetrievalReasons),
-		"conflicts":          len(result.Conflicts),
-		"files":              len(result.RelevantFiles),
-		"impact":             len(result.ImpactMap),
-		"validation":         len(result.ValidationPlan),
-		"context_blocks":     len(result.ContextWindow.Blocks),
-		"context_tokens":     result.ContextWindow.EstimatedTokens,
-		"context_dropped":    len(result.ContextWindow.DroppedBlocks),
-		"risk_count":         len(result.Risks),
-		"memory_health":      result.MemoryHealth.Status,
-		"health_signals":     len(result.MemoryHealth.Signals),
-		"verdict":            result.Verification.Verdict,
-		"decision":           result.AgentDecision.Decision,
-		"score":              result.Verification.Score,
-		"learning":           len(result.LearningSuggestions),
-		"policy":             len(result.AgentPolicyDecisions),
-		"duration_ms":        result.Stats.TotalDurationMS,
-		"warnings":           len(result.RetrievalWarnings),
-		"recall_concurrency": c.recallConcurrency,
-		"graph_concurrency":  c.graphConcurrency,
-	})
+	if !input.Diagnostic {
+		_ = c.store.InsertAuditEvent(ctx, "memory.composed", "memory_packet", input.Scope+"\x00"+input.Task, input.Scope, "", map[string]any{
+			"intent":             intent,
+			"agent":              input.Agent,
+			"queries":            len(plan.Queries),
+			"summaries":          len(result.Summaries),
+			"facts":              len(result.Facts),
+			"documents":          len(result.SupportingDocuments),
+			"relations":          len(result.GraphContext),
+			"graph_warnings":     len(result.GraphWarnings),
+			"retrieval_reasons":  len(result.RetrievalReasons),
+			"conflicts":          len(result.Conflicts),
+			"files":              len(result.RelevantFiles),
+			"impact":             len(result.ImpactMap),
+			"validation":         len(result.ValidationPlan),
+			"context_blocks":     len(result.ContextWindow.Blocks),
+			"context_tokens":     result.ContextWindow.EstimatedTokens,
+			"context_dropped":    len(result.ContextWindow.DroppedBlocks),
+			"risk_count":         len(result.Risks),
+			"memory_health":      result.MemoryHealth.Status,
+			"health_signals":     len(result.MemoryHealth.Signals),
+			"verdict":            result.Verification.Verdict,
+			"decision":           result.AgentDecision.Decision,
+			"score":              result.Verification.Score,
+			"learning":           len(result.LearningSuggestions),
+			"policy":             len(result.AgentPolicyDecisions),
+			"duration_ms":        result.Stats.TotalDurationMS,
+			"warnings":           len(result.RetrievalWarnings),
+			"recall_concurrency": c.recallConcurrency,
+			"graph_concurrency":  c.graphConcurrency,
+		})
+	}
 	return result, nil
 }
 

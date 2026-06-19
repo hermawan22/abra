@@ -27,6 +27,15 @@ func TestShouldPersistLearningSuggestionKeepsActionableSuggestion(t *testing.T) 
 	}
 }
 
+func TestShouldAutoPersistComposeLearningSkipsDiagnostic(t *testing.T) {
+	if shouldAutoPersistComposeLearning(memory.ComposeInput{Diagnostic: true}) {
+		t.Fatal("diagnostic compose must not auto-persist learning suggestions")
+	}
+	if !shouldAutoPersistComposeLearning(memory.ComposeInput{}) {
+		t.Fatal("default compose should auto-persist actionable learning suggestions")
+	}
+}
+
 func TestBuildLearningApplyPlanForAcceptedClaimRequiresApprovalWhenEnforced(t *testing.T) {
 	plan := buildLearningApplyPlan(store.LearningProposalRecord{
 		ID:           "proposal-1",

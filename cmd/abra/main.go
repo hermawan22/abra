@@ -1793,6 +1793,7 @@ func workingMemoryContextCheck(ctx context.Context, args cliArgs, scope string) 
 		"limit":        3,
 		"max_queries":  3,
 		"token_budget": 600,
+		"diagnostic":   true,
 	})
 	if err != nil {
 		return map[string]any{
