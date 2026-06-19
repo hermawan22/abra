@@ -645,7 +645,7 @@ Recall responses include `retrieval_mode`, plus `text_score` and `vector_score` 
 4. Run the migration.
 5. Start the API, MCP server, or worker process.
 
-The default embedding provider is `local`, meaning self-hosted Qwen-compatible neural retrieval. `abra models up` starts Qwen/Qwen3-Embedding-0.6B-GGUF through a local llama.cpp OpenAI-compatible embedding runner. Local embeddings default to `EMBEDDING_TIMEOUT=10m` because CPU-backed model calls can take longer than normal API requests on large files. Qwen/Qwen3-Reranker-0.6B remains configurable for deployments that expose a compatible rerank endpoint. Custom providers replace the local defaults by setting `EMBEDDING_PROVIDER=compatible`, `EMBEDDING_BASE_URL`, `EMBEDDING_MODEL`, and `EMBEDDING_DIMENSIONS`; set `RERANKER_PROVIDER` only when the custom provider also exposes a rerank endpoint.
+The default embedding provider is `local`, meaning self-hosted Qwen-compatible neural retrieval. `abra models up` starts Qwen/Qwen3-Embedding-0.6B-GGUF through a local llama.cpp OpenAI-compatible embedding runner. Local embeddings default to `EMBEDDING_TIMEOUT=10m` because CPU-backed model calls can take longer than normal API requests on large files, and local neural providers default to `ABRA_AI_PROVIDER_CONCURRENCY=1` so ingest, recall, readiness checks, and reranking do not overwhelm a single local model runner. Compatible remote providers default to `ABRA_AI_PROVIDER_CONCURRENCY=4`; raise it only after watching provider latency, timeout rate, and Abra p95 under expected agent and ingestion traffic. Qwen/Qwen3-Reranker-0.6B remains configurable for deployments that expose a compatible rerank endpoint. Custom providers replace the local defaults by setting `EMBEDDING_PROVIDER=compatible`, `EMBEDDING_BASE_URL`, `EMBEDDING_MODEL`, and `EMBEDDING_DIMENSIONS`; set `RERANKER_PROVIDER` only when the custom provider also exposes a rerank endpoint.
 
 Forgetting a claim marks it `deprecated`. Source re-ingestion will not reactivate a manually forgotten claim; only claims and relations temporarily deprecated by source refresh can be reactivated.
 
@@ -662,6 +662,7 @@ EMBEDDING_BASE_URL=http://host.docker.internal:8080/v1
 EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0
 EMBEDDING_DIMENSIONS=1024
 EMBEDDING_TIMEOUT=10m
+ABRA_AI_PROVIDER_CONCURRENCY=1
 RERANKER_PROVIDER=
 RERANKER_BASE_URL=
 RERANKER_MODEL=
@@ -747,10 +748,11 @@ EMBEDDING_API_KEY=...
 EMBEDDING_MODEL=embedding-model
 EMBEDDING_DIMENSIONS=1024
 EMBEDDING_TIMEOUT=30s
+ABRA_AI_PROVIDER_CONCURRENCY=4
 RERANKER_PROVIDER=
 ```
 
-The provider contract is generic: any embedding endpoint that implements the configured embeddings API shape can be used by setting `EMBEDDING_BASE_URL`, `EMBEDDING_API_KEY`, `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`, and optionally `EMBEDDING_TIMEOUT`. Empty API keys are allowed for self-hosted endpoints. Abra does not use an LLM for answer generation; the provider is used to embed chunks, claims, and recall queries for hybrid retrieval. The optional reranker uses `RERANKER_PROVIDER`, `RERANKER_BASE_URL`, `RERANKER_API_KEY`, and `RERANKER_MODEL`. If reranking fails, recall keeps the hybrid retrieval result instead of failing the user query.
+The provider contract is generic: any embedding endpoint that implements the configured embeddings API shape can be used by setting `EMBEDDING_BASE_URL`, `EMBEDDING_API_KEY`, `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`, and optionally `EMBEDDING_TIMEOUT`. Empty API keys are allowed for self-hosted endpoints. Abra does not use an LLM for answer generation; the provider is used to embed chunks, claims, and recall queries for hybrid retrieval. `ABRA_AI_PROVIDER_CONCURRENCY` is a service-wide guard around embedding and reranker calls, separate from compose fan-out settings; keep it low for one local model runner and tune upward for horizontally scaled provider endpoints. The optional reranker uses `RERANKER_PROVIDER`, `RERANKER_BASE_URL`, `RERANKER_API_KEY`, and `RERANKER_MODEL`. If reranking fails, recall keeps the hybrid retrieval result instead of failing the user query.
 
 ## V1 Direction
 

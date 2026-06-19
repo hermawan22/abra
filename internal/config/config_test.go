@@ -260,6 +260,48 @@ func TestLoadComposeConcurrencyLimits(t *testing.T) {
 	}
 }
 
+func TestLoadAIProviderConcurrencyDefaultsAndOverride(t *testing.T) {
+	allowUnauthenticatedDev(t)
+	t.Setenv("EMBEDDING_PROVIDER", "local")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AIProviderConcurrency != 1 {
+		t.Fatalf("local AIProviderConcurrency = %d, want 1", cfg.AIProviderConcurrency)
+	}
+
+	t.Setenv("EMBEDDING_PROVIDER", "compatible")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AIProviderConcurrency != 4 {
+		t.Fatalf("compatible AIProviderConcurrency = %d, want 4", cfg.AIProviderConcurrency)
+	}
+
+	t.Setenv("ABRA_AI_PROVIDER_CONCURRENCY", "8")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AIProviderConcurrency != 8 {
+		t.Fatalf("override AIProviderConcurrency = %d, want 8", cfg.AIProviderConcurrency)
+	}
+}
+
+func TestLoadRejectsInvalidAIProviderConcurrency(t *testing.T) {
+	allowUnauthenticatedDev(t)
+	t.Setenv("ABRA_AI_PROVIDER_CONCURRENCY", "0")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected invalid AI provider concurrency error")
+	}
+	t.Setenv("ABRA_AI_PROVIDER_CONCURRENCY", "33")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected invalid AI provider concurrency error")
+	}
+}
+
 func TestLoadRejectsInvalidComposeConcurrencyLimits(t *testing.T) {
 	allowUnauthenticatedDev(t)
 	t.Setenv("ABRA_COMPOSE_RECALL_CONCURRENCY", "0")

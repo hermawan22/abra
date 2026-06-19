@@ -18,10 +18,11 @@ import (
 )
 
 type Service struct {
-	cfg        config.Config
-	db         *store.Store
-	embeddings ai.EmbeddingProvider
-	reranker   ai.RerankerProvider
+	cfg           config.Config
+	db            *store.Store
+	embeddings    ai.EmbeddingProvider
+	reranker      ai.RerankerProvider
+	providerSlots chan struct{}
 }
 
 type IngestDocumentInput struct {
@@ -115,7 +116,11 @@ func New(cfg config.Config, db *store.Store) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Service{cfg: cfg, db: db, embeddings: embeddingProvider, reranker: rerankerProvider}, nil
+	providerConcurrency := cfg.AIProviderConcurrency
+	if providerConcurrency < 1 {
+		providerConcurrency = 1
+	}
+	return &Service{cfg: cfg, db: db, embeddings: embeddingProvider, reranker: rerankerProvider, providerSlots: make(chan struct{}, providerConcurrency)}, nil
 }
 
 func newEmbeddingProvider(cfg config.Config) (ai.EmbeddingProvider, error) {
@@ -154,8 +159,41 @@ func newRerankerProvider(cfg config.Config) (ai.RerankerProvider, error) {
 	}
 }
 
+func (s *Service) withProviderSlot(ctx context.Context) (func(), error) {
+	if s.providerSlots == nil {
+		return func() {}, nil
+	}
+	select {
+	case s.providerSlots <- struct{}{}:
+		return func() { <-s.providerSlots }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (s *Service) embed(ctx context.Context, request ai.EmbeddingRequest) (ai.EmbeddingResponse, error) {
+	release, err := s.withProviderSlot(ctx)
+	if err != nil {
+		return ai.EmbeddingResponse{}, err
+	}
+	defer release()
+	return s.embeddings.Embed(ctx, request)
+}
+
+func (s *Service) rerank(ctx context.Context, request ai.RerankRequest) (ai.RerankResponse, error) {
+	if s.reranker == nil {
+		return ai.RerankResponse{}, fmt.Errorf("reranker is not configured")
+	}
+	release, err := s.withProviderSlot(ctx)
+	if err != nil {
+		return ai.RerankResponse{}, err
+	}
+	defer release()
+	return s.reranker.Rerank(ctx, request)
+}
+
 func (s *Service) CheckEmbeddingReady(ctx context.Context) error {
-	response, err := s.embeddings.Embed(ctx, ai.EmbeddingRequest{
+	response, err := s.embed(ctx, ai.EmbeddingRequest{
 		Input:      []string{"abra readiness check"},
 		Dimensions: s.cfg.Embedding.Dimensions,
 	})
@@ -177,7 +215,7 @@ func (s *Service) Recall(ctx context.Context, query, scope string, limit int, in
 	if query == "" || scope == "" {
 		return store.RecallResult{Claims: []store.ClaimResult{}, SupportingDocuments: []store.DocumentResult{}, GraphContext: []store.RelationResult{}, RetrievalMode: "empty"}, nil
 	}
-	embedding, err := s.embeddings.Embed(ctx, ai.EmbeddingRequest{
+	embedding, err := s.embed(ctx, ai.EmbeddingRequest{
 		Input:      []string{query},
 		Dimensions: s.cfg.Embedding.Dimensions,
 	})
@@ -214,7 +252,7 @@ func (s *Service) rerankRecall(ctx context.Context, query string, result store.R
 		claimTexts = append(claimTexts, claim.Claim)
 	}
 	if len(claimTexts) > 0 {
-		if response, err := s.reranker.Rerank(ctx, ai.RerankRequest{Query: query, Documents: claimTexts, Model: s.cfg.Reranker.Model, TopN: len(claimTexts)}); err == nil {
+		if response, err := s.rerank(ctx, ai.RerankRequest{Query: query, Documents: claimTexts, Model: s.cfg.Reranker.Model, TopN: len(claimTexts)}); err == nil {
 			applyClaimRerank(result.Claims, response.Results)
 			reranked = true
 			if !strings.Contains(result.RetrievalMode, "reranked") {
@@ -227,7 +265,7 @@ func (s *Service) rerankRecall(ctx context.Context, query string, result store.R
 		docTexts = append(docTexts, doc.Title+"\n"+doc.Content)
 	}
 	if len(docTexts) > 0 {
-		if response, err := s.reranker.Rerank(ctx, ai.RerankRequest{Query: query, Documents: docTexts, Model: s.cfg.Reranker.Model, TopN: len(docTexts)}); err == nil {
+		if response, err := s.rerank(ctx, ai.RerankRequest{Query: query, Documents: docTexts, Model: s.cfg.Reranker.Model, TopN: len(docTexts)}); err == nil {
 			applyDocumentRerank(result.SupportingDocuments, response.Results)
 			reranked = true
 			if !strings.Contains(result.RetrievalMode, "reranked") {
@@ -482,7 +520,7 @@ func (s *Service) RememberClaim(ctx context.Context, input RememberClaimInput) (
 	if authority == "" {
 		authority = "manual-unverified"
 	}
-	embedding, err := s.embeddings.Embed(ctx, ai.EmbeddingRequest{Input: []string{claimText}, Dimensions: s.cfg.Embedding.Dimensions})
+	embedding, err := s.embed(ctx, ai.EmbeddingRequest{Input: []string{claimText}, Dimensions: s.cfg.Embedding.Dimensions})
 	if err != nil {
 		return RememberClaimResult{}, err
 	}
@@ -580,7 +618,7 @@ func (s *Service) embedTexts(ctx context.Context, inputs []string) (ai.Embedding
 			batchTokens += estimate
 			end++
 		}
-		response, err := s.embeddings.Embed(ctx, ai.EmbeddingRequest{
+		response, err := s.embed(ctx, ai.EmbeddingRequest{
 			Input:      inputs[start:end],
 			Dimensions: s.cfg.Embedding.Dimensions,
 		})

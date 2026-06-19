@@ -3,7 +3,9 @@ package brain
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/hermawan22/abra/internal/ai"
@@ -181,6 +183,38 @@ func TestEmbedTextsBatchesLargeRequests(t *testing.T) {
 	}
 }
 
+func TestProviderLimiterSerializesEmbeddingCalls(t *testing.T) {
+	provider := &concurrentEmbeddingProvider{delay: 20 * time.Millisecond}
+	service := Service{
+		cfg:           config.Config{Embedding: config.AIProviderConfig{Dimensions: 3}},
+		embeddings:    provider,
+		providerSlots: make(chan struct{}, 1),
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 4)
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := service.embed(ctx, ai.EmbeddingRequest{Input: []string{"hello"}, Dimensions: 3})
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("embed error = %v", err)
+		}
+	}
+	if provider.maxConcurrent != 1 {
+		t.Fatalf("max concurrent provider calls = %d, want 1", provider.maxConcurrent)
+	}
+}
+
 type recordingEmbeddingProvider struct {
 	callSizes []int
 }
@@ -209,6 +243,53 @@ func (p *recordingEmbeddingProvider) Embed(_ context.Context, request ai.Embeddi
 		Embeddings: embeddings,
 		Usage:      &ai.Usage{PromptTokens: len(request.Input), TotalTokens: len(request.Input)},
 	}, nil
+}
+
+type concurrentEmbeddingProvider struct {
+	delay         time.Duration
+	mu            sync.Mutex
+	inFlight      int
+	maxConcurrent int
+}
+
+func (p *concurrentEmbeddingProvider) Name() string {
+	return "concurrent"
+}
+
+func (p *concurrentEmbeddingProvider) Kind() ai.ProviderKind {
+	return ai.ProviderOpenAICompatible
+}
+
+func (p *concurrentEmbeddingProvider) Validate() error {
+	return nil
+}
+
+func (p *concurrentEmbeddingProvider) Embed(ctx context.Context, request ai.EmbeddingRequest) (ai.EmbeddingResponse, error) {
+	p.mu.Lock()
+	p.inFlight++
+	if p.inFlight > p.maxConcurrent {
+		p.maxConcurrent = p.inFlight
+	}
+	p.mu.Unlock()
+	defer func() {
+		p.mu.Lock()
+		p.inFlight--
+		p.mu.Unlock()
+	}()
+
+	timer := time.NewTimer(p.delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-ctx.Done():
+		return ai.EmbeddingResponse{}, ctx.Err()
+	}
+
+	embeddings := make([]ai.Embedding, len(request.Input))
+	for i := range request.Input {
+		embeddings[i] = ai.Embedding{Index: i, Vector: []float64{1, 0, 0}, Dimensions: 3}
+	}
+	return ai.EmbeddingResponse{Provider: p.Name(), Model: "test-embedding", Embeddings: embeddings}, nil
 }
 
 func TestRedactSecretContext(t *testing.T) {

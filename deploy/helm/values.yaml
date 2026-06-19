@@ -55,6 +55,7 @@ config:
   redactPii: "true"
   rateLimitMax: "120"
   rateLimitWindow: 1 minute
+  aiProviderConcurrency: "4"
   composeHealthCacheTtl: 2s
   composeRecallConcurrency: "1"
   composeGraphConcurrency: "4"

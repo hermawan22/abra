@@ -63,6 +63,7 @@ type Config struct {
 	WorkerSourceTimeout                time.Duration
 	WorkerLeaseTimeout                 time.Duration
 	WorkerMaxChangedDocumentsPerSource int
+	AIProviderConcurrency              int
 	ComposeHealthCacheTTL              time.Duration
 	ComposeRecallConcurrency           int
 	ComposeGraphConcurrency            int
@@ -81,12 +82,14 @@ func Load() (Config, error) {
 	defaultWorkerSourceTimeout := 2 * time.Minute
 	defaultWorkerLeaseTimeout := 5 * time.Minute
 	defaultAPIReadTimeout := 2 * time.Minute
+	defaultAIProviderConcurrency := 4
 	if isLocalNeuralProvider(embeddingProvider) {
 		defaultEmbeddingBaseURL = "http://host.docker.internal:8080/v1"
 		defaultEmbeddingTimeout = 10 * time.Minute
 		defaultWorkerSourceTimeout = 30 * time.Minute
 		defaultWorkerLeaseTimeout = 35 * time.Minute
 		defaultAPIReadTimeout = 10 * time.Minute
+		defaultAIProviderConcurrency = 1
 	}
 
 	nodeEnv := env("NODE_ENV", "development")
@@ -151,6 +154,7 @@ func Load() (Config, error) {
 		WorkerSourceTimeout:                durationEnv("WORKER_SOURCE_TIMEOUT", defaultWorkerSourceTimeout),
 		WorkerLeaseTimeout:                 durationEnv("WORKER_LEASE_TIMEOUT", defaultWorkerLeaseTimeout),
 		WorkerMaxChangedDocumentsPerSource: intEnv("WORKER_MAX_CHANGED_DOCUMENTS_PER_SOURCE", 100),
+		AIProviderConcurrency:              intEnv("ABRA_AI_PROVIDER_CONCURRENCY", defaultAIProviderConcurrency),
 		ComposeHealthCacheTTL:              durationEnv("ABRA_COMPOSE_HEALTH_CACHE_TTL", 2*time.Second),
 		ComposeRecallConcurrency:           intEnv("ABRA_COMPOSE_RECALL_CONCURRENCY", 1),
 		ComposeGraphConcurrency:            intEnv("ABRA_COMPOSE_GRAPH_CONCURRENCY", 4),
@@ -209,6 +213,9 @@ func Load() (Config, error) {
 	}
 	if cfg.WorkerMaxChangedDocumentsPerSource < 1 {
 		return Config{}, errors.New("WORKER_MAX_CHANGED_DOCUMENTS_PER_SOURCE must be positive")
+	}
+	if cfg.AIProviderConcurrency < 1 || cfg.AIProviderConcurrency > 32 {
+		return Config{}, errors.New("ABRA_AI_PROVIDER_CONCURRENCY must be between 1 and 32")
 	}
 	if cfg.Embedding.Timeout <= 0 || cfg.Embedding.Timeout > 30*time.Minute {
 		return Config{}, errors.New("EMBEDDING_TIMEOUT must be between 1ns and 30m")

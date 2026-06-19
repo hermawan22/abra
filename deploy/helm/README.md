@@ -76,6 +76,7 @@ config:
   auditSinkBatchSize: "100"
   rateLimitMax: "120"
   rateLimitWindow: 1 minute
+  aiProviderConcurrency: "4"
   composeHealthCacheTtl: 2s
   composeRecallConcurrency: "1"
   composeGraphConcurrency: "4"
@@ -108,6 +109,7 @@ migrate:
 - Keep `config.approvalMode=enforce` before exposing write-capable credentials to autonomous agents.
 - Keep `ABRA_WEBHOOK_SECRETS` present in the existing secret. The chart requires it by default for the migration, API, and worker pods; set `config.allowUnsignedWebhooksInProduction="true"` only when webhook ingestion is disabled or an upstream gateway verifies webhook signatures.
 - `config.embeddingProvider=local` means self-hosted Qwen-compatible neural retrieval. Set `config.embeddingProvider=compatible` plus the embedding secret values to replace it with any custom provider. Set `config.rerankerProvider` only when a reranker endpoint is available.
+- Keep `config.aiProviderConcurrency=1` for a single local model runner. Raise it only when the embedding or reranker provider is horizontally scaled and latency/error metrics show headroom.
 - Keep Abra's built-in Postgres-backed rate limit enabled with `config.rateLimitMax` and `config.rateLimitWindow`; it applies across replicated API pods after migrations are applied. Add ingress or gateway rate limits for defense in depth on exposed deployments.
 - Set `config.composeHealthCacheTtl=0s` only when every working-memory compose call must run a fresh scoped health aggregate.
 - Keep `config.composeRecallConcurrency` and `config.composeGraphConcurrency` at conservative values until database pool usage and memory-compose p95 have been measured under expected agent traffic. Values must be between `1` and `32`.

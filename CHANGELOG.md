@@ -24,9 +24,11 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Add `abra agents init` to generate AGENTS.md and CLAUDE.md instructions that point coding agents at the exact Abra scope.
 - Add `abra agents verify` to check repo instruction files, MCP readiness, required agent tools, and exact-scope discovery before using an AI coding agent.
 - Add `abra agents verify --files-only --strict` and run it in the release gate so agent instruction files cannot regress without a live MCP server.
+- Add `ABRA_AI_PROVIDER_CONCURRENCY` to bound service-wide embedding and reranker calls across ingest, recall, readiness checks, and working-memory paths.
 
 ### Changed
 
+- Default local neural providers to one in-flight AI provider call and compatible remote providers to four, reducing single-runner Qwen overload while preserving tuneable provider scaling.
 - Make `discover_scopes` accept `expected_scope` and `query` hints so agents can find the exact project scope even when release or perf scopes crowd the first page.
 - Make `abra mcp` generate bearer-token environment variable config by default, with literal token output only behind `--literal-token`.
 - Derive default scopes for remote Git ingestion from the repository URL instead of the caller's current directory.

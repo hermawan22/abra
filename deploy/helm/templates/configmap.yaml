@@ -25,6 +25,7 @@ data:
   REDACT_PII: {{ .Values.config.redactPii | quote }}
   RATE_LIMIT_MAX: {{ .Values.config.rateLimitMax | quote }}
   RATE_LIMIT_WINDOW: {{ .Values.config.rateLimitWindow | quote }}
+  ABRA_AI_PROVIDER_CONCURRENCY: {{ .Values.config.aiProviderConcurrency | quote }}
   ABRA_COMPOSE_HEALTH_CACHE_TTL: {{ .Values.config.composeHealthCacheTtl | quote }}
   ABRA_COMPOSE_RECALL_CONCURRENCY: {{ .Values.config.composeRecallConcurrency | quote }}
   ABRA_COMPOSE_GRAPH_CONCURRENCY: {{ .Values.config.composeGraphConcurrency | quote }}
