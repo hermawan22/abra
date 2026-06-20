@@ -242,7 +242,9 @@ From a source checkout, run the CLI as `go run ./cmd/abra <command>`. In a relea
 | list sources | `abra sources` |
 | list jobs | `abra jobs` |
 | capture raw observation | `abra observe "Agents should rerun release checks" --scope repo:demo` |
+| capture and propose observation | `abra observe "Agents should rerun release checks" --scope repo:demo --propose --source-url file://release-runbook.md` |
 | list observations | `abra observations --scope repo:demo --query release` |
+| propose existing observation | `abra observations propose <observation-id> --scope repo:demo --claim "Agents should rerun release checks." --source-url file://release-runbook.md` |
 | think | `abra think "question" --scope <scope-from-abra-scope>` |
 | print project scope for agents | `abra scope` |
 | status | `abra status` |
@@ -276,7 +278,9 @@ Capture raw episodic memory without promoting it to a trusted claim:
 
 ```sh
 abra observe "Agents should rerun release checks before tagging" --scope repo:demo
+abra observe "Agents should rerun release checks before tagging" --scope repo:demo --propose --source-url file://release-runbook.md
 abra observations --scope repo:demo --query release
+abra observations propose <observation-id> --scope repo:demo --claim "Agents should rerun release checks before tagging." --source-url file://release-runbook.md
 ```
 
 The equivalent HTTP surface is:
@@ -295,6 +299,31 @@ curl -sS -H "$auth_header" \
 
 curl -sS -H "$auth_header" \
   "$ABRA_BASE_URL/observations?scope=repo:demo&query=release"
+```
+
+To send a raw observation into review without trusting it, use the existing
+learning proposal endpoint with `target_type: "observation"`:
+
+```sh
+curl -sS -H "$auth_header" \
+  -H "content-type: application/json" \
+  -d '{
+    "scope": "repo:demo",
+    "proposal_type": "claim",
+    "title": "Promote release-check observation",
+    "rationale": "Review raw observation as a trusted claim candidate.",
+    "target_type": "observation",
+    "target_id": "observation-id",
+    "source_url": "file://release-runbook.md",
+    "confidence": 0.7,
+    "payload": {
+      "observation_id": "observation-id",
+      "claim": "Agents should rerun release checks before tagging.",
+      "promotion_flow": "observation_to_claim"
+    },
+    "created_by": "abra-cli"
+  }' \
+  "$ABRA_BASE_URL/learning/proposals"
 ```
 
 For worker-based source refreshes, use `abra ingest . --code --tracked`, `abra watch local --path . --wait --wait-timeout 10m`,

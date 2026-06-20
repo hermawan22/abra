@@ -1512,10 +1512,27 @@ func observe(ctx context.Context, args cliArgs) error {
 	if err != nil {
 		return err
 	}
-	if boolFlag(args, "json") {
+	if boolFlag(args, "json") && !boolFlag(args, "propose") {
 		return printJSON(result)
 	}
 	observation, _ := result["observation"].(map[string]any)
+	if boolFlag(args, "propose") {
+		observationID := stringValue(observation["id"], "")
+		proposed, err := proposeObservation(ctx, args, observationID, text)
+		if err != nil {
+			return err
+		}
+		if boolFlag(args, "json") {
+			return printJSON(proposed)
+		}
+		proposal, _ := proposed["learning_proposal"].(map[string]any)
+		fmt.Println("Observation proposed: " + stringValue(proposal["id"], "unknown"))
+		fmt.Println("scope: " + stringValue(observation["scope"], scope))
+		fmt.Println("type: " + stringValue(proposal["proposal_type"], "claim"))
+		fmt.Println("status: " + stringValue(proposal["status"], "pending"))
+		fmt.Println("trusted: no, accepted proposal still requires explicit apply")
+		return nil
+	}
 	fmt.Println("Observation captured: " + stringValue(observation["id"], "unknown"))
 	fmt.Println("scope: " + stringValue(observation["scope"], scope))
 	fmt.Println("type: " + stringValue(observation["observation_type"], stringValue(body["observation_type"], "episode")))
@@ -1525,6 +1542,34 @@ func observe(ctx context.Context, args cliArgs) error {
 }
 
 func listObservations(ctx context.Context, args cliArgs) error {
+	if len(args.Rest) > 0 && args.Rest[0] == "propose" {
+		observationID := ""
+		if len(args.Rest) > 1 {
+			observationID = args.Rest[1]
+		}
+		if observationID == "" {
+			observationID = flag(args, "observation-id", "")
+		}
+		if observationID == "" {
+			return errors.New("observations propose requires an observation id")
+		}
+		result, err := proposeObservation(ctx, args, observationID, flag(args, "claim", ""))
+		if err != nil {
+			return err
+		}
+		if boolFlag(args, "json") {
+			return printJSON(result)
+		}
+		proposal, _ := result["learning_proposal"].(map[string]any)
+		observation, _ := result["observation"].(map[string]any)
+		fmt.Println("Observation proposed: " + stringValue(proposal["id"], "unknown"))
+		fmt.Println("observation: " + stringValue(observation["id"], observationID))
+		fmt.Println("scope: " + stringValue(observation["scope"], scopeOrDefault(args, ".")))
+		fmt.Println("type: " + stringValue(proposal["proposal_type"], "claim"))
+		fmt.Println("status: " + stringValue(proposal["status"], "pending"))
+		fmt.Println("trusted: no, accepted proposal still requires explicit apply")
+		return nil
+	}
 	scope := scopeOrDefault(args, ".")
 	params := url.Values{}
 	params.Set("scope", scope)
@@ -1564,7 +1609,8 @@ func listObservations(ctx context.Context, args cliArgs) error {
 		if len(text) > 96 {
 			text = text[:93] + "..."
 		}
-		fmt.Printf("- %s  %s/%s  %s\n",
+		fmt.Printf("- %s  %s  %s/%s  %s\n",
+			stringValue(observation["id"], ""),
 			stringValue(observation["observed_at"], ""),
 			stringValue(observation["observation_type"], "episode"),
 			stringValue(observation["status"], "raw"),
@@ -1572,6 +1618,32 @@ func listObservations(ctx context.Context, args cliArgs) error {
 		)
 	}
 	return nil
+}
+
+func proposeObservation(ctx context.Context, args cliArgs, observationID, candidateClaim string) (map[string]any, error) {
+	observationID = strings.TrimSpace(observationID)
+	if observationID == "" {
+		return nil, errors.New("observation id is required")
+	}
+	scope := scopeOrDefault(args, ".")
+	payload := map[string]any{"channel": "cli", "observation_id": observationID, "promotion_flow": "observation_to_claim"}
+	if candidateClaim = strings.TrimSpace(candidateClaim); candidateClaim != "" {
+		payload["claim"] = candidateClaim
+	}
+	body := map[string]any{
+		"scope":         scope,
+		"proposal_type": flag(args, "proposal-type", flag(args, "type", "claim")),
+		"title":         flag(args, "title", ""),
+		"rationale":     flag(args, "rationale", ""),
+		"target_type":   "observation",
+		"target_id":     observationID,
+		"source_url":    flag(args, "source-url", ""),
+		"confidence":    floatFlag(args, "confidence", 0),
+		"created_by":    flag(args, "created-by", "abra-cli"),
+		"approval_id":   flag(args, "approval-id", ""),
+		"payload":       payload,
+	}
+	return postJSON(ctx, args, "/learning/proposals", body)
 }
 
 func think(ctx context.Context, args cliArgs) error {
@@ -3043,8 +3115,9 @@ Usage:
   abra watch git --scope repo:demo --git https://github.com/owner/repo.git [--wait] [--wait-timeout 10m]
   abra sources [--scope repo:demo]
   abra jobs [--scope repo:demo]
-  abra observe "Agents should rerun release checks before tagging" [--scope repo:demo]
+  abra observe "Agents should rerun release checks before tagging" [--scope repo:demo] [--propose]
   abra observations [--scope repo:demo] [--query release]
+  abra observations propose <observation-id> [--claim "..."] [--source-url file://runbook.md]
   abra think "What should agents use?"
   abra recall "agent memory"
   abra compose "ship a change"
@@ -3168,16 +3241,22 @@ Lists worker ingestion jobs for a scope.
 		return `Usage:
   abra observe "Agents should rerun release checks before tagging" [--scope repo:demo]
   abra observe --text "..." --type episode --source-url file://notes.md --confidence 0.7 [--json]
+  abra observe "..." --propose --scope repo:demo --source-url file://runbook.md
 
 Captures a raw observation. Observations are scoped, searchable, audited, and
 not trusted claims until a review/promote flow explicitly turns them into one.
+Use --propose to immediately create a pending learning proposal from the
+captured observation without writing trusted memory.
 `
 	case "observations", "episodes":
 		return `Usage:
   abra observations --scope repo:demo [--query release] [--type episode] [--status raw] [--limit 20] [--json]
+  abra observations propose <observation-id> --scope repo:demo [--claim "..."] [--source-url file://runbook.md] [--json]
   abra episodes --scope repo:demo
 
 Lists raw episodic observations for a scope.
+The propose subcommand creates a pending learning proposal targeting the
+observation. Accepted proposals still return an apply plan; they do not auto-write claims.
 `
 	case "think":
 		return `Usage:

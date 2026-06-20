@@ -98,6 +98,7 @@ func TestListObservationsUsesScopedQuery(t *testing.T) {
 			}
 		}
 		writeTestJSON(t, w, map[string]any{"observations": []map[string]any{{
+			"id":               "obs-1",
 			"observed_at":      "2026-06-20 00:00:00+00",
 			"observation_type": "episode",
 			"status":           "raw",
@@ -120,8 +121,56 @@ func TestListObservationsUsesScopedQuery(t *testing.T) {
 			t.Fatalf("observations error = %v", err)
 		}
 	})
-	if !strings.Contains(output, "Observations: 1") || !strings.Contains(output, "release check note") {
+	if !strings.Contains(output, "Observations: 1") || !strings.Contains(output, "obs-1") || !strings.Contains(output, "release check note") {
 		t.Fatalf("observations output = %s", output)
+	}
+}
+
+func TestProposeObservationPostsLearningProposal(t *testing.T) {
+	var got map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/learning/proposals" {
+			t.Fatalf("request = %s %s, want POST /learning/proposals", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		writeTestJSON(t, w, map[string]any{"learning_proposal": map[string]any{
+			"id":            "lp-1",
+			"scope":         got["scope"],
+			"proposal_type": got["proposal_type"],
+			"target_type":   got["target_type"],
+			"target_id":     got["target_id"],
+			"status":        "pending",
+		}})
+	}))
+	defer server.Close()
+
+	output := captureStdout(t, func() {
+		if err := run(context.Background(), []string{
+			"observations", "propose", "obs-1",
+			"--scope", "repo:demo",
+			"--base-url", server.URL,
+			"--token", "test-token",
+			"--claim", "Agents should rerun release checks before tagging.",
+			"--source-url", "file://release-runbook.md",
+			"--confidence", "0.7",
+		}); err != nil {
+			t.Fatalf("observations propose error = %v", err)
+		}
+	})
+	if got["scope"] != "repo:demo" || got["proposal_type"] != "claim" || got["target_type"] != "observation" || got["target_id"] != "obs-1" {
+		t.Fatalf("proposal body = %#v", got)
+	}
+	if got["source_url"] != "file://release-runbook.md" {
+		t.Fatalf("source_url = %#v", got["source_url"])
+	}
+	payload, _ := got["payload"].(map[string]any)
+	if payload["observation_id"] != "obs-1" || payload["claim"] != "Agents should rerun release checks before tagging." || payload["promotion_flow"] != "observation_to_claim" {
+		t.Fatalf("payload = %#v", payload)
+	}
+	if !strings.Contains(output, "Observation proposed: lp-1") || !strings.Contains(output, "trusted: no") {
+		t.Fatalf("output = %s", output)
 	}
 }
 

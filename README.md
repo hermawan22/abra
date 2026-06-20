@@ -18,6 +18,15 @@ Raw observations are episodic or procedural notes captured from operators, agent
 
 Claims without a source are stored as `unverified`. Source-backed claims can be `verified`. Challenged or stale claims lose ranking and should not be used silently.
 
+To move an observation into review without trusting it, create a learning proposal targeting the observation:
+
+```sh
+abra observe "Agents should rerun release checks before tagging" --scope repo:demo --propose --source-url file://release-runbook.md
+abra observations propose <observation-id> --scope repo:demo --claim "Agents should rerun release checks before tagging." --source-url file://release-runbook.md
+```
+
+MCP clients use the existing `propose_learning` tool with `target_type="observation"` and `target_id="<observation-id>"`. Accepted proposals return an apply plan; they still do not auto-write claims.
+
 ## Architecture
 
 ```text
@@ -611,6 +620,29 @@ The verifier returns a `verdict` (`strong`, `partial`, `weak`, or `unsafe`), `sc
   "created_by": "service-agent"
 }
 ```
+
+For observation review, target the observation instead of writing a claim:
+
+```json
+{
+  "scope": "repo:example/service",
+  "proposal_type": "claim",
+  "title": "Promote release-check observation",
+  "rationale": "Review the raw observation as a trusted claim candidate.",
+  "target_type": "observation",
+  "target_id": "observation-id",
+  "source_url": "file://release-runbook.md",
+  "confidence": 0.7,
+  "payload": {
+    "observation_id": "observation-id",
+    "claim": "Agents should rerun release checks before tagging.",
+    "promotion_flow": "observation_to_claim"
+  },
+  "created_by": "service-agent"
+}
+```
+
+When `target_type` is `observation`, Abra validates the observation belongs to the same scope, marks it `proposed`, emits `observation.proposed`, and stores a deduplicated pending learning proposal. Accepting that proposal returns a `review_claim_promotion` apply plan; it still does not create a claim until the operator or gateway performs the explicit apply step.
 
 `POST /memory/summaries` returns the precomputed hierarchy layer directly:
 

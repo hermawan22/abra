@@ -1486,6 +1486,62 @@ func (s *Store) InsertObservation(ctx context.Context, record ObservationRecord)
 	return scanObservation(row)
 }
 
+func (s *Store) GetObservation(ctx context.Context, id string) (ObservationResult, error) {
+	row := s.pool.QueryRow(ctx, `
+		SELECT
+		  id, scope, observation_type, observation_text, status, authority, authority_score,
+		  confidence, freshness_status, COALESCE(subject_entity_id, ''), COALESCE(object_entity_id, ''),
+		  COALESCE(relation_id, ''), COALESCE(claim_id, ''), COALESCE(document_id, ''),
+		  COALESCE(chunk_id, ''), COALESCE(source_config_id, ''), COALESCE(ingestion_job_id, ''),
+		  COALESCE(source_url, ''), COALESCE(source_type, ''), COALESCE(source_id, ''),
+		  observed_at::text, valid_from::text, expires_at::text, last_verified_at::text,
+		  COALESCE(created_by, ''), created_at::text, updated_at::text, value, metadata
+		FROM observations
+		WHERE id = $1
+	`, strings.TrimSpace(id))
+	observation, err := scanObservation(row)
+	if err == pgx.ErrNoRows {
+		return ObservationResult{}, fmt.Errorf("observation %q not found", strings.TrimSpace(id))
+	}
+	return observation, err
+}
+
+func (s *Store) LinkObservationProposal(ctx context.Context, observationID, proposalID, createdBy string) (ObservationResult, error) {
+	observationID = strings.TrimSpace(observationID)
+	proposalID = strings.TrimSpace(proposalID)
+	if observationID == "" || proposalID == "" {
+		return ObservationResult{}, fmt.Errorf("observation_id and proposal_id are required")
+	}
+	row := s.pool.QueryRow(ctx, `
+		UPDATE observations
+		SET status = CASE
+		      WHEN status IN ('raw', 'challenged') THEN 'proposed'
+		      ELSE status
+		    END,
+		    metadata = metadata || jsonb_build_object(
+		      'learning_proposal_id', $2::text,
+		      'learning_proposed_at', now()::text,
+		      'learning_proposed_by', NULLIF($3, '')
+		    ),
+		    updated_at = now()
+		WHERE id = $1
+		  AND status NOT IN ('rejected', 'deprecated', 'expired')
+		RETURNING
+		  id, scope, observation_type, observation_text, status, authority, authority_score,
+		  confidence, freshness_status, COALESCE(subject_entity_id, ''), COALESCE(object_entity_id, ''),
+		  COALESCE(relation_id, ''), COALESCE(claim_id, ''), COALESCE(document_id, ''),
+		  COALESCE(chunk_id, ''), COALESCE(source_config_id, ''), COALESCE(ingestion_job_id, ''),
+		  COALESCE(source_url, ''), COALESCE(source_type, ''), COALESCE(source_id, ''),
+		  observed_at::text, valid_from::text, expires_at::text, last_verified_at::text,
+		  COALESCE(created_by, ''), created_at::text, updated_at::text, value, metadata
+	`, observationID, proposalID, strings.TrimSpace(createdBy))
+	observation, err := scanObservation(row)
+	if err == pgx.ErrNoRows {
+		return ObservationResult{}, fmt.Errorf("observation %q not found or cannot be proposed", observationID)
+	}
+	return observation, err
+}
+
 func (s *Store) ListObservations(ctx context.Context, filter ObservationFilter) ([]ObservationResult, error) {
 	filter.Scope = strings.TrimSpace(filter.Scope)
 	if filter.Scope == "" {

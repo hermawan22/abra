@@ -738,13 +738,120 @@ func (h *handler) createLearningProposal(w http.ResponseWriter, r *http.Request)
 	if !h.requireAccess(w, r, authActionWrite, input.Scope) {
 		return
 	}
-	proposal, err := h.db.CreateLearningProposal(r.Context(), input)
+	observation, hasObservationTarget, ok := h.prepareObservationLearningProposal(w, r, &input)
+	if !ok {
+		return
+	}
+	var proposal store.LearningProposalRecord
+	created := true
+	var err error
+	if hasObservationTarget {
+		proposal, created, err = h.db.CreateLearningProposalOnce(r.Context(), input)
+	} else {
+		proposal, err = h.db.CreateLearningProposal(r.Context(), input)
+	}
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	h.auditLearningProposed(r.Context(), proposal, "http")
-	writeJSON(w, http.StatusAccepted, map[string]any{"learning_proposal": proposal})
+	if hasObservationTarget {
+		h.linkObservationLearningProposal(r.Context(), observation, proposal, input.CreatedBy, "http")
+	}
+	if created {
+		h.auditLearningProposed(r.Context(), proposal, "http")
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"learning_proposal": proposal, "created": created})
+}
+
+func (h *handler) prepareObservationLearningProposal(w http.ResponseWriter, r *http.Request, input *store.CreateLearningProposalInput) (store.ObservationResult, bool, bool) {
+	observation, hasObservationTarget, err := h.prepareObservationLearningProposalInput(r.Context(), input)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return store.ObservationResult{}, hasObservationTarget, false
+	}
+	return observation, hasObservationTarget, true
+}
+
+func (h *handler) prepareMCPObservationLearningProposal(ctx context.Context, input *store.CreateLearningProposalInput) (store.ObservationResult, bool, error) {
+	return h.prepareObservationLearningProposalInput(ctx, input)
+}
+
+func (h *handler) prepareObservationLearningProposalInput(ctx context.Context, input *store.CreateLearningProposalInput) (store.ObservationResult, bool, error) {
+	if strings.TrimSpace(input.TargetType) != "observation" {
+		return store.ObservationResult{}, false, nil
+	}
+	observationID := strings.TrimSpace(input.TargetID)
+	if observationID == "" && input.Payload != nil {
+		if raw, ok := input.Payload["observation_id"].(string); ok {
+			observationID = strings.TrimSpace(raw)
+		}
+	}
+	if observationID == "" {
+		return store.ObservationResult{}, true, fmt.Errorf("target_id is required when target_type is observation")
+	}
+	observation, err := h.db.GetObservation(ctx, observationID)
+	if err != nil {
+		return store.ObservationResult{}, true, err
+	}
+	if observation.Scope != strings.TrimSpace(input.Scope) {
+		return store.ObservationResult{}, true, fmt.Errorf("observation scope does not match proposal scope")
+	}
+	if observation.Status == "rejected" || observation.Status == "deprecated" || observation.Status == "expired" || observation.Status == "accepted" {
+		return store.ObservationResult{}, true, fmt.Errorf("observation status cannot be proposed")
+	}
+	input.TargetID = observation.ID
+	if strings.TrimSpace(input.ProposalType) == "" {
+		input.ProposalType = "claim"
+	}
+	if strings.TrimSpace(input.Title) == "" {
+		input.Title = observationLearningTitle(observation)
+	}
+	if strings.TrimSpace(input.Rationale) == "" {
+		input.Rationale = "Review raw observation as a trusted memory candidate."
+	}
+	if strings.TrimSpace(input.SourceURL) == "" {
+		input.SourceURL = observation.SourceURL
+	}
+	if input.Confidence <= 0 {
+		input.Confidence = observation.Confidence
+	}
+	payload := cloneAnyMap(input.Payload)
+	payload["observation_id"] = observation.ID
+	payload["observation_text"] = observation.ObservationText
+	payload["observation_type"] = observation.ObservationType
+	payload["observation_status"] = observation.Status
+	payload["promotion_flow"] = "observation_to_" + input.ProposalType
+	if _, ok := payload["claim"]; !ok && input.ProposalType == "claim" {
+		payload["claim"] = observation.ObservationText
+	}
+	input.Payload = payload
+	return observation, true, nil
+}
+
+func (h *handler) linkObservationLearningProposal(ctx context.Context, observation store.ObservationResult, proposal store.LearningProposalRecord, createdBy, channel string) {
+	linked, err := h.db.LinkObservationProposal(ctx, observation.ID, proposal.ID, createdBy)
+	if err != nil {
+		return
+	}
+	_ = h.db.InsertAuditEvent(ctx, "observation.proposed", "observation", observation.ID, observation.Scope, observation.SourceURL, map[string]any{
+		"learning_proposal_id": proposal.ID,
+		"proposal_type":        proposal.ProposalType,
+		"observation_status":   linked.Status,
+		"created_by":           createdBy,
+		"channel":              channel,
+	})
+}
+
+func observationLearningTitle(observation store.ObservationResult) string {
+	text := strings.Join(strings.Fields(observation.ObservationText), " ")
+	if text == "" {
+		text = observation.ID
+	}
+	runes := []rune(text)
+	if len(runes) > 80 {
+		text = string(runes[:77]) + "..."
+	}
+	return "Review observation: " + text
 }
 
 func (h *handler) decideLearningProposal(w http.ResponseWriter, r *http.Request) {
@@ -1629,7 +1736,7 @@ func (h *handler) mcpToolCall(w http.ResponseWriter, r *http.Request, id any, pa
 		if !h.requireAccess(w, r, authActionWrite, scope) {
 			return
 		}
-		proposal, createErr := h.db.CreateLearningProposal(r.Context(), store.CreateLearningProposalInput{
+		input := store.CreateLearningProposalInput{
 			Scope:        scope,
 			ProposalType: stringArg(args, "proposal_type"),
 			Title:        stringArg(args, "title"),
@@ -1641,12 +1748,30 @@ func (h *handler) mcpToolCall(w http.ResponseWriter, r *http.Request, id any, pa
 			Payload:      mapArg(args, "payload"),
 			CreatedBy:    stringArg(args, "created_by"),
 			ApprovalID:   stringArg(args, "approval_id"),
-		})
+		}
+		observation, hasObservationTarget, prepareErr := h.prepareMCPObservationLearningProposal(r.Context(), &input)
+		if prepareErr != nil {
+			err = prepareErr
+			break
+		}
+		var proposal store.LearningProposalRecord
+		created := true
+		var createErr error
+		if hasObservationTarget {
+			proposal, created, createErr = h.db.CreateLearningProposalOnce(r.Context(), input)
+		} else {
+			proposal, createErr = h.db.CreateLearningProposal(r.Context(), input)
+		}
 		if createErr != nil {
 			err = createErr
 			break
 		}
-		h.auditLearningProposed(r.Context(), proposal, "mcp")
+		if hasObservationTarget {
+			h.linkObservationLearningProposal(r.Context(), observation, proposal, input.CreatedBy, "mcp")
+		}
+		if created {
+			h.auditLearningProposed(r.Context(), proposal, "mcp")
+		}
 		result = proposal
 	case "list_learning_proposals":
 		scope := stringArg(args, "scope")

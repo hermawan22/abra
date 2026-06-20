@@ -104,6 +104,42 @@ func TestObservationMCPToolsAreDiscoverable(t *testing.T) {
 	}
 }
 
+func TestProposeLearningMCPSupportsObservationTargets(t *testing.T) {
+	schema := mcpToolSchema(t, "propose_learning")
+	required := requiredSet(t, schema)
+	for _, property := range []string{"scope", "proposal_type", "title", "rationale"} {
+		if !required[property] {
+			t.Fatalf("propose_learning required = %#v, missing %s", schema["required"], property)
+		}
+	}
+	properties, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("properties = %#v", schema["properties"])
+	}
+	for _, property := range []string{"target_type", "target_id", "source_url", "confidence", "payload", "created_by"} {
+		if _, ok := properties[property]; !ok {
+			t.Fatalf("propose_learning missing property %q in %#v", property, properties)
+		}
+	}
+	proposalType, _ := properties["proposal_type"].(map[string]any)
+	enums, _ := proposalType["enum"].([]string)
+	if len(enums) == 0 {
+		rawEnums, _ := proposalType["enum"].([]any)
+		for _, raw := range rawEnums {
+			enums = append(enums, raw.(string))
+		}
+	}
+	hasClaim := false
+	for _, value := range enums {
+		if value == "claim" {
+			hasClaim = true
+		}
+	}
+	if !hasClaim {
+		t.Fatalf("proposal_type enum = %#v, want claim", proposalType["enum"])
+	}
+}
+
 func TestRankScopeSummariesPrioritizesExpectedScope(t *testing.T) {
 	scopes := []store.ScopeSummary{
 		{Scope: "repo:large-release", Documents: 1000},

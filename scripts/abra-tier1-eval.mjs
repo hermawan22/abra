@@ -243,7 +243,52 @@ await runCheck("raw_observation_is_searchable_but_not_trusted_recall", async () 
     }
   });
   assert(!textOf(observationRecall).includes(observationText), "raw observation leaked into trusted recall output");
-  return { observation_id: capturedObservation.observation.id, listed: observations.length };
+  const proposed = await request("/learning/proposals", {
+    method: "POST",
+    expectStatus: 202,
+    body: {
+      scope,
+      proposal_type: "claim",
+      title: `Promote observation ${capturedObservation.observation.id}`,
+      rationale: "Tier 1 verifies observation review without trusted auto-promotion.",
+      target_type: "observation",
+      target_id: capturedObservation.observation.id,
+      source_url: `file://abra-tier1-observation-${suffix}.md`,
+      confidence: 0.7,
+      payload: {
+        observation_id: capturedObservation.observation.id,
+        claim: observationText,
+        promotion_flow: "observation_to_claim"
+      },
+      created_by: "abra-tier1-eval"
+    }
+  });
+  assert(proposed.learning_proposal && proposed.learning_proposal.id, "observation proposal did not return a learning proposal");
+  assert(proposed.learning_proposal.target_type === "observation", `proposal target_type = ${proposed.learning_proposal.target_type}`);
+  const proposedObservations = await request(`/observations?scope=${encodeURIComponent(scope)}&query=${encodeURIComponent("release sentinel")}&type=episode&status=proposed&limit=10`);
+  assert(
+    Array.isArray(proposedObservations.observations) && proposedObservations.observations.some((item) => item.id === capturedObservation.observation.id),
+    "observation was not marked proposed after learning proposal creation"
+  );
+  const decided = await request(`/learning/proposals/${encodeURIComponent(proposed.learning_proposal.id)}/decide`, {
+    method: "POST",
+    body: {
+      status: "accepted",
+      reviewed_by: "abra-tier1-eval",
+      review_reason: "Tier 1 verifies apply-plan handoff only."
+    }
+  });
+  assert(decided.apply_plan && decided.apply_plan.action === "review_claim_promotion", `apply_plan.action = ${decided.apply_plan && decided.apply_plan.action}`);
+  const afterProposalRecall = await request("/recall", {
+    method: "POST",
+    body: {
+      query: `release sentinel ${suffix}`,
+      scope,
+      limit: 10
+    }
+  });
+  assert(!textOf(afterProposalRecall).includes(observationText), "accepted observation proposal auto-promoted into trusted recall");
+  return { observation_id: capturedObservation.observation.id, proposal_id: proposed.learning_proposal.id, listed: observations.length };
 });
 
 await runCheck("recall_returns_expected_claim_and_citation", async () => {
