@@ -154,6 +154,30 @@ function workflowActionRefFindings(files) {
   return findings;
 }
 
+function rawInstallerURLFindings(files) {
+  const findings = [];
+  const rawInstallerPattern = /https:\/\/raw\.githubusercontent\.com\/[^\s'"`<>]+\/scripts\/install\.sh/g;
+  for (const file of files) {
+    let content;
+    try {
+      content = readFileSync(file, "utf8");
+    } catch {
+      continue;
+    }
+    rawInstallerPattern.lastIndex = 0;
+    let match;
+    while ((match = rawInstallerPattern.exec(content)) !== null) {
+      findings.push({
+        file,
+        line: lineNumberFor(content, match.index),
+        rule: "raw_branch_installer_url",
+        message: "official install and upgrade paths must use GitHub Release installer URLs, not raw branch install.sh URLs"
+      });
+    }
+  }
+  return findings;
+}
+
 function assertSelfTest(condition, message) {
   if (!condition) {
     throw new Error(message);
@@ -190,6 +214,23 @@ function runSelfTest() {
         ""
       ].join("\n")
     );
+    writeFileSync(
+      "bad-install.md",
+      [
+        "# Bad installer docs",
+        "curl -fsSL https://raw.githubusercontent.com/example/abra/main/scripts/install.sh | sh",
+        ""
+      ].join("\n")
+    );
+    writeFileSync(
+      "good-install.md",
+      [
+        "# Good installer docs",
+        "curl -fsSL https://github.com/example/abra/releases/latest/download/install.sh | sh",
+        "curl -fsSL https://github.com/example/abra/releases/download/v1.2.3/install.sh | sh",
+        ""
+      ].join("\n")
+    );
 
     const findings = workflowActionRefFindings([
       ".github/workflows/bad.yml",
@@ -212,6 +253,10 @@ function runSelfTest() {
       findings.some((finding) => finding.message.includes("owner/action-without-ref")),
       "expected missing ref finding"
     );
+    const installFindings = rawInstallerURLFindings(["bad-install.md", "good-install.md"]);
+    assertSelfTest(installFindings.length === 1, `expected 1 raw installer URL finding, got ${installFindings.length}`);
+    assertSelfTest(installFindings[0].file === "bad-install.md", "expected bad installer docs finding");
+    assertSelfTest(installFindings[0].rule === "raw_branch_installer_url", "expected raw installer URL rule");
   } finally {
     process.chdir(originalCwd);
     rmSync(root, { recursive: true, force: true });
@@ -227,7 +272,8 @@ if (process.argv.includes("--self-test")) {
 const files = trackedFiles();
 const findings = [
   ...files.flatMap(scanFile),
-  ...workflowActionRefFindings(files)
+  ...workflowActionRefFindings(files),
+  ...rawInstallerURLFindings(files)
 ];
 
 if (findings.length > 0) {

@@ -1008,7 +1008,7 @@ func TestSetupStackArgsDropProviderBaseURL(t *testing.T) {
 
 func TestInstallScriptDownloadErrorExplainsRecovery(t *testing.T) {
 	err := installScriptDownloadError(
-		"https://raw.githubusercontent.com/abra-brain/abra/main/scripts/install.sh",
+		"https://example.invalid/abra/install.sh",
 		errors.New("exit status 22"),
 		[]byte("curl: (22) The requested URL returned error: 404"),
 	)

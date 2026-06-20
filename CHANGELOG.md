@@ -19,6 +19,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Add optional MCP `ingest_documents` partial batch results with `continue_on_error` for connector overlays that need per-document status.
 - Add `abra ingest . --continue-on-error` for direct local repo ingestion so one failed file does not hide successful files or the remaining per-file failures.
 - Add an OSS hygiene self-test that proves mutable GitHub Actions refs are rejected before release.
+- Add an OSS hygiene guardrail that rejects committed raw branch installer URLs so official install and upgrade paths stay pinned to GitHub Release assets.
 - Add retrieval reason explainability to recall, working-memory composition, context windows, and governed think results.
 - Add retrieval source-diversity scoring so working-memory verification can flag packets dominated by one source.
 - Add structured verifier `required_actions` so agents can respond to weak, partial, or unsafe memory packets without parsing recommendation text.
