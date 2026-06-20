@@ -43,6 +43,7 @@
     "eval:queue-pressure": "node scripts/abra-queue-pressure-eval.mjs",
     "perf:local": "node scripts/abra-perf-eval.mjs",
     "release:gate": "node scripts/abra-release-gate.mjs",
+    "release:gate:dry-run": "ABRA_RELEASE_DRY_RUN=1 node scripts/abra-release-gate.mjs",
     "test:installer": "node scripts/abra-install-test.mjs",
     "test": "npm run check:scripts && npm run test:installer && npm run check:oss"
   }

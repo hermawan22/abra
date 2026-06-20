@@ -17,8 +17,13 @@ go test ./...
 npm test
 helm lint ./deploy/helm
 helm template abra ./deploy/helm >/tmp/abra-helm-template.yaml
+npm run release:gate:dry-run
 ABRA_RELEASE_PROFILE=full ABRA_RELEASE_MANAGE_STACK=1 npm run release:gate
 ```
+
+The dry-run report must list every release check without executing external
+commands. It is a cheap way to review the release evidence contract before
+running the managed full gate.
 
 Run security checks:
 

@@ -7,6 +7,7 @@ const startedAt = new Date().toISOString();
 const runId = startedAt.replace(/[^0-9A-Za-z]/g, "").slice(0, 18);
 const profile = (process.env.ABRA_RELEASE_PROFILE || "full").trim();
 const quick = profile === "quick";
+const dryRun = boolEnv("ABRA_RELEASE_DRY_RUN");
 const manageStack = boolEnv("ABRA_RELEASE_MANAGE_STACK");
 const managedHTTPPort = process.env.ABRA_RELEASE_ABRA_PORT || "18081";
 const baseUrl = process.env.ABRA_BASE_URL || (manageStack ? `http://127.0.0.1:${managedHTTPPort}` : "http://127.0.0.1:18080");
@@ -129,6 +130,7 @@ function redact(value) {
 
 async function runCommand(name, command, args = [], options = {}) {
   const started = Date.now();
+  const commandText = [command, ...args].join(" ");
   const env = {
     ...process.env,
     ABRA_BASE_URL: baseUrl,
@@ -136,6 +138,20 @@ async function runCommand(name, command, args = [], options = {}) {
     ABRA_WEBHOOK_SECRET: webhookSecret,
     ...options.env
   };
+  if (dryRun) {
+    checks.push({
+      name,
+      command: commandText,
+      ok: true,
+      exit_code: 0,
+      duration_ms: 0,
+      dry_run: true,
+      skipped: true,
+      stdout: "dry run: command was not executed",
+      stderr: ""
+    });
+    return;
+  }
   const result = await new Promise((resolve) => {
     let stdout = "";
     let stderr = "";
@@ -165,7 +181,7 @@ async function runCommand(name, command, args = [], options = {}) {
   });
   checks.push({
     name,
-    command: [command, ...args].join(" "),
+    command: commandText,
     ok: result.code === 0,
     exit_code: result.code,
     duration_ms: Date.now() - started,
@@ -242,7 +258,9 @@ async function main() {
   }
 
   await runCommand("agent_context_files", "go", ["run", "./cmd/abra", "agents", "verify", ".", "--scope", "repo:abra", "--files-only", "--strict"]);
-  await runCommand("script_checks", "npm", ["test"]);
+  await runCommand("script_checks", "npm", ["run", "check:scripts"]);
+  await runCommand("installer_fail_closed", "npm", ["run", "test:installer"]);
+  await runCommand("oss_hygiene", "npm", ["run", "check:oss"]);
   await runCommand("go_tests", "go", ["test", "./..."]);
   await runCommand("docker_compose_config", "docker", ["compose", "config"], {
     env: managedStackEnv
@@ -355,6 +373,7 @@ const summary = {
   suite: "abra-release-gate",
   status: failed.length === 0 ? "passed" : "failed",
   profile,
+  dry_run: dryRun,
   failed_checks: failed.map((check) => ({
     name: check.name,
     exit_code: check.exit_code,
@@ -377,7 +396,8 @@ const summary = {
     dogfood_source_prepared: prepareDogfoodSource,
     approval_enforcement_gate_included: approvalEnforcementGate,
     managed_stack_project: manageStack ? managedComposeProject : "",
-    managed_stack_cleaned: cleanupManagedStack
+    managed_stack_cleaned: cleanupManagedStack,
+    dry_run: dryRun
   }
 };
 
