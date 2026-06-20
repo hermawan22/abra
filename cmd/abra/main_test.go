@@ -1026,6 +1026,21 @@ func TestInstallScriptDownloadErrorExplainsRecovery(t *testing.T) {
 	}
 }
 
+func TestInstallScriptDefaultsToPublishedRelease(t *testing.T) {
+	if strings.Contains(installScript, "raw.githubusercontent.com") || strings.Contains(installScript, "/main/") {
+		t.Fatalf("default install script should use published release asset, got %s", installScript)
+	}
+	if got := releaseInstallScriptURL(""); got != installScript {
+		t.Fatalf("empty version URL = %q, want %q", got, installScript)
+	}
+	if got := releaseInstallScriptURL("latest"); got != installScript {
+		t.Fatalf("latest URL = %q, want %q", got, installScript)
+	}
+	if got := releaseInstallScriptURL("v0.3.7"); got != "https://github.com/hermawan22/abra/releases/download/v0.3.7/install.sh" {
+		t.Fatalf("pinned URL = %q", got)
+	}
+}
+
 func TestMCPConfigUsesTokenEnvByDefault(t *testing.T) {
 	t.Setenv("ABRA_API_TOKEN", "fixture-token-value")
 	output := captureStdout(t, func() {

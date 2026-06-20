@@ -79,6 +79,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Make the OSS hygiene gate reject mutable GitHub Actions refs so workflow pinning cannot regress silently.
 - Prefer query-form working-memory MCP resources so scopes containing slashes are preserved.
 - Make `abra upgrade` download the install script before executing it so wrong installer URLs produce actionable recovery guidance instead of a raw curl pipe failure.
+- Make `abra upgrade` use published release installer URLs by default, with `--version` resolving to that pinned release's installer instead of branch `main`.
 - Raise local demo/setup and managed release-gate worker intervals to reduce background ingestion contention during recall and working-memory latency gates.
 - Warn on overly aggressive `WORKER_INTERVAL` values in `abra doctor` and normalize stale local setup env files back to the safer default.
 - Improve chunk splitting and embedding batch token estimation for oversized paragraphs, minified JSON, and dense code.

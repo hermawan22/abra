@@ -30,7 +30,7 @@ const (
 	defaultIngestTimeout  = 10 * time.Minute
 	defaultWorkerInterval = 30 * time.Second
 	maxCLIResponseBody    = 8 << 20
-	installScript         = "https://raw.githubusercontent.com/hermawan22/abra/main/scripts/install.sh"
+	installScript         = "https://github.com/hermawan22/abra/releases/latest/download/install.sh"
 )
 
 var (
@@ -200,14 +200,21 @@ func upgrade(args cliArgs) error {
 	if _, err := exec.LookPath("sh"); err != nil {
 		return errors.New("missing required command: sh")
 	}
-	script := envOr("ABRA_INSTALL_SCRIPT", installScript)
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
 	env := os.Environ()
 	env = append(env, "ABRA_INSTALL_DIR="+filepath.Dir(exe))
-	if target := flag(args, "version", ""); target != "" {
+	target := flag(args, "version", "")
+	script := strings.TrimSpace(os.Getenv("ABRA_INSTALL_SCRIPT"))
+	if script == "" {
+		script = installScript
+		if target != "" {
+			script = releaseInstallScriptURL(target)
+		}
+	}
+	if target != "" {
 		env = append(env, "ABRA_VERSION="+target)
 	}
 	tmpDir, err := os.MkdirTemp("", "abra-upgrade-*")
@@ -227,6 +234,14 @@ func upgrade(args cliArgs) error {
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 	return cmd.Run()
+}
+
+func releaseInstallScriptURL(version string) string {
+	version = strings.TrimSpace(version)
+	if version == "" || version == "latest" {
+		return installScript
+	}
+	return "https://github.com/hermawan22/abra/releases/download/" + url.PathEscape(version) + "/install.sh"
 }
 
 func installScriptDownloadError(script string, err error, output []byte) error {
