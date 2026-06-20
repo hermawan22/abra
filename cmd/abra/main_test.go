@@ -532,6 +532,28 @@ func TestAgentsVerifyFilesOnlyStrictFailsOnWarning(t *testing.T) {
 	}
 }
 
+func TestAgentsReadyIsNonMutatingVerifyAlias(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "empty project")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	output := captureStdout(t, func() {
+		err := run(context.Background(), []string{"agents", "ready", root, "--files-only", "--strict"})
+		if err == nil || !strings.Contains(err.Error(), "agent instruction verification failed") {
+			t.Fatalf("agents ready error = %v", err)
+		}
+	})
+	if fileExists(filepath.Join(root, "AGENTS.md")) || fileExists(filepath.Join(root, "CLAUDE.md")) {
+		t.Fatalf("agents ready should not create instruction files:\n%s", output)
+	}
+	for _, want := range []string{"Agent context check", "fail  AGENTS.md", "skip  mcp skipped by --files-only"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("agents ready output missing %q:\n%s", want, output)
+		}
+	}
+}
+
 func TestAgentsVerifyFailsWhenScopeIsMissing(t *testing.T) {
 	root := t.TempDir()
 	if err := run(context.Background(), []string{"agents", "init", root}); err != nil {

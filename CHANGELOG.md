@@ -63,6 +63,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Make accepted claim-promotion apply plans target scoped `memory_write` even when the proposal originated from a raw observation.
 - Make `abra setup --no-start`, `abra mcp install-codex`, CLI help, and docs surface model logs and exact-scope recovery steps for Codex no-context cases.
 - Print `abra ingest` before `abra agents verify` in `abra scope` guidance now that verification requires source-backed working memory.
+- Make `abra agents ready` a non-mutating readiness-check alias instead of bootstrapping, ingesting, or installing MCP.
 - Lower default working-memory recall fan-out to one to reduce local embedding oversubscription and stabilize compose p95 under concurrent agents.
 - Make the self-host smoke gate require AI provider call, wait, and gauge metrics for embedding paths so provider observability cannot silently regress.
 - Make managed release-gate stacks use a non-placeholder local API token so production secret validation runs during bootstrap.

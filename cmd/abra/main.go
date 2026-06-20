@@ -1941,10 +1941,10 @@ func agentsCommand(ctx context.Context, args cliArgs) error {
 		return err
 	}
 	scope := scopeOrDefault(args, abs)
-	if action == "verify" || action == "check" {
+	if action == "verify" || action == "check" || action == "ready" {
 		return verifyAgentContext(ctx, args, abs, scope)
 	}
-	if action == "bootstrap" || action == "ready" {
+	if action == "bootstrap" {
 		return bootstrapAgentContext(ctx, args, abs, scope)
 	}
 	agent := flag(args, "agent", "agent")
@@ -3432,6 +3432,7 @@ is missing, ingest the project with the printed command and retry.
   abra agents bootstrap [path] [--agent codex] [--force] [--no-mcp]
   abra agents init [path] [--agent codex] [--force] [--dry-run] [--json]
   abra agents verify [path] [--files-only] [--strict] [--json]
+  abra agents ready [path] [--files-only] [--strict] [--json]
 
 Writes repo-local AI agent instruction files that point every client at the
 same Abra scope. It creates AGENTS.md for agent-neutral instructions and
@@ -3448,7 +3449,8 @@ agent tools, discover_scopes for the exact project scope, and a lightweight
 working_memory_compose packet with source-backed context. Use it when an AI
 client says Abra has no context. Use --files-only for CI checks that should not
 contact a live Abra MCP server. Use --strict when warning-level compatibility
-checks should fail the command.
+checks should fail the command. ` + "`abra agents ready`" + ` is a non-mutating alias for
+verify.
 `
 	case "mcp", "mcp-config":
 		return `Usage:
