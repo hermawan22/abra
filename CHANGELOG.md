@@ -27,6 +27,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Add Prometheus gauges for ingestion queue pressure in working-memory health metrics so operators can alert on queued, retrying, failed, running, and stale jobs.
 - Add configurable working-memory recall and graph fan-out caps for predictable compose load under concurrent agents.
 - Add webhook ingestion job lineage and idempotent delivery handling so connector events are visible in ingestion job history.
+- Add `abra agents bootstrap` as a one-command Codex-ready path that writes agent instructions, ingests the repo with the exact scope, verifies source-backed working memory, and installs Abra MCP into Codex.
 - Add `abra agents init` to generate AGENTS.md and CLAUDE.md instructions that point coding agents at the exact Abra scope.
 - Add `abra agents verify` to check repo instruction files, MCP readiness, required agent tools, and exact-scope discovery before using an AI coding agent.
 - Add `abra agents verify --files-only --strict` and run it in the release gate so agent instruction files cannot regress without a live MCP server.

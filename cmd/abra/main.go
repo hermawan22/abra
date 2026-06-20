@@ -177,6 +177,22 @@ func parseArgs(argv []string) cliArgs {
 	return args
 }
 
+func copyCLIArgs(args cliArgs) cliArgs {
+	out := cliArgs{
+		Command: args.Command,
+		Flags:   map[string]string{},
+		Bools:   map[string]bool{},
+		Rest:    append([]string(nil), args.Rest...),
+	}
+	for key, value := range args.Flags {
+		out.Flags[key] = value
+	}
+	for key, value := range args.Bools {
+		out.Bools[key] = value
+	}
+	return out
+}
+
 func upgrade(args cliArgs) error {
 	if _, err := exec.LookPath("curl"); err != nil {
 		return errors.New("missing required command: curl")
@@ -1835,6 +1851,7 @@ func scopeCommand(args cliArgs) error {
 			"scope": scope,
 			"path":  path,
 			"examples": map[string]string{
+				"bootstrap":       "abra agents bootstrap " + shellQuote(path) + " --agent codex --scope " + shellQuote(scope),
 				"mcp_install":     "abra mcp install-codex",
 				"agents_init":     "abra agents init " + shellQuote(path) + " --agent codex --scope " + shellQuote(scope),
 				"agents_verify":   "abra agents verify " + shellQuote(path) + " --scope " + shellQuote(scope),
@@ -1848,6 +1865,7 @@ func scopeCommand(args cliArgs) error {
 	}
 	fmt.Println("Scope: " + scope)
 	fmt.Println("Use this exact scope with Abra MCP and AI agents.")
+	fmt.Println("Bootstrap: abra agents bootstrap " + shellQuote(path) + " --agent codex --scope " + shellQuote(scope))
 	fmt.Println("MCP:    abra mcp install-codex")
 	fmt.Println("Agent:  abra agents init " + shellQuote(path) + " --agent codex --scope " + shellQuote(scope))
 	fmt.Println("Ingest: abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope))
@@ -1864,7 +1882,7 @@ func agentsCommand(ctx context.Context, args cliArgs) error {
 		action = strings.ToLower(strings.TrimSpace(args.Rest[0]))
 		args.Rest = args.Rest[1:]
 	}
-	if action != "init" && action != "verify" && action != "check" {
+	if action != "init" && action != "verify" && action != "check" && action != "bootstrap" && action != "ready" {
 		return fmt.Errorf("unknown agents command %q\n\n%s", action, commandUsage("agents"))
 	}
 	path := flag(args, "path", ".")
@@ -1879,42 +1897,15 @@ func agentsCommand(ctx context.Context, args cliArgs) error {
 	if action == "verify" || action == "check" {
 		return verifyAgentContext(ctx, args, abs, scope)
 	}
+	if action == "bootstrap" || action == "ready" {
+		return bootstrapAgentContext(ctx, args, abs, scope)
+	}
 	agent := flag(args, "agent", "agent")
 	force := boolFlag(args, "force")
 	dryRun := boolFlag(args, "dry-run")
-	files := []agentInstructionFile{
-		{
-			Path:    filepath.Join(abs, "AGENTS.md"),
-			Content: agentInstructions(scope, agent),
-		},
-		{
-			Path:    filepath.Join(abs, "CLAUDE.md"),
-			Content: "@AGENTS.md\n",
-		},
-	}
-	results := make([]map[string]any, 0, len(files))
-	for _, file := range files {
-		exists := fileExists(file.Path)
-		action := "created"
-		switch {
-		case dryRun && exists && !force:
-			action = "would_skip"
-		case dryRun:
-			action = "would_write"
-		case exists && !force:
-			action = "skipped"
-		default:
-			if err := os.WriteFile(file.Path, []byte(file.Content), 0o644); err != nil {
-				return err
-			}
-			if exists {
-				action = "updated"
-			}
-		}
-		results = append(results, map[string]any{
-			"path":   file.Path,
-			"action": action,
-		})
+	results, err := writeAgentInstructionFiles(abs, scope, agent, force, dryRun)
+	if err != nil {
+		return err
 	}
 	if boolFlag(args, "json") {
 		return printJSON(map[string]any{
@@ -1932,6 +1923,55 @@ func agentsCommand(ctx context.Context, args cliArgs) error {
 	fmt.Println("Ingest: abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope))
 	fmt.Println("Check:  abra agents verify " + shellQuote(path) + " --scope " + shellQuote(scope))
 	fmt.Println("Then:   tell your AI agent to read AGENTS.md or CLAUDE.md before changing code.")
+	return nil
+}
+
+func bootstrapAgentContext(ctx context.Context, args cliArgs, path, scope string) error {
+	if boolFlag(args, "json") {
+		return errors.New("agents bootstrap does not support --json yet")
+	}
+	agent := flag(args, "agent", "codex")
+	force := boolFlag(args, "force")
+	fmt.Println("Bootstrapping Abra agent context")
+	fmt.Println("scope: " + scope)
+	results, err := writeAgentInstructionFiles(path, scope, agent, force, false)
+	if err != nil {
+		return err
+	}
+	for _, result := range results {
+		fmt.Println(stringValue(result["action"], "") + ": " + stringValue(result["path"], ""))
+	}
+
+	ingestArgs := copyCLIArgs(args)
+	ingestArgs.Flags["path"] = path
+	ingestArgs.Flags["scope"] = scope
+	ingestArgs.Bools["code"] = true
+	delete(ingestArgs.Bools, "json")
+	ingestArgs.Rest = nil
+	fmt.Println("Ingesting repo with exact scope...")
+	if err := localPathIngest(ctx, ingestArgs); err != nil {
+		return err
+	}
+
+	fmt.Println("Verifying source-backed working memory...")
+	verifyArgs := copyCLIArgs(args)
+	delete(verifyArgs.Bools, "json")
+	if err := verifyAgentContext(ctx, verifyArgs, path, scope); err != nil {
+		return err
+	}
+
+	if boolFlag(args, "no-mcp") || boolFlag(args, "skip-mcp") {
+		fmt.Println("Codex MCP install skipped by flag.")
+	} else {
+		fmt.Println("Installing Abra MCP into Codex...")
+		mcpArgs := copyCLIArgs(args)
+		delete(mcpArgs.Bools, "json")
+		if err := installCodexMCP(ctx, mcpArgs); err != nil {
+			return err
+		}
+	}
+	fmt.Println("Ready prompt:")
+	fmt.Println(`Use Abra MCP first. Exact scope: ` + scope + `. Call discover_scopes with expected_scope="` + scope + `", then call working_memory_compose before answering or changing code.`)
 	return nil
 }
 
@@ -2169,6 +2209,44 @@ func checksOK(checks []map[string]any, strict bool) bool {
 type agentInstructionFile struct {
 	Path    string
 	Content string
+}
+
+func writeAgentInstructionFiles(abs, scope, agent string, force, dryRun bool) ([]map[string]any, error) {
+	files := []agentInstructionFile{
+		{
+			Path:    filepath.Join(abs, "AGENTS.md"),
+			Content: agentInstructions(scope, agent),
+		},
+		{
+			Path:    filepath.Join(abs, "CLAUDE.md"),
+			Content: "@AGENTS.md\n",
+		},
+	}
+	results := make([]map[string]any, 0, len(files))
+	for _, file := range files {
+		exists := fileExists(file.Path)
+		action := "created"
+		switch {
+		case dryRun && exists && !force:
+			action = "would_skip"
+		case dryRun:
+			action = "would_write"
+		case exists && !force:
+			action = "skipped"
+		default:
+			if err := os.WriteFile(file.Path, []byte(file.Content), 0o644); err != nil {
+				return nil, err
+			}
+			if exists {
+				action = "updated"
+			}
+		}
+		results = append(results, map[string]any{
+			"path":   file.Path,
+			"action": action,
+		})
+	}
+	return results, nil
 }
 
 func agentInstructions(scope, agent string) string {
@@ -3292,6 +3370,7 @@ is missing, ingest the project with the printed command and retry.
 `
 	case "agents", "agent":
 		return `Usage:
+  abra agents bootstrap [path] [--agent codex] [--force] [--no-mcp]
   abra agents init [path] [--agent codex] [--force] [--dry-run] [--json]
   abra agents verify [path] [--files-only] [--strict] [--json]
 
@@ -3299,6 +3378,11 @@ Writes repo-local AI agent instruction files that point every client at the
 same Abra scope. It creates AGENTS.md for agent-neutral instructions and
 CLAUDE.md importing AGENTS.md so Claude Code reads the same guidance without
 duplicating content. Existing files are skipped unless --force is set.
+
+` + "`abra agents bootstrap`" + ` is the one-command Codex-ready path: it writes
+agent instructions, ingests the repo with the exact scope and --code, verifies
+source-backed working memory, and installs the Abra MCP endpoint into Codex
+unless --no-mcp is set.
 
 ` + "`abra agents verify`" + ` checks AGENTS.md, CLAUDE.md, the MCP endpoint, required
 agent tools, discover_scopes for the exact project scope, and a lightweight

@@ -395,6 +395,100 @@ func TestAgentsVerifyChecksMCPAndScopeDiscovery(t *testing.T) {
 	}
 }
 
+func TestAgentsBootstrapIngestsAndVerifiesContext(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "demo project")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(root, "README.md"), "# Demo\n\nAgents should use Abra before changing code.\n")
+	wantScope := "repo:" + slug(filepath.Base(root))
+	ingestRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/ingest/documents":
+			ingestRequests++
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode ingest: %v", err)
+			}
+			if body["scope"] != wantScope {
+				t.Fatalf("ingest scope = %v, want %s", body["scope"], wantScope)
+			}
+			writeTestJSON(t, w, map[string]any{"document_id": "doc"})
+		case "/mcp":
+			var rpc map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&rpc); err != nil {
+				t.Fatalf("decode rpc: %v", err)
+			}
+			switch rpc["method"] {
+			case "tools/list":
+				writeTestJSON(t, w, map[string]any{
+					"jsonrpc": "2.0",
+					"id":      rpc["id"],
+					"result": map[string]any{"tools": []map[string]any{
+						{"name": "discover_scopes"},
+						{"name": "working_memory_compose"},
+					}},
+				})
+			case "tools/call":
+				params, _ := rpc["params"].(map[string]any)
+				var payload []byte
+				switch params["name"] {
+				case "discover_scopes":
+					payload, _ = json.Marshal(map[string]any{
+						"recommended_scope": wantScope,
+						"matches":           []map[string]any{{"scope": wantScope}},
+					})
+				case "working_memory_compose":
+					args, _ := params["arguments"].(map[string]any)
+					if args["diagnostic"] != true {
+						t.Fatalf("working_memory_compose diagnostic = %#v, want true", args["diagnostic"])
+					}
+					payload, _ = json.Marshal(map[string]any{
+						"stats": map[string]any{
+							"facts":                1,
+							"supporting_documents": 1,
+							"summaries":            1,
+							"graph_relations":      1,
+						},
+					})
+				default:
+					t.Fatalf("unexpected tool %v", params["name"])
+				}
+				writeTestJSON(t, w, map[string]any{
+					"jsonrpc": "2.0",
+					"id":      rpc["id"],
+					"result":  map[string]any{"content": []map[string]any{{"type": "text", "text": string(payload)}}},
+				})
+			default:
+				t.Fatalf("unexpected method %v", rpc["method"])
+			}
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	output := captureStdout(t, func() {
+		if err := run(context.Background(), []string{"agents", "bootstrap", root, "--base-url", server.URL, "--token", "test-token", "--no-mcp"}); err != nil {
+			t.Fatalf("agents bootstrap error = %v", err)
+		}
+	})
+	if ingestRequests == 0 {
+		t.Fatal("bootstrap did not ingest any documents")
+	}
+	for _, want := range []string{"Bootstrapping Abra agent context", wantScope, "Ingesting repo", "working_memory", "Codex MCP install skipped", "Ready prompt"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("bootstrap output missing %q:\n%s", want, output)
+		}
+	}
+	for _, file := range []string{"AGENTS.md", "CLAUDE.md"} {
+		if !fileExists(filepath.Join(root, file)) {
+			t.Fatalf("bootstrap did not create %s", file)
+		}
+	}
+}
+
 func TestAgentsVerifyFilesOnlyStrictSkipsMCP(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "demo project")
 	if err := os.MkdirAll(root, 0o755); err != nil {

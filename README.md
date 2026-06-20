@@ -103,14 +103,18 @@ abra models status
 abra models logs
 ```
 
-Generate repo-local agent instructions for Codex, Claude Code, and other MCP-capable coding agents:
+Make the current repo ready for Codex with source-backed Abra context:
 
 ```sh
-abra agents init --agent codex
+abra agents bootstrap --agent codex
 ```
 
-This writes `AGENTS.md` with the exact Abra scope and a `CLAUDE.md` import so Claude Code reads the same instructions without duplicating them.
-After ingesting the project with the exact scope printed by `abra scope`, `abra agents verify` checks the instruction files, MCP endpoint, required agent tools, `discover_scopes`, and a lightweight `working_memory_compose` packet for that scope, so a user can diagnose "Abra has no context" before asking an AI agent to work.
+This writes `AGENTS.md` with the exact Abra scope, adds a `CLAUDE.md` import so
+Claude Code reads the same instructions, ingests the repo with `--code`,
+verifies source-backed `working_memory_compose` for that scope, and installs
+the Abra MCP endpoint into Codex without writing the token literally to disk.
+Use `abra agents init` and `abra agents verify` separately when you want the
+manual steps.
 
 Connect a custom compatible embedding provider during setup without editing env files:
 
@@ -175,8 +179,13 @@ Fully quit and reopen Codex Desktop after installing or changing the token env.
 Opening a new thread is enough only when the env var was already available to
 the Codex process. `abra mcp install-codex` sets the macOS launch environment
 when available; terminal-launched Codex still needs `ABRA_API_TOKEN` exported in
-the launching shell. To avoid scope mismatches, run this in each project and
-pass the printed scope to the agent:
+the launching shell. To avoid scope mismatches, run this in each project:
+
+```sh
+abra agents bootstrap --agent codex
+```
+
+The manual recovery path is:
 
 ```sh
 abra scope

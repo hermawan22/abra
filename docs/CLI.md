@@ -142,8 +142,15 @@ Fully quit and reopen Codex Desktop after installing or changing the token env.
 Opening a new thread is enough only when the env var was already available to
 the Codex process. `abra mcp install-codex` sets the macOS launch environment
 when available; terminal-launched Codex still needs `ABRA_API_TOKEN` exported in
-the launching shell. In each project, ask Abra for the exact scope before
-prompting an AI agent:
+the launching shell. In each project, the one-command Codex-ready path is:
+
+```sh
+abra agents bootstrap --agent codex
+```
+
+This writes agent instructions, ingests the repo with the exact scope, verifies
+source-backed working memory, and installs the Abra MCP endpoint into Codex.
+The manual recovery path is:
 
 ```sh
 abra scope
@@ -157,11 +164,11 @@ working_memory_compose with that exact scope before answering or changing code.
 If discover_scopes does not show repo:<project>, run abra scope and ingest the
 project with that exact scope.`
 
-`abra scope` also prints the exact `abra agents init`, `abra ingest`, and
-`abra agents verify` commands for the current project, in the order they should
-be run. Use those printed commands when Codex or another AI client says Abra has
-no context; the usual cause is that the agent queried a different scope than the
-one used during ingestion.
+`abra scope` also prints the exact `abra agents bootstrap`, `abra agents init`,
+`abra ingest`, and `abra agents verify` commands for the current project. Use
+those printed commands when Codex or another AI client says Abra has no context;
+the usual cause is that the agent queried a different scope than the one used
+during ingestion.
 
 Stop the local stack:
 
@@ -228,6 +235,7 @@ From a source checkout, run the CLI as `go run ./cmd/abra <command>`. In a relea
 | install CLI from checkout | `./scripts/install.sh` |
 | install CLI from published release | `curl -fsSL https://github.com/hermawan22/abra/releases/latest/download/install.sh \| sh` |
 | guided first-run setup | `abra setup` |
+| make Codex ready for the current repo | `abra agents bootstrap --agent codex` |
 | generate agent instruction files | `abra agents init --agent codex` |
 | verify agent context setup | `abra agents verify` |
 | verify agent instruction files in CI | `abra agents verify --files-only --strict` |
