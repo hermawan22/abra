@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const ignoredPathPatterns = [
   /^\.git\//,
@@ -120,7 +122,7 @@ function workflowActionRefFindings(files) {
     const lines = content.split(/\r?\n/);
     for (let index = 0; index < lines.length; index += 1) {
       const line = lines[index];
-      const match = line.match(/^\s*uses:\s*['"]?([^'"\s#]+)['"]?/);
+      const match = line.match(/^\s*(?:-\s*)?uses:\s*['"]?([^'"\s#]+)['"]?/);
       if (!match) {
         continue;
       }
@@ -150,6 +152,76 @@ function workflowActionRefFindings(files) {
     }
   }
   return findings;
+}
+
+function assertSelfTest(condition, message) {
+  if (!condition) {
+    throw new Error(message);
+  }
+}
+
+function runSelfTest() {
+  const originalCwd = process.cwd();
+  const root = mkdtempSync(join(tmpdir(), "abra-oss-hygiene-test-"));
+  try {
+    process.chdir(root);
+    mkdirSync(".github/workflows", { recursive: true });
+    writeFileSync(
+      ".github/workflows/bad.yml",
+      [
+        "jobs:",
+        "  bad:",
+        "    steps:",
+        "      - uses: actions/checkout@v4",
+        "      - uses: docker/login-action@main",
+        "      - uses: owner/action-without-ref",
+        ""
+      ].join("\n")
+    );
+    writeFileSync(
+      ".github/workflows/good.yml",
+      [
+        "jobs:",
+        "  good:",
+        "    steps:",
+        "      - uses: ./github/actions/local",
+        "      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5",
+        "      - uses: 'actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020'",
+        ""
+      ].join("\n")
+    );
+
+    const findings = workflowActionRefFindings([
+      ".github/workflows/bad.yml",
+      ".github/workflows/good.yml"
+    ]);
+    assertSelfTest(findings.length === 3, `expected 3 workflow ref findings, got ${findings.length}`);
+    assertSelfTest(
+      findings.every((finding) => finding.file === ".github/workflows/bad.yml"),
+      "expected only bad workflow findings"
+    );
+    assertSelfTest(
+      findings.some((finding) => finding.message.includes("actions/checkout@v4")),
+      "expected mutable major tag finding"
+    );
+    assertSelfTest(
+      findings.some((finding) => finding.message.includes("docker/login-action@main")),
+      "expected mutable branch finding"
+    );
+    assertSelfTest(
+      findings.some((finding) => finding.message.includes("owner/action-without-ref")),
+      "expected missing ref finding"
+    );
+  } finally {
+    process.chdir(originalCwd);
+    rmSync(root, { recursive: true, force: true });
+  }
+  console.log("OSS hygiene self-test passed.");
+}
+
+if (process.argv.includes("--self-test")) {
+  runSelfTest();
+  process.exit(0);
 }
 
 const files = trackedFiles();

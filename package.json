@@ -45,6 +45,7 @@
     "release:gate": "node scripts/abra-release-gate.mjs",
     "release:gate:dry-run": "ABRA_RELEASE_DRY_RUN=1 node scripts/abra-release-gate.mjs",
     "test:installer": "node scripts/abra-install-test.mjs",
-    "test": "npm run check:scripts && npm run test:installer && npm run check:oss"
+    "test:oss-hygiene": "node scripts/abra-oss-hygiene.mjs --self-test",
+    "test": "npm run check:scripts && npm run test:installer && npm run test:oss-hygiene && npm run check:oss"
   }
 }
