@@ -13,6 +13,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Add deep readiness checks through `/readyz?deep=1` and have the CLI use them for local embedding setups.
 - Add structured deep-readiness embedding diagnostics for timeout vs provider error, including check and provider timeout values.
 - Add black-box installer fail-closed tests for checksum, attestation, archive, platform, tool, and source-fallback failures.
+- Add fake-Docker lifecycle tests for the built-in local Qwen runner create, start, recreate, status, logs, and shutdown paths.
 - Add configurable API read timeout and request-body limits for large local ingestion workloads.
 - Add optional MCP `ingest_documents` partial batch results with `continue_on_error` for connector overlays that need per-document status.
 - Add retrieval reason explainability to recall, working-memory composition, context windows, and governed think results.
