@@ -17,7 +17,7 @@ Install the CLI from this checkout:
 Install from GitHub releases:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/hermawan22/abra/main/scripts/install.sh | sh
+curl -fsSL https://github.com/hermawan22/abra/releases/latest/download/install.sh | sh
 ```
 
 Release downloads are verified against `SHA256SUMS` before the binary is installed. If GitHub CLI is available, the installer also verifies GitHub Artifact Attestations automatically. Set `ABRA_VERIFY_ATTESTATION=1` to require provenance verification, `ABRA_VERSION=vX.Y.Z` to install a specific release, or `ABRA_ALLOW_SOURCE_BUILD=1` to intentionally build from the release source tag when no platform asset exists.
@@ -64,7 +64,7 @@ abra up
 abra status
 ```
 
-For local-runner troubleshooting, use `abra models status` and `abra models up` directly. These commands manage only the built-in local Qwen runner; when `EMBEDDING_PROVIDER=compatible`, they report the local runner as inactive unless `--force` is passed.
+For local-runner troubleshooting, use `abra models status` and `abra models up` directly. These commands manage only the built-in local Qwen runner, publish it on `127.0.0.1` by default, and recreate the container when runner-relevant model, dimension, port, cache, publish, image, pooling, or context settings change. When `EMBEDDING_PROVIDER=compatible`, they report the local runner as inactive unless `--force` is passed.
 
 Use these defaults for the remaining commands:
 
@@ -226,7 +226,7 @@ From a source checkout, run the CLI as `go run ./cmd/abra <command>`. In a relea
 | Task | Command |
 | --- | --- |
 | install CLI from checkout | `./scripts/install.sh` |
-| install CLI from published release | `curl -fsSL https://raw.githubusercontent.com/hermawan22/abra/main/scripts/install.sh \| sh` |
+| install CLI from published release | `curl -fsSL https://github.com/hermawan22/abra/releases/latest/download/install.sh \| sh` |
 | guided first-run setup | `abra setup` |
 | generate agent instruction files | `abra agents init --agent codex` |
 | verify agent context setup | `abra agents verify` |
@@ -234,6 +234,7 @@ From a source checkout, run the CLI as `go run ./cmd/abra <command>`. In a relea
 | start local Qwen embedding runner | `abra models up` |
 | check local embedding runner | `abra models status` |
 | inspect local embedding runner logs | `abra models logs` |
+| stop local Qwen embedding runner | `abra models down` |
 | start local stack and default local embedding runner | `abra up` |
 | init env only | `abra init` |
 | compatibility setup alias | `abra install` |

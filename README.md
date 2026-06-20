@@ -50,15 +50,15 @@ The fastest path from this checkout puts the `abra` binary on your machine:
 Install from GitHub releases:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/hermawan22/abra/main/scripts/install.sh | sh
+curl -fsSL https://github.com/hermawan22/abra/releases/latest/download/install.sh | sh
 ```
 
 For a hardened install, pin the release and require GitHub Artifact
 Attestation verification:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/hermawan22/abra/main/scripts/install.sh \
-  | ABRA_VERSION=v0.3.7 ABRA_VERIFY_ATTESTATION=1 sh
+curl -fsSL https://github.com/hermawan22/abra/releases/download/vX.Y.Z/install.sh \
+  | ABRA_VERSION=vX.Y.Z ABRA_VERIFY_ATTESTATION=1 sh
 ```
 
 The installer downloads the matching platform release archive, verifies it
@@ -720,7 +720,7 @@ Recall responses include `retrieval_mode`, plus `text_score` and `vector_score` 
 
 The default embedding provider is `local`, meaning self-hosted Qwen-compatible neural retrieval. `abra models up` starts Qwen/Qwen3-Embedding-0.6B-GGUF through a local llama.cpp OpenAI-compatible embedding runner. Local embeddings default to `EMBEDDING_TIMEOUT=10m` because CPU-backed model calls can take longer than normal API requests on large files, and local neural providers default to `ABRA_AI_PROVIDER_CONCURRENCY=1` so ingest, recall, readiness checks, and reranking do not overwhelm a single local model runner. Compatible remote providers default to `ABRA_AI_PROVIDER_CONCURRENCY=4`; raise it only after watching provider latency, timeout rate, and Abra p95 under expected agent and ingestion traffic. Qwen/Qwen3-Reranker-0.6B remains configurable for deployments that expose a compatible rerank endpoint. Custom providers replace the local defaults by setting `EMBEDDING_PROVIDER=compatible`, `EMBEDDING_BASE_URL`, `EMBEDDING_MODEL`, and `EMBEDDING_DIMENSIONS`; set `RERANKER_PROVIDER` only when the custom provider also exposes a rerank endpoint.
 
-`abra models status/up/logs/down` manages only the built-in local Qwen runner. When `EMBEDDING_PROVIDER=compatible`, those commands report the local runner as inactive unless `--force` is passed, because Abra will use the configured custom endpoint instead. For non-interactive OpenAI setup, pass the key with `--api-key-stdin` or set `OPENAI_API_KEY`.
+`abra models status/up/logs/down` manages only the built-in local Qwen runner. The runner publishes on `127.0.0.1` by default and is recreated when runner-relevant model, dimension, port, cache, publish, image, pooling, or context settings change, so local config changes do not silently reuse a stale container. When `EMBEDDING_PROVIDER=compatible`, those commands report the local runner as inactive unless `--force` is passed, because Abra will use the configured custom endpoint instead. For non-interactive OpenAI setup, pass the key with `--api-key-stdin` or set `OPENAI_API_KEY`.
 
 Forgetting a claim marks it `deprecated`. Source re-ingestion will not reactivate a manually forgotten claim; only claims and relations temporarily deprecated by source refresh can be reactivated.
 

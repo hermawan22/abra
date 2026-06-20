@@ -3208,6 +3208,7 @@ Operational flags:
   --container      Docker container name
   --base-url       local OpenAI-compatible base URL
   --port           host port for the embedding server, default 8080
+  --publish-addr   host address to publish on, default 127.0.0.1
 `
 	case "ui", "dashboard":
 		return `Usage:

@@ -1698,6 +1698,12 @@ func TestEmbeddingRunnerUsesLocalQwenDefaults(t *testing.T) {
 	if cfg.Port != "8080" {
 		t.Fatalf("port = %q", cfg.Port)
 	}
+	if cfg.Publish != "127.0.0.1" {
+		t.Fatalf("publish = %q", cfg.Publish)
+	}
+	if got := localRunnerPublish(cfg); got != "127.0.0.1:8080" {
+		t.Fatalf("publish binding = %q", got)
+	}
 	if cfg.Dims != 1024 {
 		t.Fatalf("dims = %d", cfg.Dims)
 	}
@@ -1733,6 +1739,39 @@ func TestEmbeddingRunnerIgnoresCompatibleProviderConfig(t *testing.T) {
 	}
 	if cfg.Dims != 1024 {
 		t.Fatalf("dims = %d", cfg.Dims)
+	}
+}
+
+func TestLocalRunnerConfigHashTracksRunnerFields(t *testing.T) {
+	cfg := embeddingRunnerConfig{
+		Container: defaultEmbeddingContainer,
+		Image:     defaultTEIImage(),
+		ModelID:   defaultEmbeddingModelID,
+		Model:     defaultServedModelName,
+		BaseURL:   "http://127.0.0.1:8080/v1",
+		Publish:   defaultEmbeddingPublish,
+		Port:      "8080",
+		CacheDir:  "/tmp/abra-model-cache",
+		Dims:      1024,
+	}
+	base := localRunnerConfigHash(cfg)
+	if base == "" {
+		t.Fatal("empty config hash")
+	}
+	changedDims := cfg
+	changedDims.Dims = 2048
+	if localRunnerConfigHash(changedDims) == base {
+		t.Fatal("hash did not change after dimensions changed")
+	}
+	changedModel := cfg
+	changedModel.ModelID = "example/model:Q4_K_M"
+	if localRunnerConfigHash(changedModel) == base {
+		t.Fatal("hash did not change after model id changed")
+	}
+	changedPublish := cfg
+	changedPublish.Publish = ""
+	if localRunnerConfigHash(changedPublish) == base {
+		t.Fatal("hash did not change after publish address changed")
 	}
 }
 

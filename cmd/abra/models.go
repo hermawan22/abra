@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +23,10 @@ const (
 	defaultEmbeddingModelID   = "Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0"
 	defaultServedModelName    = defaultEmbeddingModelID
 	defaultEmbeddingBaseURL   = "http://host.docker.internal:8080/v1"
+	defaultEmbeddingPublish   = "127.0.0.1"
+	localRunnerHashLabel      = "io.abra.local-embedding.config-hash"
+	localRunnerModelLabel     = "io.abra.local-embedding.model-id"
+	localRunnerDimsLabel      = "io.abra.local-embedding.dimensions"
 )
 
 type embeddingRunnerConfig struct {
@@ -30,6 +35,7 @@ type embeddingRunnerConfig struct {
 	ModelID   string
 	Model     string
 	BaseURL   string
+	Publish   string
 	Port      string
 	CacheDir  string
 	Dims      int
@@ -80,8 +86,8 @@ func modelsUp(ctx context.Context, args cliArgs) error {
 			}
 			exists = false
 		}
-		if exists && !strings.Contains(dockerContainerCommand(cfg.Container), "--ctx-size 32768") {
-			fmt.Println("Replacing local embedding container config: ctx-size 32768")
+		if exists && localRunnerNeedsRecreate(cfg) {
+			fmt.Println("Replacing local embedding container config")
 			if _, err := commandOutput("docker", "rm", "-f", cfg.Container); err != nil {
 				return err
 			}
@@ -95,12 +101,15 @@ func modelsUp(ctx context.Context, args cliArgs) error {
 		fmt.Println("Starting local embedding model:")
 		fmt.Println("  model: " + cfg.ModelID)
 		fmt.Println("  image: " + cfg.Image)
-		fmt.Println("  port:  " + cfg.Port)
+		fmt.Println("  bind:  " + localRunnerPublish(cfg))
 		step := []string{
 			"run", "-d",
 			"--name", cfg.Container,
 			"--pull", "always",
-			"-p", cfg.Port + ":8080",
+			"--label", localRunnerHashLabel + "=" + localRunnerConfigHash(cfg),
+			"--label", localRunnerModelLabel + "=" + cfg.ModelID,
+			"--label", localRunnerDimsLabel + "=" + strconv.Itoa(cfg.Dims),
+			"-p", localRunnerPublish(cfg) + ":8080",
 			"-v", cfg.CacheDir + ":/root/.cache/huggingface",
 			cfg.Image,
 			"-hf", cfg.ModelID,
@@ -147,8 +156,15 @@ func modelsStatus(ctx context.Context, args cliArgs) error {
 		"model_id":  cfg.ModelID,
 		"model":     cfg.Model,
 		"base_url":  cfg.BaseURL,
+		"publish":   localRunnerPublish(cfg),
 		"port":      cfg.Port,
+		"image":     cfg.Image,
 		"ready":     err == nil,
+	}
+	if dockerContainerExists(cfg.Container) {
+		status["expected_config_hash"] = localRunnerConfigHash(cfg)
+		status["container_config_hash"] = dockerContainerLabel(cfg.Container, localRunnerHashLabel)
+		status["config_matches"] = !localRunnerNeedsRecreate(cfg)
 	}
 	if err != nil {
 		status["error"] = err.Error()
@@ -166,6 +182,7 @@ func modelsStatus(ctx context.Context, args cliArgs) error {
 	}
 	fmt.Println("Local embeddings: ready")
 	fmt.Println("endpoint: " + cfg.BaseURL + "/embeddings")
+	fmt.Println("publish:  " + localRunnerPublish(cfg))
 	fmt.Println("model:    " + cfg.Model)
 	return nil
 }
@@ -254,6 +271,7 @@ func embeddingRunner(args cliArgs) embeddingRunnerConfig {
 		ModelID:   firstNonEmpty(flag(args, "model-id", ""), defaultEmbeddingModelID),
 		Model:     model,
 		BaseURL:   strings.TrimRight(hostBaseURL, "/"),
+		Publish:   firstNonEmpty(flag(args, "publish-addr", ""), values["ABRA_LOCAL_EMBEDDING_PUBLISH_ADDR"], defaultEmbeddingPublish),
 		Port:      port,
 		CacheDir:  firstNonEmpty(flag(args, "cache-dir", ""), filepath.Join(userConfigDir(), "models", "llama.cpp")),
 		Dims:      dims,
@@ -277,12 +295,47 @@ func dockerContainerImage(name string) string {
 	return strings.TrimSpace(out)
 }
 
-func dockerContainerCommand(name string) string {
-	out, err := commandOutput("docker", "container", "inspect", "--format", "{{json .Args}}", name)
+func dockerContainerLabel(name, label string) string {
+	out, err := commandOutput("docker", "container", "inspect", "--format", "{{ index .Config.Labels \""+label+"\" }}", name)
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(strings.ReplaceAll(out, `","`, " "))
+	value := strings.TrimSpace(out)
+	if value == "<no value>" {
+		return ""
+	}
+	return value
+}
+
+func localRunnerNeedsRecreate(cfg embeddingRunnerConfig) bool {
+	hash := dockerContainerLabel(cfg.Container, localRunnerHashLabel)
+	if hash == "" {
+		return true
+	}
+	return hash != localRunnerConfigHash(cfg)
+}
+
+func localRunnerConfigHash(cfg embeddingRunnerConfig) string {
+	parts := []string{
+		"image=" + cfg.Image,
+		"model_id=" + cfg.ModelID,
+		"model=" + cfg.Model,
+		"dims=" + strconv.Itoa(cfg.Dims),
+		"publish=" + cfg.Publish,
+		"port=" + cfg.Port,
+		"cache_dir=" + cfg.CacheDir,
+		"pooling=last",
+		"ctx_size=32768",
+	}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\n")))
+	return fmt.Sprintf("%x", sum[:])
+}
+
+func localRunnerPublish(cfg embeddingRunnerConfig) string {
+	if strings.TrimSpace(cfg.Publish) == "" {
+		return cfg.Port
+	}
+	return strings.TrimSpace(cfg.Publish) + ":" + cfg.Port
 }
 
 func syncLocalRunnerEnv(args cliArgs) error {
