@@ -8,7 +8,8 @@ Local embedding calls default to a 10-minute provider timeout because CPU-backed
 
 ## 3-Minute Local Flow
 
-Install the CLI from this checkout:
+Run the installer script from this checkout to install the latest or pinned
+release binary:
 
 ```sh
 ./scripts/install.sh
@@ -64,7 +65,7 @@ abra up
 abra status
 ```
 
-For local-runner troubleshooting, use `abra models status` and `abra models up` directly. These commands manage only the built-in local Qwen runner, publish it on `127.0.0.1` by default, and recreate the container when runner-relevant model, dimension, port, cache, publish, image, pooling, or context settings change. When `EMBEDDING_PROVIDER=compatible`, they report the local runner as inactive unless `--force` is passed.
+For local-runner troubleshooting, use `abra models status` and `abra models up` directly. These commands manage only the built-in local Qwen runner, publish it on `127.0.0.1` by default, use Docker pull policy `missing`, and recreate the container when runner-relevant model, dimension, port, cache, publish, image, pull, pooling, or context settings change. Production local embeddings require `ABRA_LOCAL_EMBEDDING_IMAGE` to be an operator-verified `@sha256` image reference; otherwise use `EMBEDDING_PROVIDER=compatible`. When `EMBEDDING_PROVIDER=compatible`, model commands report the local runner as inactive unless `--force` is passed.
 
 Use these defaults for the remaining commands:
 
@@ -170,10 +171,16 @@ those printed commands when Codex or another AI client says Abra has no context;
 the usual cause is that the agent queried a different scope than the one used
 during ingestion.
 
-Stop the local stack:
+Stop the local stack and default local embedding runner:
 
 ```sh
 abra down
+```
+
+Keep the local embedding runner warm when stopping only the API stack:
+
+```sh
+abra down --keep-models
 ```
 
 Reset demo data:

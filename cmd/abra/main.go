@@ -366,6 +366,9 @@ func configShow(args cliArgs) error {
 		"reranker_base_url":    values["RERANKER_BASE_URL"],
 		"reranker_api_key":     maskSecret(values["RERANKER_API_KEY"]),
 		"reranker_model":       values["RERANKER_MODEL"],
+		"local_runner_image":   values["ABRA_LOCAL_EMBEDDING_IMAGE"],
+		"local_runner_pull":    firstNonEmpty(values["ABRA_LOCAL_EMBEDDING_PULL_POLICY"], "missing"),
+		"local_runner_timeout": firstNonEmpty(values["ABRA_LOCAL_EMBEDDING_READINESS_TIMEOUT"], "10s"),
 		"redaction_enabled":    firstNonEmpty(values["REDACT_PII"], "true"),
 	}
 	if boolFlag(args, "json") {
@@ -393,6 +396,13 @@ func configShow(args cliArgs) error {
 		fmt.Println("rerank_url: " + stringValue(view["reranker_base_url"], ""))
 		fmt.Println("rerank_model: " + stringValue(view["reranker_model"], ""))
 		fmt.Println("rerank_key:   " + stringValue(view["reranker_api_key"], ""))
+	}
+	if stringValue(view["embedding_provider"], "") == "local" {
+		if image := stringValue(view["local_runner_image"], ""); image != "" {
+			fmt.Println("local_image: " + image)
+		}
+		fmt.Println("local_pull:  " + stringValue(view["local_runner_pull"], "missing"))
+		fmt.Println("local_ready_timeout: " + stringValue(view["local_runner_timeout"], "10s"))
 	}
 	return nil
 }
@@ -450,6 +460,12 @@ func configModelLocalNeural(args cliArgs, label string) error {
 		"RERANKER_API_KEY":                     apiKey,
 		"RERANKER_MODEL":                       flag(args, "reranker-model", ""),
 		"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION": "false",
+		"ABRA_LOCAL_EMBEDDING_IMAGE":           flag(args, "runner-image", ""),
+		"ABRA_LOCAL_EMBEDDING_PULL_POLICY":     localRunnerPullPolicy(flag(args, "pull-policy", "missing")),
+		"ABRA_LOCAL_EMBEDDING_READINESS_TIMEOUT": firstNonEmpty(
+			flag(args, "readiness-timeout", ""),
+			"10s",
+		),
 	}); err != nil {
 		return err
 	}
@@ -475,18 +491,21 @@ func configModelCompatible(args cliArgs, label string) error {
 	}
 	baseURL = containerReachableBaseURL(strings.TrimSpace(baseURL))
 	if err := updateEnvValues(args, map[string]string{
-		"EMBEDDING_PROVIDER":                   "compatible",
-		"EMBEDDING_BASE_URL":                   baseURL,
-		"EMBEDDING_API_KEY":                    apiKey,
-		"EMBEDDING_MODEL":                      model,
-		"EMBEDDING_DIMENSIONS":                 flag(args, "dimensions", "1536"),
-		"EMBEDDING_TIMEOUT":                    flag(args, "embedding-timeout", "30s"),
-		"ABRA_AI_PROVIDER_CONCURRENCY":         flag(args, "provider-concurrency", "4"),
-		"RERANKER_PROVIDER":                    "",
-		"RERANKER_BASE_URL":                    "",
-		"RERANKER_API_KEY":                     "",
-		"RERANKER_MODEL":                       "",
-		"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION": "false",
+		"EMBEDDING_PROVIDER":                     "compatible",
+		"EMBEDDING_BASE_URL":                     baseURL,
+		"EMBEDDING_API_KEY":                      apiKey,
+		"EMBEDDING_MODEL":                        model,
+		"EMBEDDING_DIMENSIONS":                   flag(args, "dimensions", "1536"),
+		"EMBEDDING_TIMEOUT":                      flag(args, "embedding-timeout", "30s"),
+		"ABRA_AI_PROVIDER_CONCURRENCY":           flag(args, "provider-concurrency", "4"),
+		"RERANKER_PROVIDER":                      "",
+		"RERANKER_BASE_URL":                      "",
+		"RERANKER_API_KEY":                       "",
+		"RERANKER_MODEL":                         "",
+		"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION":   "false",
+		"ABRA_LOCAL_EMBEDDING_IMAGE":             "",
+		"ABRA_LOCAL_EMBEDDING_PULL_POLICY":       "missing",
+		"ABRA_LOCAL_EMBEDDING_READINESS_TIMEOUT": "10s",
 	}); err != nil {
 		return err
 	}
@@ -528,6 +547,10 @@ func updateEnvValues(args cliArgs, updates map[string]string) error {
 		"RERANKER_API_KEY",
 		"RERANKER_MODEL",
 		"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION",
+		"ABRA_LOCAL_EMBEDDING_IMAGE",
+		"ABRA_LOCAL_EMBEDDING_PULL_POLICY",
+		"ABRA_LOCAL_EMBEDDING_READINESS_TIMEOUT",
+		"ABRA_LOCAL_EMBEDDING_PUBLISH_ADDR",
 		"WORKER_INTERVAL",
 		"WORKER_MAX_SOURCES_PER_RUN",
 		"WORKER_CONCURRENCY",
@@ -683,7 +706,31 @@ func down(args cliArgs) error {
 	if boolFlag(args, "reset") {
 		step = append(step, "--volumes")
 	}
-	return runCommandIn(projectDir, "docker", step...)
+	if err := runCommandIn(projectDir, "docker", step...); err != nil {
+		return err
+	}
+	if shouldStopLocalModelsForDown(args) {
+		modelArgs := copyCLIArgs(args)
+		if boolFlag(args, "models") || boolFlag(args, "all") {
+			modelArgs.Bools["force"] = true
+		}
+		return modelsDown(modelArgs)
+	}
+	return nil
+}
+
+func shouldStopLocalModelsForDown(args cliArgs) bool {
+	if boolFlag(args, "keep-models") {
+		return false
+	}
+	if boolFlag(args, "models") || boolFlag(args, "all") {
+		return true
+	}
+	values, err := readEnvValues(envPath(args))
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(values["EMBEDDING_PROVIDER"]) == "local"
 }
 
 func status(ctx context.Context, args cliArgs) error {
@@ -3181,9 +3228,10 @@ Usage:
   abra config model local
   abra config model openai --api-key-stdin
   abra config model compatible --base-url <url> --model <model> [--api-key-stdin]
+  abra agents bootstrap
   abra agents init
   abra agents verify
-  abra down [--reset]
+  abra down [--reset] [--keep-models]
   abra status
   abra doctor
   abra seed [--scope repo:demo]
@@ -3212,11 +3260,8 @@ Common flags:
 
 First run:
   abra setup
-  abra scope
-  abra ingest . --code --scope <scope-from-abra-scope>
-  abra agents verify . --scope <scope-from-abra-scope>
+  abra agents bootstrap --agent codex
   abra think "What should I know before changing this project?" --scope <scope-from-abra-scope>
-  abra mcp install-codex
 
 Abra is CLI + MCP only. No browser UI is shipped.
 `
@@ -3257,7 +3302,7 @@ Source ingestion flags:
 		return `Usage:
   abra config show [--json]
   abra config path
-  abra config model local [--base-url http://host.docker.internal:8080/v1] [--reranker-base-url http://host.docker.internal:8081]
+  abra config model local [--base-url http://host.docker.internal:8080/v1] [--runner-image image@sha256:...] [--pull-policy missing] [--readiness-timeout 10s]
   abra config model openai --api-key-stdin
   abra config model compatible --base-url <url> --model <model> [--api-key-stdin] [--dimensions 1536]
 
@@ -3268,7 +3313,7 @@ After changing embedding providers, re-ingest important sources for reliable vec
 `
 	case "models", "model":
 		return `Usage:
-  abra models up [--recreate] [--port 8080] [--model-id Qwen/Qwen3-Embedding-0.6B-GGUF] [--model Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0]
+  abra models up [--recreate] [--port 8080] [--pull-policy missing] [--model-id Qwen/Qwen3-Embedding-0.6B-GGUF] [--model Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0]
   abra models status [--json]
   abra models logs
   abra models down
@@ -3281,7 +3326,9 @@ Operational flags:
   --model-id       Hugging Face GGUF repository, default Qwen/Qwen3-Embedding-0.6B-GGUF
   --model          served model name, default Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0
   --dimensions     embedding dimensions, default 1024
-  --image          llama.cpp server image
+  --image          llama.cpp server image; use a digest-pinned image in production
+  --pull-policy    Docker image pull policy: missing, always, or never
+  --readiness-timeout timeout for one readiness request, default 10s
   --cache-dir      host model cache directory
   --container      Docker container name
   --base-url       local OpenAI-compatible base URL
@@ -3503,6 +3550,9 @@ RERANKER_PROVIDER=
 RERANKER_BASE_URL=
 RERANKER_MODEL=
 ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=false
+ABRA_LOCAL_EMBEDDING_IMAGE=
+ABRA_LOCAL_EMBEDDING_PULL_POLICY=missing
+ABRA_LOCAL_EMBEDDING_READINESS_TIMEOUT=10s
 REDACT_PII=true
 RATE_LIMIT_MAX=1000
 RATE_LIMIT_WINDOW=1 minute
@@ -3530,6 +3580,9 @@ RERANKER_BASE_URL=
 RERANKER_API_KEY=
 RERANKER_MODEL=
 ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=false
+ABRA_LOCAL_EMBEDDING_IMAGE=
+ABRA_LOCAL_EMBEDDING_PULL_POLICY=missing
+ABRA_LOCAL_EMBEDDING_READINESS_TIMEOUT=10s
 REDACT_PII=true
 RATE_LIMIT_MAX=120
 RATE_LIMIT_WINDOW=1 minute

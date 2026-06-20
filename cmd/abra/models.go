@@ -30,15 +30,17 @@ const (
 )
 
 type embeddingRunnerConfig struct {
-	Container string
-	Image     string
-	ModelID   string
-	Model     string
-	BaseURL   string
-	Publish   string
-	Port      string
-	CacheDir  string
-	Dims      int
+	Container        string
+	Image            string
+	PullPolicy       string
+	ModelID          string
+	Model            string
+	BaseURL          string
+	Publish          string
+	Port             string
+	CacheDir         string
+	Dims             int
+	ReadinessTimeout time.Duration
 }
 
 func models(ctx context.Context, args cliArgs) error {
@@ -70,6 +72,9 @@ func modelsUp(ctx context.Context, args cliArgs) error {
 		return err
 	}
 	cfg = embeddingRunner(args)
+	if err := validateLocalRunnerImagePolicy(args, cfg); err != nil {
+		return err
+	}
 	if _, err := execLookPath("docker"); err != nil {
 		return errors.New("missing required command: docker")
 	}
@@ -101,11 +106,12 @@ func modelsUp(ctx context.Context, args cliArgs) error {
 		fmt.Println("Starting local embedding model:")
 		fmt.Println("  model: " + cfg.ModelID)
 		fmt.Println("  image: " + cfg.Image)
+		fmt.Println("  pull:  " + cfg.PullPolicy)
 		fmt.Println("  bind:  " + localRunnerPublish(cfg))
 		step := []string{
 			"run", "-d",
 			"--name", cfg.Container,
-			"--pull", "always",
+			"--pull", cfg.PullPolicy,
 			"--label", localRunnerHashLabel + "=" + localRunnerConfigHash(cfg),
 			"--label", localRunnerModelLabel + "=" + cfg.ModelID,
 			"--label", localRunnerDimsLabel + "=" + strconv.Itoa(cfg.Dims),
@@ -152,14 +158,16 @@ func modelsStatus(ctx context.Context, args cliArgs) error {
 	cfg := embeddingRunner(args)
 	err := checkEmbeddingReady(ctx, cfg)
 	status := map[string]any{
-		"container": cfg.Container,
-		"model_id":  cfg.ModelID,
-		"model":     cfg.Model,
-		"base_url":  cfg.BaseURL,
-		"publish":   localRunnerPublish(cfg),
-		"port":      cfg.Port,
-		"image":     cfg.Image,
-		"ready":     err == nil,
+		"container":         cfg.Container,
+		"model_id":          cfg.ModelID,
+		"model":             cfg.Model,
+		"base_url":          cfg.BaseURL,
+		"publish":           localRunnerPublish(cfg),
+		"port":              cfg.Port,
+		"image":             cfg.Image,
+		"pull_policy":       cfg.PullPolicy,
+		"readiness_timeout": cfg.ReadinessTimeout.String(),
+		"ready":             err == nil,
 	}
 	if dockerContainerExists(cfg.Container) {
 		status["expected_config_hash"] = localRunnerConfigHash(cfg)
@@ -177,6 +185,7 @@ func modelsStatus(ctx context.Context, args cliArgs) error {
 		fmt.Println("Local embeddings: not ready")
 		fmt.Println("endpoint: " + cfg.BaseURL + "/embeddings")
 		fmt.Println("hint:     abra models up")
+		fmt.Println("timeout:  " + cfg.ReadinessTimeout.String())
 		fmt.Println("error:    " + err.Error())
 		return nil
 	}
@@ -266,20 +275,43 @@ func embeddingRunner(args cliArgs) embeddingRunnerConfig {
 		hostBaseURL = replaceURLHostPort(hostBaseURL, "127.0.0.1", port)
 	}
 	return embeddingRunnerConfig{
-		Container: firstNonEmpty(flag(args, "container", ""), defaultEmbeddingContainer),
-		Image:     firstNonEmpty(flag(args, "image", ""), defaultTEIImage()),
-		ModelID:   firstNonEmpty(flag(args, "model-id", ""), defaultEmbeddingModelID),
-		Model:     model,
-		BaseURL:   strings.TrimRight(hostBaseURL, "/"),
-		Publish:   firstNonEmpty(flag(args, "publish-addr", ""), values["ABRA_LOCAL_EMBEDDING_PUBLISH_ADDR"], defaultEmbeddingPublish),
-		Port:      port,
-		CacheDir:  firstNonEmpty(flag(args, "cache-dir", ""), filepath.Join(userConfigDir(), "models", "llama.cpp")),
-		Dims:      dims,
+		Container:        firstNonEmpty(flag(args, "container", ""), defaultEmbeddingContainer),
+		Image:            firstNonEmpty(flag(args, "image", ""), values["ABRA_LOCAL_EMBEDDING_IMAGE"], defaultTEIImage()),
+		PullPolicy:       localRunnerPullPolicy(firstNonEmpty(flag(args, "pull-policy", ""), values["ABRA_LOCAL_EMBEDDING_PULL_POLICY"], "missing")),
+		ModelID:          firstNonEmpty(flag(args, "model-id", ""), defaultEmbeddingModelID),
+		Model:            model,
+		BaseURL:          strings.TrimRight(hostBaseURL, "/"),
+		Publish:          firstNonEmpty(flag(args, "publish-addr", ""), values["ABRA_LOCAL_EMBEDDING_PUBLISH_ADDR"], defaultEmbeddingPublish),
+		Port:             port,
+		CacheDir:         firstNonEmpty(flag(args, "cache-dir", ""), filepath.Join(userConfigDir(), "models", "llama.cpp")),
+		Dims:             dims,
+		ReadinessTimeout: localRunnerReadinessTimeout(args, values),
 	}
 }
 
 func defaultTEIImage() string {
 	return "ghcr.io/ggml-org/llama.cpp:server"
+}
+
+func validateLocalRunnerImagePolicy(args cliArgs, cfg embeddingRunnerConfig) error {
+	values, err := readEnvValues(envPath(args))
+	if err != nil {
+		return nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(values["NODE_ENV"]), "production") {
+		return nil
+	}
+	if !yesish(values["ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION"]) {
+		return nil
+	}
+	if localRunnerImagePinned(cfg.Image) {
+		return nil
+	}
+	return fmt.Errorf("production local embeddings require a digest-pinned runner image. Set ABRA_LOCAL_EMBEDDING_IMAGE to an operator-verified image reference with @sha256, or use EMBEDDING_PROVIDER=compatible with a managed/self-hosted endpoint")
+}
+
+func localRunnerImagePinned(image string) bool {
+	return strings.Contains(strings.TrimSpace(image), "@sha256:")
 }
 
 func dockerContainerExists(name string) bool {
@@ -318,6 +350,7 @@ func localRunnerNeedsRecreate(cfg embeddingRunnerConfig) bool {
 func localRunnerConfigHash(cfg embeddingRunnerConfig) string {
 	parts := []string{
 		"image=" + cfg.Image,
+		"pull_policy=" + cfg.PullPolicy,
 		"model_id=" + cfg.ModelID,
 		"model=" + cfg.Model,
 		"dims=" + strconv.Itoa(cfg.Dims),
@@ -336,6 +369,30 @@ func localRunnerPublish(cfg embeddingRunnerConfig) string {
 		return cfg.Port
 	}
 	return strings.TrimSpace(cfg.Publish) + ":" + cfg.Port
+}
+
+func localRunnerPullPolicy(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "always", "missing", "never":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return "missing"
+	}
+}
+
+func localRunnerReadinessTimeout(args cliArgs, values map[string]string) time.Duration {
+	raw := firstNonEmpty(flag(args, "readiness-timeout", ""), values["ABRA_LOCAL_EMBEDDING_READINESS_TIMEOUT"])
+	if raw == "" {
+		return 10 * time.Second
+	}
+	timeout, err := time.ParseDuration(raw)
+	if err != nil || timeout <= 0 {
+		if seconds, parseErr := strconv.Atoi(raw); parseErr == nil && seconds > 0 {
+			return time.Duration(seconds) * time.Second
+		}
+		return 10 * time.Second
+	}
+	return timeout
 }
 
 func syncLocalRunnerEnv(args cliArgs) error {
@@ -386,6 +443,9 @@ func waitEmbeddingReady(ctx context.Context, cfg embeddingRunnerConfig, timeout 
 }
 
 func checkEmbeddingReady(ctx context.Context, cfg embeddingRunnerConfig) error {
+	if cfg.ReadinessTimeout <= 0 {
+		cfg.ReadinessTimeout = 10 * time.Second
+	}
 	body := map[string]any{
 		"model": cfg.Model,
 		"input": []string{"abra readiness check"},
@@ -402,7 +462,7 @@ func checkEmbeddingReady(ctx context.Context, cfg embeddingRunnerConfig) error {
 		return err
 	}
 	req.Header.Set("content-type", "application/json")
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	resp, err := (&http.Client{Timeout: cfg.ReadinessTimeout}).Do(req)
 	if err != nil {
 		return err
 	}

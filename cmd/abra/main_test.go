@@ -1121,6 +1121,35 @@ func TestSetupProductionGuidesCompatibleProvider(t *testing.T) {
 	}
 }
 
+func TestConfigModelLocalPersistsRunnerControls(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+
+	if err := run(context.Background(), []string{
+		"config", "model", "local",
+		"--runner-image", "registry.example/llama.cpp@sha256:abc123",
+		"--pull-policy", "never",
+		"--readiness-timeout", "45s",
+	}); err != nil {
+		t.Fatalf("config model local error = %v", err)
+	}
+	values, err := readEnvValues(filepath.Join(home, "quickstart.env"))
+	if err != nil {
+		t.Fatalf("read env: %v", err)
+	}
+	if values["ABRA_LOCAL_EMBEDDING_IMAGE"] != "registry.example/llama.cpp@sha256:abc123" {
+		t.Fatalf("runner image = %q", values["ABRA_LOCAL_EMBEDDING_IMAGE"])
+	}
+	if values["ABRA_LOCAL_EMBEDDING_PULL_POLICY"] != "never" {
+		t.Fatalf("pull policy = %q", values["ABRA_LOCAL_EMBEDDING_PULL_POLICY"])
+	}
+	if values["ABRA_LOCAL_EMBEDDING_READINESS_TIMEOUT"] != "45s" {
+		t.Fatalf("readiness timeout = %q", values["ABRA_LOCAL_EMBEDDING_READINESS_TIMEOUT"])
+	}
+}
+
 func TestSetupOpenAINonInteractiveRequiresAPIKey(t *testing.T) {
 	root := t.TempDir()
 	home := t.TempDir()
@@ -1801,9 +1830,106 @@ func TestEmbeddingRunnerUsesLocalQwenDefaults(t *testing.T) {
 	if cfg.Dims != 1024 {
 		t.Fatalf("dims = %d", cfg.Dims)
 	}
+	if cfg.PullPolicy != "missing" {
+		t.Fatalf("pull policy = %q", cfg.PullPolicy)
+	}
+	if cfg.ReadinessTimeout != 10*time.Second {
+		t.Fatalf("readiness timeout = %s", cfg.ReadinessTimeout)
+	}
 	wantImage := "ghcr.io/ggml-org/llama.cpp:server"
 	if cfg.Image != wantImage {
 		t.Fatalf("image = %q, want %q", cfg.Image, wantImage)
+	}
+}
+
+func TestEmbeddingRunnerUsesImageAndReadinessEnv(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+
+	if err := run(context.Background(), []string{"init"}); err != nil {
+		t.Fatalf("init error = %v", err)
+	}
+	args := parseArgs([]string{"models", "status"})
+	if err := updateEnvValues(args, map[string]string{
+		"EMBEDDING_PROVIDER":                     "local",
+		"ABRA_LOCAL_EMBEDDING_IMAGE":             "registry.example/llama.cpp@sha256:abc123",
+		"ABRA_LOCAL_EMBEDDING_PULL_POLICY":       "never",
+		"ABRA_LOCAL_EMBEDDING_READINESS_TIMEOUT": "45s",
+	}); err != nil {
+		t.Fatalf("update env error = %v", err)
+	}
+	cfg := embeddingRunner(args)
+	if cfg.Image != "registry.example/llama.cpp@sha256:abc123" {
+		t.Fatalf("image = %q", cfg.Image)
+	}
+	if cfg.PullPolicy != "never" {
+		t.Fatalf("pull policy = %q", cfg.PullPolicy)
+	}
+	if cfg.ReadinessTimeout != 45*time.Second {
+		t.Fatalf("readiness timeout = %s", cfg.ReadinessTimeout)
+	}
+}
+
+func TestProductionLocalRunnerRequiresDigestPinnedImage(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+
+	if err := run(context.Background(), []string{"init", "--production"}); err != nil {
+		t.Fatalf("init production error = %v", err)
+	}
+	args := parseArgs([]string{"models", "up"})
+	if err := updateEnvValues(args, map[string]string{
+		"EMBEDDING_PROVIDER":                   "local",
+		"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION": "true",
+		"ABRA_LOCAL_EMBEDDING_IMAGE":           "ghcr.io/ggml-org/llama.cpp:server",
+	}); err != nil {
+		t.Fatalf("update env error = %v", err)
+	}
+	if err := validateLocalRunnerImagePolicy(args, embeddingRunner(args)); err == nil || !strings.Contains(err.Error(), "digest-pinned") {
+		t.Fatalf("policy error = %v", err)
+	}
+	if err := updateEnvValues(args, map[string]string{
+		"ABRA_LOCAL_EMBEDDING_IMAGE": "registry.example/llama.cpp@sha256:abc123",
+	}); err != nil {
+		t.Fatalf("update digest image error = %v", err)
+	}
+	if err := validateLocalRunnerImagePolicy(args, embeddingRunner(args)); err != nil {
+		t.Fatalf("digest image policy error = %v", err)
+	}
+}
+
+func TestDownStopsLocalModelsByDefault(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+
+	if err := run(context.Background(), []string{"init"}); err != nil {
+		t.Fatalf("init error = %v", err)
+	}
+	args := parseArgs([]string{"down"})
+	if !shouldStopLocalModelsForDown(args) {
+		t.Fatal("down should stop local models for local provider")
+	}
+	keep := parseArgs([]string{"down", "--keep-models"})
+	if shouldStopLocalModelsForDown(keep) {
+		t.Fatal("down --keep-models should not stop local models")
+	}
+	if err := updateEnvValues(args, map[string]string{
+		"EMBEDDING_PROVIDER": "compatible",
+	}); err != nil {
+		t.Fatalf("update env error = %v", err)
+	}
+	if shouldStopLocalModelsForDown(args) {
+		t.Fatal("down should not stop models by default for compatible provider")
+	}
+	forced := parseArgs([]string{"down", "--models"})
+	if !shouldStopLocalModelsForDown(forced) {
+		t.Fatal("down --models should force model stop")
 	}
 }
 

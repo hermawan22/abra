@@ -79,6 +79,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Make production setup recommend a compatible/self-hosted embedding endpoint instead of the development local-Qwen shortcut unless operators explicitly allow local embeddings in production.
 - Make `abra models status/up/down/logs` report inactive local-runner state when the active embedding provider is compatible/custom, avoiding repair commands for a runner Abra will not use.
 - Make `abra models up` bind the local Qwen runner to `127.0.0.1` by default and recreate the container when runner-relevant model, dimension, port, publish, cache, image, pooling, or context settings change.
+- Make the local Qwen runner use Docker pull policy `missing` by default, expose image/pull/readiness env controls, require digest-pinned runner images for production local embeddings, and have `abra down` stop the owned local runner unless `--keep-models` is set.
 - Require an OpenAI API key for non-interactive `abra setup --openai` via `--api-key-stdin` or `OPENAI_API_KEY`.
 - Harden production Compose and Helm defaults around compatible embeddings, loopback publish defaults, webhook signing, bind address, and request sizing.
 - Make the release gate provide production-valid placeholder embedding and webhook settings for Docker Compose config validation.

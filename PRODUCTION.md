@@ -12,7 +12,7 @@ Prerequisites:
 
 - Docker Engine with Compose.
 - A generated `ABRA_API_KEYS` value.
-- Local Qwen-compatible embedding and reranker endpoints, or a custom compatible embedding provider. The default local path expects Qwen/Qwen3-Embedding-0.6B and Qwen/Qwen3-Reranker-0.6B served outside the Abra containers.
+- A local Qwen-compatible embedding endpoint, or a custom compatible embedding provider. The built-in CLI lifecycle manages the Qwen/Qwen3-Embedding-0.6B runner only; Qwen/Qwen3-Reranker-0.6B is optional and must be configured separately when you provide a compatible rerank endpoint.
 - Enough disk for Postgres source snippets, claims, audit events, and vectors.
 
 Create `.env.production`:
@@ -174,7 +174,7 @@ Production tokens must be unique, non-placeholder values of at least 16 characte
 
 Production startup fails without `ABRA_WEBHOOK_SECRETS` unless `ABRA_ALLOW_UNSIGNED_WEBHOOKS_IN_PRODUCTION=true` is explicitly set. Keep the override false for deployments that expose `POST /ingest/webhooks`; use it only when webhook ingestion is disabled or an upstream gateway verifies signatures before requests reach Abra.
 
-`EMBEDDING_PROVIDER=local` is the default self-hosted neural path. It does not need an external API key, but it does require local model endpoints reachable from the Abra containers. With Docker Compose, the default URLs use `host.docker.internal` so models running on the host can be reached from the API and worker containers. Set `EMBEDDING_PROVIDER=compatible` to replace the local defaults with a custom provider.
+`EMBEDDING_PROVIDER=local` is the default self-hosted neural path. It does not need an external API key, but it does require a local embedding endpoint reachable from the Abra containers. With Docker Compose, the default URLs use `host.docker.internal` so models running on the host can be reached from the API and worker containers. If you intentionally run local embeddings in production, set `ABRA_LOCAL_EMBEDDING_IMAGE` to an operator-verified `@sha256` runner image or provide your own compatible endpoint. Set `EMBEDDING_PROVIDER=compatible` to replace the local defaults with a custom provider.
 
 The provider contract is intentionally provider-neutral. The provider must expose the configured embeddings request/response shape and must return vectors with the configured `EMBEDDING_DIMENSIONS`. API keys may be empty for self-hosted endpoints. The optional reranker is controlled separately with `RERANKER_PROVIDER`, `RERANKER_BASE_URL`, `RERANKER_API_KEY`, and `RERANKER_MODEL`; when unset, custom embedding providers do not keep the local Qwen reranker enabled. Abra stores embeddings and source-derived snippets; it does not send prompts for generation.
 
