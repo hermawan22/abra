@@ -53,7 +53,7 @@ abra agents init --agent codex
 ```
 
 This writes `AGENTS.md` with the exact Abra scope and `CLAUDE.md` as an import for tools that read Claude Code instructions.
-After ingesting the project with the exact scope printed by `abra scope`, `abra agents verify` checks both files, validates the MCP endpoint, calls `discover_scopes` with that exact project scope, and confirms `working_memory_compose` returns source-backed context. The compose call runs in diagnostic mode, so verification does not write compose audit events or automatic learning proposals. If a coding agent says Abra has no context, run this before changing prompts or env files.
+After ingesting the project with the exact scope printed by `abra scope`, `abra agents verify` checks both files, validates the MCP endpoint, calls `discover_scopes` with that exact project scope, and confirms `working_memory_compose` returns source-backed context. `abra agents ready` is a non-mutating alias for the same check. Both commands print a ready prompt for the AI client, and `--json` returns `ready_prompt` plus `next_steps` for automation. The compose call runs in diagnostic mode, so verification does not write compose audit events or automatic learning proposals. If a coding agent says Abra has no context, run this before changing prompts or env files.
 For CI or release checks that should not contact a live MCP server, run
 `abra agents verify --files-only --strict`.
 
@@ -245,6 +245,7 @@ From a source checkout, run the CLI as `go run ./cmd/abra <command>`. In a relea
 | make Codex ready for the current repo | `abra agents bootstrap --agent codex` |
 | generate agent instruction files | `abra agents init --agent codex` |
 | verify agent context setup | `abra agents verify` |
+| print machine-readable agent readiness | `abra agents ready --json` |
 | verify agent instruction files in CI | `abra agents verify --files-only --strict` |
 | start local Qwen embedding runner | `abra models up` |
 | check local embedding runner | `abra models status` |

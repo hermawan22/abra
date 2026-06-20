@@ -2018,7 +2018,7 @@ func bootstrapAgentContext(ctx context.Context, args cliArgs, path, scope string
 		}
 	}
 	fmt.Println("Ready prompt:")
-	fmt.Println(`Use Abra MCP first. Exact scope: ` + scope + `. Call discover_scopes with expected_scope="` + scope + `", then call working_memory_compose before answering or changing code.`)
+	fmt.Println(agentReadyPrompt(scope))
 	return nil
 }
 
@@ -2056,14 +2056,18 @@ func verifyAgentContext(ctx context.Context, args cliArgs, path, scope string) e
 		}
 	}
 	ok := checksOK(checks, strict)
+	readyPrompt := agentReadyPrompt(scope)
+	nextSteps := agentVerifyNextSteps(path, scope, ok, filesOnly)
 	if boolFlag(args, "json") {
 		if err := printJSON(map[string]any{
-			"ok":         ok,
-			"scope":      scope,
-			"path":       path,
-			"files_only": filesOnly,
-			"strict":     strict,
-			"checks":     checks,
+			"ok":           ok,
+			"scope":        scope,
+			"path":         path,
+			"files_only":   filesOnly,
+			"strict":       strict,
+			"checks":       checks,
+			"ready_prompt": readyPrompt,
+			"next_steps":   nextSteps,
 		}); err != nil {
 			return err
 		}
@@ -2104,10 +2108,37 @@ func verifyAgentContext(ctx context.Context, args cliArgs, path, scope string) e
 	}
 	if filesOnly {
 		fmt.Println("Ready: agent instruction files are ready for scope " + scope + ".")
+		fmt.Println("Prompt: " + readyPrompt)
 		return nil
 	}
 	fmt.Println("Ready: MCP clients can use scope " + scope + " with working_memory_compose.")
+	fmt.Println("Prompt: " + readyPrompt)
 	return nil
+}
+
+func agentReadyPrompt(scope string) string {
+	return `Use Abra MCP first. Exact scope: ` + scope + `. Call discover_scopes with expected_scope="` + scope + `", then call working_memory_compose with that exact scope before answering or changing code. If discover_scopes does not show ` + scope + ` or working_memory_compose returns no source-backed context, run abra scope, ingest the project with that exact scope, and rerun abra agents verify.`
+}
+
+func agentVerifyNextSteps(path, scope string, ok, filesOnly bool) []string {
+	if ok && filesOnly {
+		return []string{
+			"Run `abra agents verify " + shellQuote(path) + " --scope " + shellQuote(scope) + "` against a live Abra MCP server before giving the prompt to an AI client.",
+			"Give the ready_prompt to the AI client.",
+		}
+	}
+	if ok {
+		return []string{
+			"Give the ready_prompt to the AI client.",
+			"If the AI client still says Abra has no context, fully restart that client and rerun `abra agents verify " + shellQuote(path) + " --scope " + shellQuote(scope) + "`.",
+		}
+	}
+	return []string{
+		"Run `abra agents init " + shellQuote(path) + " --agent codex --scope " + shellQuote(scope) + "` if instruction files are missing or stale.",
+		"Run `abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope) + "` if scope discovery or working memory is empty.",
+		"Run `abra doctor` to check API, MCP, token, and local model readiness.",
+		"Rerun `abra agents verify " + shellQuote(path) + " --scope " + shellQuote(scope) + "`.",
+	}
 }
 
 func optionalAgentFileCheck(path, required string) map[string]any {

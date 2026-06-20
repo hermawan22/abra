@@ -511,6 +511,40 @@ func TestAgentsVerifyFilesOnlyStrictSkipsMCP(t *testing.T) {
 	}
 }
 
+func TestAgentsVerifyJSONIncludesReadyPromptAndNextSteps(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "demo project")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wantScope := "repo:" + slug(filepath.Base(root))
+	if err := run(context.Background(), []string{"agents", "init", root, "--agent", "codex"}); err != nil {
+		t.Fatalf("agents init error = %v", err)
+	}
+
+	output := captureStdout(t, func() {
+		if err := run(context.Background(), []string{"agents", "ready", root, "--scope", wantScope, "--files-only", "--json"}); err != nil {
+			t.Fatalf("agents ready --json error = %v", err)
+		}
+	})
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
+		t.Fatalf("decode agents ready json: %v\n%s", err, output)
+	}
+	if payload["ok"] != true || payload["scope"] != wantScope {
+		t.Fatalf("payload = %#v", payload)
+	}
+	readyPrompt := stringValue(payload["ready_prompt"], "")
+	for _, want := range []string{wantScope, "discover_scopes", "working_memory_compose", "source-backed context"} {
+		if !strings.Contains(readyPrompt, want) {
+			t.Fatalf("ready_prompt missing %q:\n%s", want, readyPrompt)
+		}
+	}
+	nextSteps, _ := payload["next_steps"].([]any)
+	if len(nextSteps) == 0 || !strings.Contains(stringValue(nextSteps[0], ""), "abra agents verify") {
+		t.Fatalf("next_steps = %#v", payload["next_steps"])
+	}
+}
+
 func TestAgentsVerifyFilesOnlyStrictFailsOnWarning(t *testing.T) {
 	root := t.TempDir()
 	wantScope := "repo:" + slug(filepath.Base(root))
