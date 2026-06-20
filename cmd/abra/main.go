@@ -1580,6 +1580,32 @@ func composeMemory(ctx context.Context, args cliArgs) error {
 	if len(health) > 0 {
 		fmt.Printf("health: %s score=%d signals=%d\n", stringValue(health["status"], "unknown"), intValue(health["score"]), lenSlice(health["signals"]))
 	}
+	if citations, _ := result["citations"].([]any); len(citations) > 0 {
+		fmt.Println("citations:")
+		for i, raw := range citations {
+			if i >= 5 {
+				fmt.Printf("- +%d more\n", len(citations)-i)
+				break
+			}
+			item, _ := raw.(map[string]any)
+			fmt.Printf("- %s: %s\n", stringValue(item["ref"], "?"), stringValue(item["source_url"], "unknown"))
+		}
+	}
+	if evidence, _ := result["evidence"].([]any); len(evidence) > 0 {
+		fmt.Println("evidence:")
+		for i, raw := range evidence {
+			if i >= 5 {
+				fmt.Printf("- +%d more\n", len(evidence)-i)
+				break
+			}
+			item, _ := raw.(map[string]any)
+			ref := stringValue(item["ref"], "")
+			if ref != "" {
+				ref = "[" + ref + "] "
+			}
+			fmt.Printf("- %s%s (%d)\n", ref, stringValue(item["source_url"], "unknown"), intValue(item["count"]))
+		}
+	}
 	if actions, ok := decision["required_actions"].([]any); ok && len(actions) > 0 {
 		fmt.Println("required actions:")
 		for _, action := range actions {

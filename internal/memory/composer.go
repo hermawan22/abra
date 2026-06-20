@@ -91,6 +91,7 @@ type ComposeResult struct {
 	GraphContext         []store.RelationResult      `json:"graph_context"`
 	GraphWarnings        []GraphWarning              `json:"graph_warnings,omitempty"`
 	RetrievalReasons     []store.RetrievalReason     `json:"retrieval_reasons,omitempty"`
+	Citations            []Citation                  `json:"citations,omitempty"`
 	Conflicts            []store.ConflictResult      `json:"conflicts,omitempty"`
 	MemoryHealth         store.MemoryHealthResult    `json:"memory_health"`
 	RelevantFiles        []string                    `json:"relevant_files"`
@@ -110,8 +111,22 @@ type ComposeResult struct {
 
 type EvidenceItem struct {
 	SourceURL string `json:"source_url"`
+	Ref       string `json:"ref,omitempty"`
 	Title     string `json:"title,omitempty"`
 	Count     int    `json:"count"`
+}
+
+type Citation struct {
+	Ref         string   `json:"ref"`
+	Kind        string   `json:"kind"`
+	SourceURL   string   `json:"source_url"`
+	Title       string   `json:"title,omitempty"`
+	ClaimID     string   `json:"claim_id,omitempty"`
+	DocumentID  string   `json:"document_id,omitempty"`
+	ClaimIDs    []string `json:"claim_ids,omitempty"`
+	DocumentIDs []string `json:"document_ids,omitempty"`
+	SummaryIDs  []string `json:"summary_ids,omitempty"`
+	RelationIDs []string `json:"relation_ids,omitempty"`
 }
 
 type ComposeStats struct {
@@ -399,7 +414,9 @@ func (c *Composer) Compose(ctx context.Context, input ComposeInput) (ComposeResu
 	result.ImpactMap = impactMap(input, result.Summaries, result.Facts, result.SupportingDocuments, result.GraphContext, result.RelevantFiles)
 	result.GraphWarnings = graphWarnings(result.GraphContext)
 	result.Risks = applyMemoryHealthRisks(risks(result.Facts, result.GraphContext, result.Conflicts, result.RetrievalWarnings, result.GraphWarnings), result.MemoryHealth)
-	result.Evidence = evidence(result.Facts, result.SupportingDocuments)
+	var citationRefs map[string]string
+	result.Citations, citationRefs = buildCitations(result)
+	result.Evidence = evidence(result.Facts, result.SupportingDocuments, citationRefs)
 	result.Verification = verifyPacket(result.Summaries, result.Facts, result.SupportingDocuments, result.GraphContext, result.Evidence, result.RetrievalPlan, result.Conflicts, result.RetrievalWarnings, result.GraphWarnings, result.MemoryHealth)
 	addTrace("compile", "evidence_impact_and_verification", false, len(result.Facts)+len(result.SupportingDocuments)+len(result.GraphContext), len(result.Evidence)+len(result.ImpactMap)+len(result.Risks), stageStart, nil)
 	stageStart = time.Now()
@@ -1258,7 +1275,69 @@ func applyMemoryHealthRisks(risks []string, health store.MemoryHealthResult) []s
 	return appendUnique(cleaned)
 }
 
-func evidence(facts []store.ClaimResult, docs []store.DocumentResult) []EvidenceItem {
+func buildCitations(packet ComposeResult) ([]Citation, map[string]string) {
+	out := []Citation{}
+	refs := map[string]string{}
+	indexes := map[string]int{}
+	add := func(kind, sourceURL, title, claimID, documentID, summaryID, relationID string) {
+		sourceURL = strings.TrimSpace(sourceURL)
+		if sourceURL == "" {
+			return
+		}
+		idx, ok := indexes[sourceURL]
+		if !ok {
+			ref := "C" + strconv.Itoa(len(out)+1)
+			refs[sourceURL] = ref
+			out = append(out, Citation{
+				Ref:       ref,
+				Kind:      kind,
+				SourceURL: sourceURL,
+				Title:     strings.TrimSpace(title),
+			})
+			idx = len(out) - 1
+			indexes[sourceURL] = idx
+		}
+		citation := out[idx]
+		if citation.Kind == "" {
+			citation.Kind = kind
+		}
+		if citation.Title == "" {
+			citation.Title = strings.TrimSpace(title)
+		}
+		if citation.ClaimID == "" {
+			citation.ClaimID = strings.TrimSpace(claimID)
+		}
+		if citation.DocumentID == "" {
+			citation.DocumentID = strings.TrimSpace(documentID)
+		}
+		citation.ClaimIDs = appendUnique(citation.ClaimIDs, claimID)
+		citation.DocumentIDs = appendUnique(citation.DocumentIDs, documentID)
+		citation.SummaryIDs = appendUnique(citation.SummaryIDs, summaryID)
+		citation.RelationIDs = appendUnique(citation.RelationIDs, relationID)
+		out[idx] = citation
+	}
+	for _, fact := range packet.Facts {
+		if fact.Source != nil {
+			add("claim", *fact.Source, "", fact.ID, "", "", "")
+		}
+	}
+	for _, doc := range packet.SupportingDocuments {
+		add("document", doc.Source, doc.Title, "", doc.ID, "", "")
+	}
+	for _, summary := range packet.Summaries {
+		for _, sourceURL := range summary.SourceURLs {
+			add("summary", sourceURL, summary.Title, "", "", summary.ID, "")
+		}
+	}
+	for _, relation := range packet.GraphContext {
+		if relation.SourceURL != nil {
+			add("graph_relation", *relation.SourceURL, "", "", "", "", relation.ID)
+		}
+	}
+	return out, refs
+}
+
+func evidence(facts []store.ClaimResult, docs []store.DocumentResult, citationRefs map[string]string) []EvidenceItem {
 	bySource := map[string]EvidenceItem{}
 	for _, fact := range facts {
 		if fact.Source == nil || strings.TrimSpace(*fact.Source) == "" {
@@ -1266,6 +1345,7 @@ func evidence(facts []store.ClaimResult, docs []store.DocumentResult) []Evidence
 		}
 		item := bySource[*fact.Source]
 		item.SourceURL = *fact.Source
+		item.Ref = citationRefs[*fact.Source]
 		item.Count++
 		bySource[*fact.Source] = item
 	}
@@ -1275,6 +1355,7 @@ func evidence(facts []store.ClaimResult, docs []store.DocumentResult) []Evidence
 		}
 		item := bySource[doc.Source]
 		item.SourceURL = doc.Source
+		item.Ref = citationRefs[doc.Source]
 		item.Title = doc.Title
 		item.Count++
 		bySource[doc.Source] = item

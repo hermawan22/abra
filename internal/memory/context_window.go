@@ -19,15 +19,16 @@ type ContextWindow struct {
 }
 
 type ContextBlock struct {
-	Type        string   `json:"type"`
-	ID          string   `json:"id,omitempty"`
-	Title       string   `json:"title"`
-	Content     string   `json:"content"`
-	Tokens      int      `json:"tokens"`
-	Priority    float64  `json:"priority"`
-	SourceURLs  []string `json:"source_urls,omitempty"`
-	ClaimIDs    []string `json:"claim_ids,omitempty"`
-	RelationIDs []string `json:"relation_ids,omitempty"`
+	Type         string   `json:"type"`
+	ID           string   `json:"id,omitempty"`
+	Title        string   `json:"title"`
+	Content      string   `json:"content"`
+	Tokens       int      `json:"tokens"`
+	Priority     float64  `json:"priority"`
+	SourceURLs   []string `json:"source_urls,omitempty"`
+	CitationRefs []string `json:"citation_refs,omitempty"`
+	ClaimIDs     []string `json:"claim_ids,omitempty"`
+	RelationIDs  []string `json:"relation_ids,omitempty"`
 }
 
 type DroppedContextBlock struct {
@@ -89,7 +90,9 @@ func buildContextWindow(input ComposeInput, result ComposeResult) ContextWindow 
 func contextCandidates(input ComposeInput, result ComposeResult) []contextCandidate {
 	out := []contextCandidate{}
 	order := 0
+	citationRefs := citationRefMap(result.Citations)
 	add := func(block ContextBlock) {
+		block.CitationRefs = contextCitationRefs(block.SourceURLs, citationRefs)
 		out = append(out, contextCandidate{block: block, order: order})
 		order++
 	}
@@ -253,11 +256,34 @@ func normalizeContextBlock(block ContextBlock) ContextBlock {
 	block.Title = strings.Join(strings.Fields(block.Title), " ")
 	block.Content = strings.TrimSpace(block.Content)
 	block.SourceURLs = compactList(block.SourceURLs)
+	block.CitationRefs = compactList(block.CitationRefs)
 	block.ClaimIDs = compactList(block.ClaimIDs)
 	block.RelationIDs = compactList(block.RelationIDs)
 	block.Priority = round2(block.Priority)
 	block.Tokens = estimateTokens(block.Title + "\n" + block.Content)
 	return block
+}
+
+func citationRefMap(citations []Citation) map[string]string {
+	out := map[string]string{}
+	for _, citation := range citations {
+		sourceURL := strings.TrimSpace(citation.SourceURL)
+		ref := strings.TrimSpace(citation.Ref)
+		if sourceURL != "" && ref != "" {
+			out[sourceURL] = ref
+		}
+	}
+	return out
+}
+
+func contextCitationRefs(sourceURLs []string, citationRefs map[string]string) []string {
+	out := []string{}
+	for _, sourceURL := range sourceURLs {
+		if ref := citationRefs[strings.TrimSpace(sourceURL)]; ref != "" {
+			out = appendUnique(out, ref)
+		}
+	}
+	return out
 }
 
 func isCriticalContextBlock(block ContextBlock) bool {
@@ -301,6 +327,9 @@ func renderContextPrompt(window ContextWindow) string {
 	parts := []string{}
 	for _, block := range window.Blocks {
 		header := "[" + strings.ToUpper(block.Type) + "] " + block.Title
+		if len(block.CitationRefs) > 0 {
+			header += " [" + strings.Join(block.CitationRefs, ", ") + "]"
+		}
 		parts = append(parts, header+"\n"+block.Content)
 	}
 	return strings.Join(parts, "\n\n")

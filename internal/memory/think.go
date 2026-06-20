@@ -24,7 +24,7 @@ type ThinkResult struct {
 	Question              string                   `json:"question"`
 	Scope                 string                   `json:"scope"`
 	Answer                string                   `json:"answer"`
-	Citations             []ThinkCitation          `json:"citations"`
+	Citations             []Citation               `json:"citations"`
 	Gaps                  []ThinkGap               `json:"gaps"`
 	GraphPaths            []ThinkGraphPath         `json:"graph_paths,omitempty"`
 	Conflicts             []store.ConflictResult   `json:"conflicts,omitempty"`
@@ -41,14 +41,7 @@ type ThinkResult struct {
 	SupportingDocumentIDs []string                 `json:"supporting_document_ids,omitempty"`
 }
 
-type ThinkCitation struct {
-	Ref        string `json:"ref"`
-	Kind       string `json:"kind"`
-	SourceURL  string `json:"source_url"`
-	Title      string `json:"title,omitempty"`
-	ClaimID    string `json:"claim_id,omitempty"`
-	DocumentID string `json:"document_id,omitempty"`
-}
+type ThinkCitation = Citation
 
 type ThinkGap struct {
 	Code            string `json:"code"`
@@ -90,7 +83,11 @@ func (c *Composer) Think(ctx context.Context, input ThinkInput) (ThinkResult, er
 }
 
 func BuildThinkResult(packet ComposeResult) ThinkResult {
-	citations, citationRefs := thinkCitations(packet)
+	citations := packet.Citations
+	citationRefs := citationRefMap(citations)
+	if len(citations) == 0 {
+		citations, citationRefs = buildCitations(packet)
+	}
 	graphPaths := thinkGraphPaths(packet.GraphContext, citationRefs)
 	result := ThinkResult{
 		Question:              packet.Task,
@@ -187,49 +184,6 @@ func formatThinkRef(ref string) string {
 		return ""
 	}
 	return " [" + ref + "]"
-}
-
-func thinkCitations(packet ComposeResult) ([]ThinkCitation, map[string]string) {
-	out := []ThinkCitation{}
-	refs := map[string]string{}
-	add := func(kind, sourceURL, title, claimID, documentID string) {
-		sourceURL = strings.TrimSpace(sourceURL)
-		if sourceURL == "" {
-			return
-		}
-		if _, ok := refs[sourceURL]; ok {
-			return
-		}
-		ref := fmt.Sprintf("C%d", len(out)+1)
-		refs[sourceURL] = ref
-		out = append(out, ThinkCitation{
-			Ref:        ref,
-			Kind:       kind,
-			SourceURL:  sourceURL,
-			Title:      strings.TrimSpace(title),
-			ClaimID:    strings.TrimSpace(claimID),
-			DocumentID: strings.TrimSpace(documentID),
-		})
-	}
-	for _, fact := range packet.Facts {
-		if fact.Source != nil {
-			add("claim", *fact.Source, "", fact.ID, "")
-		}
-	}
-	for _, doc := range packet.SupportingDocuments {
-		add("document", doc.Source, doc.Title, "", doc.ID)
-	}
-	for _, summary := range packet.Summaries {
-		for _, sourceURL := range summary.SourceURLs {
-			add("summary", sourceURL, summary.Title, "", summary.ID)
-		}
-	}
-	for _, relation := range packet.GraphContext {
-		if relation.SourceURL != nil {
-			add("graph_relation", *relation.SourceURL, "", "", "")
-		}
-	}
-	return out, refs
 }
 
 func thinkGaps(packet ComposeResult) []ThinkGap {

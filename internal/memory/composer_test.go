@@ -538,6 +538,21 @@ func TestComposeBuildsMigrationWorkingMemory(t *testing.T) {
 	if len(result.Evidence) == 0 || result.Evidence[0].Count == 0 {
 		t.Fatalf("expected evidence counts: %#v", result.Evidence)
 	}
+	if len(result.Citations) < 3 || result.Citations[0].Ref != "C1" || result.Citations[0].SourceURL == "" {
+		t.Fatalf("expected citation refs: %#v", result.Citations)
+	}
+	if result.Citations[0].ClaimID == "" || len(result.Citations[0].ClaimIDs) == 0 || len(result.Citations[0].DocumentIDs) == 0 {
+		t.Fatalf("expected aggregate citation lineage: %#v", result.Citations[0])
+	}
+	if result.Evidence[0].Ref == "" {
+		t.Fatalf("expected evidence citation ref: %#v", result.Evidence)
+	}
+	if !containsContextBlockCitationRef(result.ContextWindow.Blocks, "fact") || !containsContextBlockCitationRef(result.ContextWindow.Blocks, "summary") {
+		t.Fatalf("context blocks missing citation refs: %#v", result.ContextWindow.Blocks)
+	}
+	if !strings.Contains(result.ContextWindow.Prompt, "[C") {
+		t.Fatalf("context prompt missing citation refs: %s", result.ContextWindow.Prompt)
+	}
 	if !containsRisk(result.Risks, "Unverified claims") {
 		t.Fatalf("expected unverified risk: %#v", result.Risks)
 	}
@@ -973,6 +988,15 @@ func containsWarning(values []RetrievalWarning, stage, operation string) bool {
 func containsContextBlock(values []ContextBlock, typ string) bool {
 	for _, value := range values {
 		if value.Type == typ && value.Title != "" && value.Content != "" && value.Tokens > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func containsContextBlockCitationRef(values []ContextBlock, typ string) bool {
+	for _, value := range values {
+		if value.Type == typ && len(value.CitationRefs) > 0 {
 			return true
 		}
 	}

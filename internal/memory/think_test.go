@@ -59,6 +59,9 @@ func TestBuildThinkResultIncludesCitationsGapsAndDecision(t *testing.T) {
 	if len(result.Citations) != 1 || result.Citations[0].SourceURL != source {
 		t.Fatalf("citations = %#v", result.Citations)
 	}
+	if result.Citations[0].ClaimID != "claim-1" || result.Citations[0].DocumentID != "doc-1" || len(result.Citations[0].RelationIDs) != 1 {
+		t.Fatalf("citation lineage = %#v", result.Citations[0])
+	}
 	if len(result.GraphPaths) != 1 || result.GraphPaths[0].CitationRef != "C1" {
 		t.Fatalf("graph paths = %#v", result.GraphPaths)
 	}
@@ -143,5 +146,33 @@ func TestBuildThinkResultUsesSummaryOnlyContext(t *testing.T) {
 	}
 	if len(result.Citations) != 1 || result.Citations[0].Kind != "summary" || result.Citations[0].SourceURL != source {
 		t.Fatalf("citations = %#v", result.Citations)
+	}
+}
+
+func TestBuildThinkResultPreservesComposeCitations(t *testing.T) {
+	source := "file://docs/source.md"
+	packet := ComposeResult{
+		Task:  "What should be cited?",
+		Scope: "repo:example",
+		Facts: []store.ClaimResult{
+			{ID: "claim-1", Claim: "Use the compose packet citation refs.", Scope: "repo:example", Status: "verified", Source: &source},
+		},
+		Citations: []Citation{
+			{Ref: "C7", Kind: "claim", SourceURL: source, ClaimID: "claim-1", ClaimIDs: []string{"claim-1"}},
+		},
+		MemoryHealth: store.MemoryHealthResult{Status: "healthy"},
+		Verification: VerificationReport{
+			Verdict:           "strong",
+			RetrievalCoverage: RetrievalCoverage{Complete: true},
+		},
+		AgentDecision: AgentDecision{Decision: "proceed", AutonomousAllowed: true},
+	}
+
+	result := BuildThinkResult(packet)
+	if len(result.Citations) != 1 || result.Citations[0].Ref != "C7" {
+		t.Fatalf("citations = %#v", result.Citations)
+	}
+	if !strings.Contains(result.Answer, "[C7]") {
+		t.Fatalf("answer did not preserve compose citation ref:\n%s", result.Answer)
 	}
 }
