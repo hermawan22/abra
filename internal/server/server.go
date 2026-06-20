@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -256,18 +257,31 @@ func (h *handler) ready(w http.ResponseWriter, r *http.Request) {
 		"tracing_enabled":      h.cfg.Tracing.Enabled,
 	}
 	if r.URL.Query().Get("deep") == "1" || r.URL.Query().Get("deep") == "true" {
-		checkCtx, cancel := context.WithTimeout(r.Context(), minDuration(10*time.Second, h.cfg.Embedding.Timeout))
+		checkTimeout := minDuration(10*time.Second, h.cfg.Embedding.Timeout)
+		checkCtx, cancel := context.WithTimeout(r.Context(), checkTimeout)
 		defer cancel()
+		started := time.Now()
 		if err := h.brain.CheckEmbeddingReady(checkCtx); err != nil {
 			result["ok"] = false
 			result["embedding_ready"] = false
 			result["embedding_error"] = err.Error()
+			result["embedding_status"] = embeddingReadinessStatus(checkCtx, err)
+			result["embedding_check_timeout"] = checkTimeout.String()
+			result["embedding_provider_timeout"] = h.cfg.Embedding.Timeout.String()
+			result["embedding_elapsed_ms"] = time.Since(started).Milliseconds()
 			writeJSON(w, http.StatusServiceUnavailable, result)
 			return
 		}
 		result["embedding_ready"] = true
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func embeddingReadinessStatus(ctx context.Context, err error) string {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return "timeout"
+	}
+	return "error"
 }
 
 func (h *handler) metricsText(w http.ResponseWriter, r *http.Request) {

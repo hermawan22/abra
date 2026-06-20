@@ -2586,6 +2586,18 @@ func readyFailureMessage(args cliArgs, result map[string]any, code int, err erro
 	if detail := readyFailureDetail(result, err); detail != "" {
 		lines = append(lines, "detail: "+detail)
 	}
+	for _, field := range []struct {
+		key   string
+		label string
+	}{
+		{key: "embedding_status", label: "embedding_status"},
+		{key: "embedding_check_timeout", label: "embedding_check_timeout"},
+		{key: "embedding_provider_timeout", label: "embedding_provider_timeout"},
+	} {
+		if value := strings.TrimSpace(stringValue(result[field.key], "")); value != "" {
+			lines = append(lines, field.label+": "+value)
+		}
+	}
 	if setupUsesLocalEmbeddings(args) {
 		lines = append(lines, "Check: abra models status")
 		lines = append(lines, "Repair: abra up")

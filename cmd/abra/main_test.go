@@ -1266,12 +1266,18 @@ func TestReadyFailureMessageIncludesLocalModelRecovery(t *testing.T) {
 	mustWrite(t, filepath.Join(home, "quickstart.env"), "EMBEDDING_PROVIDER=local\n")
 
 	message := readyFailureMessage(parseArgs([]string{"up"}), map[string]any{
-		"embedding_error": "connection refused",
+		"embedding_error":            "connection refused",
+		"embedding_status":           "timeout",
+		"embedding_check_timeout":    "10s",
+		"embedding_provider_timeout": "10m",
 	}, http.StatusServiceUnavailable, nil, "Abra did not become ready")
 	for _, want := range []string{
 		"Abra did not become ready",
 		"status: 503",
 		"detail: connection refused",
+		"embedding_status: timeout",
+		"embedding_check_timeout: 10s",
+		"embedding_provider_timeout: 10m",
 		"Check: abra models status",
 		"Repair: abra up",
 		"Diagnose: abra doctor",
@@ -1311,7 +1317,12 @@ func TestStatusPrintsReadyFailureDetail(t *testing.T) {
 			t.Fatalf("unexpected readiness path %s", r.URL.String())
 		}
 		w.WriteHeader(http.StatusServiceUnavailable)
-		writeTestJSON(t, w, map[string]any{"embedding_error": "embedding endpoint refused connection"})
+		writeTestJSON(t, w, map[string]any{
+			"embedding_error":            "embedding endpoint refused connection",
+			"embedding_status":           "timeout",
+			"embedding_check_timeout":    "10s",
+			"embedding_provider_timeout": "10m",
+		})
 	}))
 	defer server.Close()
 
@@ -1323,6 +1334,9 @@ func TestStatusPrintsReadyFailureDetail(t *testing.T) {
 	for _, want := range []string{
 		"Abra: not ready (503)",
 		"detail: embedding endpoint refused connection",
+		"embedding_status: timeout",
+		"embedding_check_timeout: 10s",
+		"embedding_provider_timeout: 10m",
 		"Check: abra models status",
 		"Repair: abra up",
 		"Diagnose: abra doctor",
@@ -1366,7 +1380,12 @@ func TestWaitReadyReturnsLastReadinessDetailOnCancel(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
-		if err := json.NewEncoder(w).Encode(map[string]any{"embedding_error": "model still loading"}); err != nil {
+		if err := json.NewEncoder(w).Encode(map[string]any{
+			"embedding_error":            "model still loading",
+			"embedding_status":           "timeout",
+			"embedding_check_timeout":    "10s",
+			"embedding_provider_timeout": "10m",
+		}); err != nil {
 			t.Fatalf("write json: %v", err)
 		}
 		if flusher, ok := w.(http.Flusher); ok {
@@ -1388,6 +1407,9 @@ func TestWaitReadyReturnsLastReadinessDetailOnCancel(t *testing.T) {
 		"Abra did not become ready",
 		"status: 503",
 		"detail: model still loading",
+		"embedding_status: timeout",
+		"embedding_check_timeout: 10s",
+		"embedding_provider_timeout: 10m",
 		"Check: abra models status",
 	} {
 		if !strings.Contains(err.Error(), want) {
