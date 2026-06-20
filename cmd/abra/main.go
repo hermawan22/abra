@@ -115,6 +115,10 @@ func run(ctx context.Context, argv []string) error {
 		return listSources(ctx, args)
 	case "jobs":
 		return listJobs(ctx, args)
+	case "observe":
+		return observe(ctx, args)
+	case "observations", "episodes":
+		return listObservations(ctx, args)
 	case "think", "ask":
 		return think(ctx, args)
 	case "recall":
@@ -1473,6 +1477,101 @@ func listJobs(ctx context.Context, args cliArgs) error {
 func ingest(ctx context.Context, args cliArgs, body map[string]any) error {
 	_, err := postJSONWithTimeout(ctx, args, "/ingest/documents", body, cliTimeout(args, defaultIngestTimeout))
 	return err
+}
+
+func observe(ctx context.Context, args cliArgs) error {
+	text := strings.TrimSpace(strings.Join(args.Rest, " "))
+	if text == "" {
+		text = strings.TrimSpace(flag(args, "text", ""))
+	}
+	if text == "" {
+		return errors.New("observe requires text, for example: abra observe \"Agents should rerun release checks before tagging\"")
+	}
+	scope := scopeOrDefault(args, ".")
+	metadata := map[string]any{"channel": "cli"}
+	if title := strings.TrimSpace(flag(args, "title", "")); title != "" {
+		metadata["title"] = title
+	}
+	body := map[string]any{
+		"scope":            scope,
+		"observation_text": text,
+		"observation_type": flag(args, "type", flag(args, "observation-type", "episode")),
+		"status":           flag(args, "status", "raw"),
+		"authority":        flag(args, "authority", "manual-unverified"),
+		"authority_score":  floatFlag(args, "authority-score", 0.35),
+		"confidence":       floatFlag(args, "confidence", 0.35),
+		"source_url":       flag(args, "source-url", ""),
+		"source_type":      flag(args, "source-type", ""),
+		"source_id":        flag(args, "source-id", ""),
+		"observed_at":      flag(args, "observed-at", ""),
+		"created_by":       flag(args, "created-by", "abra-cli"),
+		"approval_id":      flag(args, "approval-id", ""),
+		"metadata":         metadata,
+	}
+	result, err := postJSON(ctx, args, "/observations", body)
+	if err != nil {
+		return err
+	}
+	if boolFlag(args, "json") {
+		return printJSON(result)
+	}
+	observation, _ := result["observation"].(map[string]any)
+	fmt.Println("Observation captured: " + stringValue(observation["id"], "unknown"))
+	fmt.Println("scope: " + stringValue(observation["scope"], scope))
+	fmt.Println("type: " + stringValue(observation["observation_type"], stringValue(body["observation_type"], "episode")))
+	fmt.Println("status: " + stringValue(observation["status"], stringValue(body["status"], "raw")))
+	fmt.Println("trusted: no, promote through review before treating as a claim")
+	return nil
+}
+
+func listObservations(ctx context.Context, args cliArgs) error {
+	scope := scopeOrDefault(args, ".")
+	params := url.Values{}
+	params.Set("scope", scope)
+	if query := strings.TrimSpace(strings.Join(args.Rest, " ")); query != "" {
+		params.Set("query", query)
+	}
+	if query := strings.TrimSpace(flag(args, "query", "")); query != "" {
+		params.Set("query", query)
+	}
+	for _, pair := range []struct {
+		flag  string
+		param string
+	}{
+		{"type", "type"},
+		{"observation-type", "observation_type"},
+		{"status", "status"},
+		{"since", "since"},
+		{"until", "until"},
+	} {
+		if value := strings.TrimSpace(flag(args, pair.flag, "")); value != "" {
+			params.Set(pair.param, value)
+		}
+	}
+	params.Set("limit", strconv.Itoa(intFlag(args, "limit", 20)))
+	result, _, err := getJSON(ctx, args, "/observations?"+params.Encode())
+	if err != nil {
+		return err
+	}
+	if boolFlag(args, "json") {
+		return printJSON(result)
+	}
+	observations, _ := result["observations"].([]any)
+	fmt.Printf("Observations: %d\n", len(observations))
+	for _, raw := range observations {
+		observation, _ := raw.(map[string]any)
+		text := stringValue(observation["observation_text"], "")
+		if len(text) > 96 {
+			text = text[:93] + "..."
+		}
+		fmt.Printf("- %s  %s/%s  %s\n",
+			stringValue(observation["observed_at"], ""),
+			stringValue(observation["observation_type"], "episode"),
+			stringValue(observation["status"], "raw"),
+			text,
+		)
+	}
+	return nil
 }
 
 func think(ctx context.Context, args cliArgs) error {
@@ -2944,6 +3043,8 @@ Usage:
   abra watch git --scope repo:demo --git https://github.com/owner/repo.git [--wait] [--wait-timeout 10m]
   abra sources [--scope repo:demo]
   abra jobs [--scope repo:demo]
+  abra observe "Agents should rerun release checks before tagging" [--scope repo:demo]
+  abra observations [--scope repo:demo] [--query release]
   abra think "What should agents use?"
   abra recall "agent memory"
   abra compose "ship a change"
@@ -3062,6 +3163,21 @@ Lists configured ingestion sources.
   abra jobs --scope repo:demo [--source-config-id source...] [--limit 20] [--json]
 
 Lists worker ingestion jobs for a scope.
+`
+	case "observe":
+		return `Usage:
+  abra observe "Agents should rerun release checks before tagging" [--scope repo:demo]
+  abra observe --text "..." --type episode --source-url file://notes.md --confidence 0.7 [--json]
+
+Captures a raw observation. Observations are scoped, searchable, audited, and
+not trusted claims until a review/promote flow explicitly turns them into one.
+`
+	case "observations", "episodes":
+		return `Usage:
+  abra observations --scope repo:demo [--query release] [--type episode] [--status raw] [--limit 20] [--json]
+  abra episodes --scope repo:demo
+
+Lists raw episodic observations for a scope.
 `
 	case "think":
 		return `Usage:

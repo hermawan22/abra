@@ -80,6 +80,49 @@ type RememberClaimResult struct {
 	Conflicts int    `json:"conflicts"`
 }
 
+type CaptureObservationInput struct {
+	Scope           string         `json:"scope"`
+	ObservationText string         `json:"observation_text"`
+	ObservationType string         `json:"observation_type,omitempty"`
+	Status          string         `json:"status,omitempty"`
+	Authority       string         `json:"authority,omitempty"`
+	AuthorityScore  float64        `json:"authority_score,omitempty"`
+	Confidence      float64        `json:"confidence,omitempty"`
+	FreshnessStatus string         `json:"freshness_status,omitempty"`
+	SubjectEntityID string         `json:"subject_entity_id,omitempty"`
+	ObjectEntityID  string         `json:"object_entity_id,omitempty"`
+	RelationID      string         `json:"relation_id,omitempty"`
+	ClaimID         string         `json:"claim_id,omitempty"`
+	DocumentID      string         `json:"document_id,omitempty"`
+	ChunkID         string         `json:"chunk_id,omitempty"`
+	SourceConfigID  string         `json:"source_config_id,omitempty"`
+	IngestionJobID  string         `json:"ingestion_job_id,omitempty"`
+	SourceURL       string         `json:"source_url,omitempty"`
+	SourceType      string         `json:"source_type,omitempty"`
+	SourceID        string         `json:"source_id,omitempty"`
+	ObservedAt      string         `json:"observed_at,omitempty"`
+	ValidFrom       string         `json:"valid_from,omitempty"`
+	ExpiresAt       string         `json:"expires_at,omitempty"`
+	CreatedBy       string         `json:"created_by,omitempty"`
+	ApprovalID      string         `json:"approval_id,omitempty"`
+	Value           map[string]any `json:"value,omitempty"`
+	Metadata        map[string]any `json:"metadata,omitempty"`
+}
+
+type CaptureObservationResult struct {
+	Observation store.ObservationResult `json:"observation"`
+}
+
+type ListObservationsInput struct {
+	Scope           string `json:"scope"`
+	Query           string `json:"query,omitempty"`
+	ObservationType string `json:"observation_type,omitempty"`
+	Status          string `json:"status,omitempty"`
+	Since           string `json:"since,omitempty"`
+	Until           string `json:"until,omitempty"`
+	Limit           int    `json:"limit,omitempty"`
+}
+
 type ChallengeClaimInput struct {
 	ClaimID            string         `json:"claim_id"`
 	Reason             string         `json:"reason"`
@@ -679,6 +722,68 @@ func (s *Service) RememberClaim(ctx context.Context, input RememberClaimInput) (
 	}
 	_ = s.db.InsertAuditEvent(ctx, "claim.remembered", "claim", claimID, input.Scope, input.SourceURL, map[string]any{"status": status, "created_by": input.CreatedBy, "conflicts": conflicts})
 	return RememberClaimResult{ClaimID: claimID, Status: status, Conflicts: conflicts}, nil
+}
+
+func (s *Service) CaptureObservation(ctx context.Context, input CaptureObservationInput) (CaptureObservationResult, error) {
+	input.Scope = strings.TrimSpace(input.Scope)
+	input.ObservationText = strings.TrimSpace(input.ObservationText)
+	if input.Scope == "" || input.ObservationText == "" {
+		return CaptureObservationResult{}, fmt.Errorf("scope and observation_text are required")
+	}
+	observationText := input.ObservationText
+	if s.cfg.RedactPII {
+		observationText = redact(observationText)
+	}
+	observation, err := s.db.InsertObservation(ctx, store.ObservationRecord{
+		Scope:           input.Scope,
+		ObservationType: input.ObservationType,
+		ObservationText: observationText,
+		Status:          input.Status,
+		Authority:       input.Authority,
+		AuthorityScore:  input.AuthorityScore,
+		Confidence:      input.Confidence,
+		FreshnessStatus: input.FreshnessStatus,
+		SubjectEntityID: input.SubjectEntityID,
+		ObjectEntityID:  input.ObjectEntityID,
+		RelationID:      input.RelationID,
+		ClaimID:         input.ClaimID,
+		DocumentID:      input.DocumentID,
+		ChunkID:         input.ChunkID,
+		SourceConfigID:  input.SourceConfigID,
+		IngestionJobID:  input.IngestionJobID,
+		SourceURL:       input.SourceURL,
+		SourceType:      input.SourceType,
+		SourceID:        input.SourceID,
+		ObservedAt:      input.ObservedAt,
+		ValidFrom:       input.ValidFrom,
+		ExpiresAt:       input.ExpiresAt,
+		CreatedBy:       input.CreatedBy,
+		Value:           input.Value,
+		Metadata: mergeMetadata(map[string]any{
+			"channel": "api",
+		}, input.Metadata),
+	})
+	if err != nil {
+		return CaptureObservationResult{}, err
+	}
+	_ = s.db.InsertAuditEvent(ctx, "observation.captured", "observation", observation.ID, observation.Scope, observation.SourceURL, map[string]any{
+		"observation_type": observation.ObservationType,
+		"status":           observation.Status,
+		"created_by":       input.CreatedBy,
+	})
+	return CaptureObservationResult{Observation: observation}, nil
+}
+
+func (s *Service) ListObservations(ctx context.Context, input ListObservationsInput) ([]store.ObservationResult, error) {
+	return s.db.ListObservations(ctx, store.ObservationFilter{
+		Scope:           input.Scope,
+		Query:           input.Query,
+		ObservationType: input.ObservationType,
+		Status:          input.Status,
+		Since:           input.Since,
+		Until:           input.Until,
+		Limit:           input.Limit,
+	})
 }
 
 func (s *Service) ChallengeClaim(ctx context.Context, input ChallengeClaimInput) (ChallengeClaimResult, error) {

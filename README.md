@@ -14,6 +14,8 @@ Agent memory becomes dangerous when every observation is treated as truth. Abra 
 observe -> propose -> verify -> promote -> use
 ```
 
+Raw observations are episodic or procedural notes captured from operators, agents, or connector overlays. They are scoped, searchable, and audited, but they are not trusted claims until a review workflow promotes them.
+
 Claims without a source are stored as `unverified`. Source-backed claims can be `verified`. Challenged or stale claims lose ranking and should not be used silently.
 
 ## Architecture
@@ -432,6 +434,7 @@ Override the command for other service roles:
 - `documents`: source records such as markdown pages, Confluence pages, Jira tickets, or repo docs.
 - `chunks`: searchable document chunks.
 - `claims`: atomic facts with scope, status, authority, confidence, and freshness.
+- `observations`: raw episodic or procedural memory with scope, type, status, source lineage, timestamps, and JSON value/metadata. Observations are useful for agent/session memory and review queues, but they do not appear as verified claims until explicitly promoted.
 - `evidence`: source snippets backing claims.
 - `feedback`: corrections and usefulness signals.
 - `conflicts`: active, reviewing, resolved, or suppressed contradictions between claims or graph records.
@@ -474,6 +477,8 @@ MCP tools:
 - `ingest_document(source_type, source_url, title, scope, content, source_id?, source_updated_at?, authority?, authority_score?, metadata?)`
 - `ingest_documents(documents, scope?, source_type?, source_updated_at?, authority?, authority_score?, metadata?, continue_on_error?)`
 - `remember_claim(claim, scope, source_url?, source_type?, authority?)`
+- `capture_observation(scope, observation_text, observation_type?, status?, source_url?, source_type?, source_id?, observed_at?, created_by?, approval_id?, value?, metadata?)`
+- `list_observations(scope, query?, observation_type?, status?, since?, until?, limit?)`
 - `challenge(claim_id, reason, source_url?, verdict?, conflicting_claim_id?, severity?)`
 - `forget(claim_id, reason?)`
 - `brain_sources(query, scope, limit?)`
@@ -513,6 +518,8 @@ MCP tools:
 - `POST /ingest/webhooks`
 - `POST /recall`
 - `POST /claims`
+- `GET /observations`
+- `POST /observations`
 - `POST /claims/:claimId/challenge`
 - `POST /claims/:claimId/forget`
 - `GET /conflicts`

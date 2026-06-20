@@ -72,6 +72,38 @@ func TestDiscoverScopesMCPToolIsDiscoverable(t *testing.T) {
 	}
 }
 
+func TestObservationMCPToolsAreDiscoverable(t *testing.T) {
+	capture := mcpToolSchema(t, "capture_observation")
+	captureRequired := requiredSet(t, capture)
+	if !captureRequired["scope"] || !captureRequired["observation_text"] {
+		t.Fatalf("capture_observation required = %#v, want scope and observation_text", capture["required"])
+	}
+	captureProperties, ok := capture["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("capture properties = %#v", capture["properties"])
+	}
+	for _, property := range []string{"observation_type", "status", "source_url", "created_by", "approval_id", "metadata"} {
+		if _, ok := captureProperties[property]; !ok {
+			t.Fatalf("capture_observation missing property %q in %#v", property, captureProperties)
+		}
+	}
+
+	list := mcpToolSchema(t, "list_observations")
+	listRequired := requiredSet(t, list)
+	if !listRequired["scope"] {
+		t.Fatalf("list_observations required = %#v, want scope", list["required"])
+	}
+	listProperties, ok := list["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("list properties = %#v", list["properties"])
+	}
+	for _, property := range []string{"query", "observation_type", "status", "since", "until", "limit"} {
+		if _, ok := listProperties[property]; !ok {
+			t.Fatalf("list_observations missing property %q in %#v", property, listProperties)
+		}
+	}
+}
+
 func TestRankScopeSummariesPrioritizesExpectedScope(t *testing.T) {
 	scopes := []store.ScopeSummary{
 		{Scope: "repo:large-release", Documents: 1000},
@@ -99,6 +131,18 @@ func TestRankScopeSummariesCountsGraphOnlyScopes(t *testing.T) {
 	ordered, _, _ := rankScopeSummaries(scopes, "", "")
 	if ordered[0].Scope != "repo:graph-heavy" {
 		t.Fatalf("first ordered scope = %#v, want graph-heavy", ordered[0])
+	}
+}
+
+func TestRankScopeSummariesCountsObservationOnlyScopes(t *testing.T) {
+	scopes := []store.ScopeSummary{
+		{Scope: "repo:empty"},
+		{Scope: "repo:observation-only", Observations: 2},
+		{Scope: "repo:small-doc", Documents: 1},
+	}
+	ordered, _, _ := rankScopeSummaries(scopes, "", "")
+	if ordered[0].Scope != "repo:observation-only" {
+		t.Fatalf("first ordered scope = %#v, want observation-only", ordered[0])
 	}
 }
 

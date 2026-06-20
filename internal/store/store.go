@@ -20,15 +20,16 @@ type Store struct {
 }
 
 type ScopeSummary struct {
-	Scope     string `json:"scope"`
-	Documents int    `json:"documents"`
-	Claims    int    `json:"claims"`
-	Summaries int    `json:"summaries"`
-	Entities  int    `json:"entities"`
-	Relations int    `json:"relations"`
-	Conflicts int    `json:"conflicts"`
-	Sources   int    `json:"sources"`
-	Jobs      int    `json:"jobs"`
+	Scope        string `json:"scope"`
+	Documents    int    `json:"documents"`
+	Claims       int    `json:"claims"`
+	Observations int    `json:"observations"`
+	Summaries    int    `json:"summaries"`
+	Entities     int    `json:"entities"`
+	Relations    int    `json:"relations"`
+	Conflicts    int    `json:"conflicts"`
+	Sources      int    `json:"sources"`
+	Jobs         int    `json:"jobs"`
 }
 
 const maxListScopesLimit = 10000
@@ -75,6 +76,7 @@ func (s *Store) Ready(ctx context.Context) error {
 		"documents",
 		"chunks",
 		"claims",
+		"observations",
 		"evidence",
 		"audit_events",
 		"source_configs",
@@ -309,6 +311,77 @@ type ConflictFilter struct {
 	ClaimID    string
 	RelationID string
 	Limit      int
+}
+
+type ObservationRecord struct {
+	ID              string         `json:"id,omitempty"`
+	Scope           string         `json:"scope"`
+	ObservationType string         `json:"observation_type"`
+	ObservationText string         `json:"observation_text"`
+	Status          string         `json:"status"`
+	Authority       string         `json:"authority"`
+	AuthorityScore  float64        `json:"authority_score"`
+	Confidence      float64        `json:"confidence"`
+	FreshnessStatus string         `json:"freshness_status"`
+	SubjectEntityID string         `json:"subject_entity_id,omitempty"`
+	ObjectEntityID  string         `json:"object_entity_id,omitempty"`
+	RelationID      string         `json:"relation_id,omitempty"`
+	ClaimID         string         `json:"claim_id,omitempty"`
+	DocumentID      string         `json:"document_id,omitempty"`
+	ChunkID         string         `json:"chunk_id,omitempty"`
+	SourceConfigID  string         `json:"source_config_id,omitempty"`
+	IngestionJobID  string         `json:"ingestion_job_id,omitempty"`
+	SourceURL       string         `json:"source_url,omitempty"`
+	SourceType      string         `json:"source_type,omitempty"`
+	SourceID        string         `json:"source_id,omitempty"`
+	ObservedAt      string         `json:"observed_at,omitempty"`
+	ValidFrom       string         `json:"valid_from,omitempty"`
+	ExpiresAt       string         `json:"expires_at,omitempty"`
+	CreatedBy       string         `json:"created_by,omitempty"`
+	Value           map[string]any `json:"value,omitempty"`
+	Metadata        map[string]any `json:"metadata,omitempty"`
+}
+
+type ObservationResult struct {
+	ID              string         `json:"id"`
+	Scope           string         `json:"scope"`
+	ObservationType string         `json:"observation_type"`
+	ObservationText string         `json:"observation_text"`
+	Status          string         `json:"status"`
+	Authority       string         `json:"authority"`
+	AuthorityScore  float64        `json:"authority_score"`
+	Confidence      float64        `json:"confidence"`
+	FreshnessStatus string         `json:"freshness_status"`
+	SubjectEntityID string         `json:"subject_entity_id,omitempty"`
+	ObjectEntityID  string         `json:"object_entity_id,omitempty"`
+	RelationID      string         `json:"relation_id,omitempty"`
+	ClaimID         string         `json:"claim_id,omitempty"`
+	DocumentID      string         `json:"document_id,omitempty"`
+	ChunkID         string         `json:"chunk_id,omitempty"`
+	SourceConfigID  string         `json:"source_config_id,omitempty"`
+	IngestionJobID  string         `json:"ingestion_job_id,omitempty"`
+	SourceURL       string         `json:"source_url,omitempty"`
+	SourceType      string         `json:"source_type,omitempty"`
+	SourceID        string         `json:"source_id,omitempty"`
+	ObservedAt      string         `json:"observed_at"`
+	ValidFrom       *string        `json:"valid_from,omitempty"`
+	ExpiresAt       *string        `json:"expires_at,omitempty"`
+	LastVerifiedAt  *string        `json:"last_verified_at,omitempty"`
+	CreatedBy       string         `json:"created_by,omitempty"`
+	CreatedAt       string         `json:"created_at"`
+	UpdatedAt       string         `json:"updated_at"`
+	Value           map[string]any `json:"value"`
+	Metadata        map[string]any `json:"metadata"`
+}
+
+type ObservationFilter struct {
+	Scope           string
+	Query           string
+	ObservationType string
+	Status          string
+	Since           string
+	Until           string
+	Limit           int
 }
 
 type ResolveConflictInput struct {
@@ -1361,6 +1434,114 @@ func (s *Store) InsertAuditEvent(ctx context.Context, eventType, targetType, tar
 	return err
 }
 
+func (s *Store) InsertObservation(ctx context.Context, record ObservationRecord) (ObservationResult, error) {
+	record = normalizeObservation(record)
+	if record.Scope == "" {
+		return ObservationResult{}, fmt.Errorf("scope is required")
+	}
+	if record.ObservationText == "" {
+		return ObservationResult{}, fmt.Errorf("observation_text is required")
+	}
+	if record.ID == "" {
+		record.ID = stableID("observation", record.Scope, record.SourceURL, record.SourceID, record.ObservationType, record.ObservedAt, record.ObservationText)
+	}
+	row := s.pool.QueryRow(ctx, `
+		INSERT INTO observations (
+		  id, scope, observation_type, observation_text, status, authority, authority_score,
+		  confidence, freshness_status, subject_entity_id, object_entity_id, relation_id,
+		  claim_id, document_id, chunk_id, source_config_id, ingestion_job_id,
+		  source_url, source_type, source_id, observed_at, valid_from, expires_at,
+		  created_by, value, metadata
+		)
+		VALUES (
+		  $1, $2, $3, $4, $5, $6, $7,
+		  $8, $9, NULLIF($10, ''), NULLIF($11, ''), NULLIF($12, ''),
+		  NULLIF($13, ''), NULLIF($14, ''), NULLIF($15, ''), NULLIF($16, ''), NULLIF($17, ''),
+		  NULLIF($18, ''), NULLIF($19, ''), NULLIF($20, ''), $21::timestamptz, NULLIF($22, '')::timestamptz, NULLIF($23, '')::timestamptz,
+		  NULLIF($24, ''), $25::jsonb, $26::jsonb
+		)
+		ON CONFLICT (id) DO UPDATE SET
+		  observation_text = EXCLUDED.observation_text,
+		  status = EXCLUDED.status,
+		  authority = EXCLUDED.authority,
+		  authority_score = EXCLUDED.authority_score,
+		  confidence = EXCLUDED.confidence,
+		  freshness_status = EXCLUDED.freshness_status,
+		  value = observations.value || EXCLUDED.value,
+		  metadata = observations.metadata || EXCLUDED.metadata,
+		  updated_at = now()
+		RETURNING
+		  id, scope, observation_type, observation_text, status, authority, authority_score,
+		  confidence, freshness_status, COALESCE(subject_entity_id, ''), COALESCE(object_entity_id, ''),
+		  COALESCE(relation_id, ''), COALESCE(claim_id, ''), COALESCE(document_id, ''),
+		  COALESCE(chunk_id, ''), COALESCE(source_config_id, ''), COALESCE(ingestion_job_id, ''),
+		  COALESCE(source_url, ''), COALESCE(source_type, ''), COALESCE(source_id, ''),
+		  observed_at::text, valid_from::text, expires_at::text, last_verified_at::text,
+		  COALESCE(created_by, ''), created_at::text, updated_at::text, value, metadata
+	`, record.ID, record.Scope, record.ObservationType, record.ObservationText, record.Status, record.Authority, record.AuthorityScore,
+		record.Confidence, record.FreshnessStatus, record.SubjectEntityID, record.ObjectEntityID, record.RelationID,
+		record.ClaimID, record.DocumentID, record.ChunkID, record.SourceConfigID, record.IngestionJobID,
+		record.SourceURL, record.SourceType, record.SourceID, record.ObservedAt, record.ValidFrom, record.ExpiresAt,
+		record.CreatedBy, jsonb(record.Value), jsonb(record.Metadata))
+	return scanObservation(row)
+}
+
+func (s *Store) ListObservations(ctx context.Context, filter ObservationFilter) ([]ObservationResult, error) {
+	filter.Scope = strings.TrimSpace(filter.Scope)
+	if filter.Scope == "" {
+		return nil, fmt.Errorf("scope is required")
+	}
+	filter.ObservationType = strings.TrimSpace(filter.ObservationType)
+	filter.Status = strings.TrimSpace(filter.Status)
+	filter.Since = strings.TrimSpace(filter.Since)
+	filter.Until = strings.TrimSpace(filter.Until)
+	if filter.Limit < 1 {
+		filter.Limit = 20
+	}
+	if filter.Limit > 100 {
+		filter.Limit = 100
+	}
+	anyQuery := ""
+	if strings.TrimSpace(filter.Query) != "" {
+		anyQuery = fullTextAnyQuery(filter.Query)
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT
+		  id, scope, observation_type, observation_text, status, authority, authority_score,
+		  confidence, freshness_status, COALESCE(subject_entity_id, ''), COALESCE(object_entity_id, ''),
+		  COALESCE(relation_id, ''), COALESCE(claim_id, ''), COALESCE(document_id, ''),
+		  COALESCE(chunk_id, ''), COALESCE(source_config_id, ''), COALESCE(ingestion_job_id, ''),
+		  COALESCE(source_url, ''), COALESCE(source_type, ''), COALESCE(source_id, ''),
+		  observed_at::text, valid_from::text, expires_at::text, last_verified_at::text,
+		  COALESCE(created_by, ''), created_at::text, updated_at::text, value, metadata
+		FROM observations
+		WHERE scope = $1
+		  AND ($2 = '' OR observation_type = $2)
+		  AND ($3 = '' OR status = $3)
+		  AND ($4 = '' OR observed_at >= $4::timestamptz)
+		  AND ($5 = '' OR observed_at <= $5::timestamptz)
+		  AND ($6 = '' OR search_vector @@ to_tsquery('simple', NULLIF($6, '')))
+		ORDER BY
+		  CASE WHEN $6 = '' THEN 0 ELSE ts_rank_cd(search_vector, to_tsquery('simple', $6)) END DESC,
+		  observed_at DESC,
+		  updated_at DESC
+		LIMIT $7
+	`, filter.Scope, filter.ObservationType, filter.Status, filter.Since, filter.Until, anyQuery, filter.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	observations := []ObservationResult{}
+	for rows.Next() {
+		observation, err := scanObservation(rows)
+		if err != nil {
+			return nil, err
+		}
+		observations = append(observations, observation)
+	}
+	return observations, rows.Err()
+}
+
 func (s *Store) ListAuditEvents(ctx context.Context, filter AuditEventFilter) ([]AuditEventRecord, error) {
 	query, args := auditEventsQuery(filter)
 	rows, err := s.pool.Query(ctx, query, args...)
@@ -2344,6 +2525,98 @@ func normalizeConflict(conflict ConflictRecord) ConflictRecord {
 	return conflict
 }
 
+func normalizeObservation(record ObservationRecord) ObservationRecord {
+	record.ID = strings.TrimSpace(record.ID)
+	record.Scope = strings.TrimSpace(record.Scope)
+	record.ObservationType = strings.TrimSpace(record.ObservationType)
+	if record.ObservationType == "" {
+		record.ObservationType = "episode"
+	}
+	record.ObservationText = strings.TrimSpace(record.ObservationText)
+	record.Status = strings.TrimSpace(record.Status)
+	if record.Status == "" {
+		record.Status = "raw"
+	}
+	record.Authority = strings.TrimSpace(record.Authority)
+	if record.Authority == "" {
+		record.Authority = "manual-unverified"
+	}
+	if record.AuthorityScore <= 0 {
+		record.AuthorityScore = 0.35
+	}
+	if record.Confidence <= 0 {
+		record.Confidence = 0.35
+	}
+	record.FreshnessStatus = strings.TrimSpace(record.FreshnessStatus)
+	if record.FreshnessStatus == "" {
+		record.FreshnessStatus = "unknown"
+	}
+	record.SubjectEntityID = strings.TrimSpace(record.SubjectEntityID)
+	record.ObjectEntityID = strings.TrimSpace(record.ObjectEntityID)
+	record.RelationID = strings.TrimSpace(record.RelationID)
+	record.ClaimID = strings.TrimSpace(record.ClaimID)
+	record.DocumentID = strings.TrimSpace(record.DocumentID)
+	record.ChunkID = strings.TrimSpace(record.ChunkID)
+	record.SourceConfigID = strings.TrimSpace(record.SourceConfigID)
+	record.IngestionJobID = strings.TrimSpace(record.IngestionJobID)
+	record.SourceURL = strings.TrimSpace(record.SourceURL)
+	record.SourceType = strings.TrimSpace(record.SourceType)
+	record.SourceID = strings.TrimSpace(record.SourceID)
+	record.ObservedAt = strings.TrimSpace(record.ObservedAt)
+	if record.ObservedAt == "" {
+		record.ObservedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	record.ValidFrom = strings.TrimSpace(record.ValidFrom)
+	record.ExpiresAt = strings.TrimSpace(record.ExpiresAt)
+	record.CreatedBy = strings.TrimSpace(record.CreatedBy)
+	return record
+}
+
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanObservation(row rowScanner) (ObservationResult, error) {
+	var observation ObservationResult
+	var valueRaw, metadataRaw []byte
+	if err := row.Scan(
+		&observation.ID,
+		&observation.Scope,
+		&observation.ObservationType,
+		&observation.ObservationText,
+		&observation.Status,
+		&observation.Authority,
+		&observation.AuthorityScore,
+		&observation.Confidence,
+		&observation.FreshnessStatus,
+		&observation.SubjectEntityID,
+		&observation.ObjectEntityID,
+		&observation.RelationID,
+		&observation.ClaimID,
+		&observation.DocumentID,
+		&observation.ChunkID,
+		&observation.SourceConfigID,
+		&observation.IngestionJobID,
+		&observation.SourceURL,
+		&observation.SourceType,
+		&observation.SourceID,
+		&observation.ObservedAt,
+		&observation.ValidFrom,
+		&observation.ExpiresAt,
+		&observation.LastVerifiedAt,
+		&observation.CreatedBy,
+		&observation.CreatedAt,
+		&observation.UpdatedAt,
+		&valueRaw,
+		&metadataRaw,
+	); err != nil {
+		return ObservationResult{}, err
+	}
+	observation.Value = decodeJSONMap(valueRaw)
+	observation.Metadata = decodeJSONMap(metadataRaw)
+	return observation, nil
+}
+
 func normalizedConflictStatus(value string) string {
 	switch strings.TrimSpace(value) {
 	case "", "open", "reviewing", "resolved", "suppressed":
@@ -3034,6 +3307,8 @@ func (s *Store) ListScopes(ctx context.Context, limit int) ([]ScopeSummary, erro
 		  UNION
 		  SELECT scope FROM claims
 		  UNION
+		  SELECT scope FROM observations
+		  UNION
 		  SELECT scope FROM memory_summaries
 		  UNION
 		  SELECT scope FROM entities
@@ -3050,6 +3325,7 @@ func (s *Store) ListScopes(ctx context.Context, limit int) ([]ScopeSummary, erro
 		  known_scopes.scope,
 		  (SELECT COUNT(*) FROM documents WHERE documents.scope = known_scopes.scope) AS documents,
 		  (SELECT COUNT(*) FROM claims WHERE claims.scope = known_scopes.scope) AS claims,
+		  (SELECT COUNT(*) FROM observations WHERE observations.scope = known_scopes.scope) AS observations,
 		  (SELECT COUNT(*) FROM memory_summaries WHERE memory_summaries.scope = known_scopes.scope) AS summaries,
 		  (SELECT COUNT(*) FROM entities WHERE entities.scope = known_scopes.scope) AS entities,
 		  (SELECT COUNT(*) FROM relations WHERE relations.scope = known_scopes.scope) AS relations,
@@ -3058,7 +3334,7 @@ func (s *Store) ListScopes(ctx context.Context, limit int) ([]ScopeSummary, erro
 		  (SELECT COUNT(*) FROM ingestion_jobs WHERE ingestion_jobs.scope = known_scopes.scope) AS jobs
 		FROM known_scopes
 		WHERE TRIM(known_scopes.scope) <> ''
-		ORDER BY documents DESC, claims DESC, summaries DESC, relations DESC, entities DESC, conflicts DESC, sources DESC, jobs DESC, known_scopes.scope ASC
+		ORDER BY documents DESC, claims DESC, observations DESC, summaries DESC, relations DESC, entities DESC, conflicts DESC, sources DESC, jobs DESC, known_scopes.scope ASC
 		LIMIT $1
 	`, limit)
 	if err != nil {
@@ -3068,7 +3344,7 @@ func (s *Store) ListScopes(ctx context.Context, limit int) ([]ScopeSummary, erro
 	scopes := []ScopeSummary{}
 	for rows.Next() {
 		var scope ScopeSummary
-		if err := rows.Scan(&scope.Scope, &scope.Documents, &scope.Claims, &scope.Summaries, &scope.Entities, &scope.Relations, &scope.Conflicts, &scope.Sources, &scope.Jobs); err != nil {
+		if err := rows.Scan(&scope.Scope, &scope.Documents, &scope.Claims, &scope.Observations, &scope.Summaries, &scope.Entities, &scope.Relations, &scope.Conflicts, &scope.Sources, &scope.Jobs); err != nil {
 			return nil, err
 		}
 		scopes = append(scopes, scope)

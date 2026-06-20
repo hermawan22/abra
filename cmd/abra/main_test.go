@@ -18,12 +18,110 @@ import (
 )
 
 func TestCommandHelpDoesNotRequireFlags(t *testing.T) {
-	for _, command := range []string{"config", "ingest", "setup", "models", "watch", "sources", "jobs", "scope", "agents", "mcp"} {
+	for _, command := range []string{"config", "ingest", "setup", "models", "watch", "sources", "jobs", "observe", "observations", "scope", "agents", "mcp"} {
 		t.Run(command, func(t *testing.T) {
 			if err := run(context.Background(), []string{command, "--help"}); err != nil {
 				t.Fatalf("run(%s --help) error = %v", command, err)
 			}
 		})
+	}
+}
+
+func TestObservePostsObservation(t *testing.T) {
+	var got map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/observations" {
+			t.Fatalf("request = %s %s, want POST /observations", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("authorization") != "Bearer test-token" {
+			t.Fatalf("authorization = %q", r.Header.Get("authorization"))
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		writeTestJSON(t, w, map[string]any{"observation": map[string]any{
+			"id":               "obs-1",
+			"scope":            got["scope"],
+			"observation_type": got["observation_type"],
+			"status":           got["status"],
+		}})
+	}))
+	defer server.Close()
+
+	output := captureStdout(t, func() {
+		if err := run(context.Background(), []string{
+			"observe", "Agents should rerun release checks",
+			"--scope", "repo:demo",
+			"--base-url", server.URL,
+			"--token", "test-token",
+			"--type", "episode",
+			"--source-url", "file://notes.md",
+			"--confidence", "0.7",
+		}); err != nil {
+			t.Fatalf("observe error = %v", err)
+		}
+	})
+	if got["scope"] != "repo:demo" || got["observation_text"] != "Agents should rerun release checks" || got["observation_type"] != "episode" {
+		t.Fatalf("observe body = %#v", got)
+	}
+	if got["source_url"] != "file://notes.md" || got["created_by"] != "abra-cli" {
+		t.Fatalf("observe lineage = %#v", got)
+	}
+	if !strings.Contains(output, "Observation captured: obs-1") || !strings.Contains(output, "trusted: no") {
+		t.Fatalf("observe output = %s", output)
+	}
+}
+
+func TestObserveRequiresText(t *testing.T) {
+	err := run(context.Background(), []string{"observe", "--scope", "repo:demo"})
+	if err == nil || !strings.Contains(err.Error(), "observe requires text") {
+		t.Fatalf("err = %v, want observe requires text", err)
+	}
+}
+
+func TestListObservationsUsesScopedQuery(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/observations" {
+			t.Fatalf("request = %s %s, want GET /observations", r.Method, r.URL.Path)
+		}
+		query := r.URL.Query()
+		for key, want := range map[string]string{
+			"scope":  "repo:demo",
+			"query":  "release",
+			"type":   "episode",
+			"status": "raw",
+			"since":  "2026-06-20T00:00:00Z",
+			"limit":  "3",
+		} {
+			if got := query.Get(key); got != want {
+				t.Fatalf("query %s = %q, want %q; full query %s", key, got, want, r.URL.RawQuery)
+			}
+		}
+		writeTestJSON(t, w, map[string]any{"observations": []map[string]any{{
+			"observed_at":      "2026-06-20 00:00:00+00",
+			"observation_type": "episode",
+			"status":           "raw",
+			"observation_text": "release check note",
+		}}})
+	}))
+	defer server.Close()
+
+	output := captureStdout(t, func() {
+		if err := run(context.Background(), []string{
+			"observations", "release",
+			"--scope", "repo:demo",
+			"--base-url", server.URL,
+			"--token", "test-token",
+			"--type", "episode",
+			"--status", "raw",
+			"--since", "2026-06-20T00:00:00Z",
+			"--limit", "3",
+		}); err != nil {
+			t.Fatalf("observations error = %v", err)
+		}
+	})
+	if !strings.Contains(output, "Observations: 1") || !strings.Contains(output, "release check note") {
+		t.Fatalf("observations output = %s", output)
 	}
 }
 

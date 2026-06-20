@@ -241,6 +241,8 @@ From a source checkout, run the CLI as `go run ./cmd/abra <command>`. In a relea
 | ingest remote git | `abra ingest --git https://github.com/owner/repo.git --ref main --code --scope repo:owner-repo --wait --wait-timeout 10m` |
 | list sources | `abra sources` |
 | list jobs | `abra jobs` |
+| capture raw observation | `abra observe "Agents should rerun release checks" --scope repo:demo` |
+| list observations | `abra observations --scope repo:demo --query release` |
 | think | `abra think "question" --scope <scope-from-abra-scope>` |
 | print project scope for agents | `abra scope` |
 | status | `abra status` |
@@ -268,6 +270,31 @@ curl -sS -H "$auth_header" \
     "authority": "official-doc"
   }' \
   "$ABRA_BASE_URL/ingest/documents"
+```
+
+Capture raw episodic memory without promoting it to a trusted claim:
+
+```sh
+abra observe "Agents should rerun release checks before tagging" --scope repo:demo
+abra observations --scope repo:demo --query release
+```
+
+The equivalent HTTP surface is:
+
+```sh
+curl -sS -H "$auth_header" \
+  -H "content-type: application/json" \
+  -d '{
+    "scope": "repo:demo",
+    "observation_text": "Agents should rerun release checks before tagging",
+    "observation_type": "episode",
+    "status": "raw",
+    "created_by": "abra-cli"
+  }' \
+  "$ABRA_BASE_URL/observations"
+
+curl -sS -H "$auth_header" \
+  "$ABRA_BASE_URL/observations?scope=repo:demo&query=release"
 ```
 
 For worker-based source refreshes, use `abra ingest . --code --tracked`, `abra watch local --path . --wait --wait-timeout 10m`,

@@ -119,6 +119,7 @@ let memoryPacket;
 let isolatedMemoryPacket;
 let forgottenClaimID;
 let afterForget;
+let capturedObservation;
 
 await runCheck("runtime_ready_with_local_embeddings", async () => {
   const ready = await request("/readyz");
@@ -202,6 +203,47 @@ await runCheck("seed_fixture_documents", async () => {
     corroborating_document_id: corroboratingIngest.document_id,
     isolated_document_id: isolatedIngest.document_id
   };
+});
+
+await runCheck("raw_observation_is_searchable_but_not_trusted_recall", async () => {
+  const observationText = `Observation-only release sentinel ${suffix} should stay outside trusted recall.`;
+  const approvalID = await approvedApproval({
+    action: "agent_write",
+    scope,
+    target_type: "memory_write",
+    target_id: scope,
+    reason: "Tier 1 deterministic eval records one raw observation."
+  });
+  capturedObservation = await request("/observations", {
+    method: "POST",
+    body: {
+      scope,
+      observation_text: observationText,
+      observation_type: "episode",
+      status: "raw",
+      source_url: `file://abra-tier1-observation-${suffix}.md`,
+      created_by: "abra-tier1-eval",
+      approval_id: approvalID,
+      metadata: {
+        eval_tier: "tier1"
+      }
+    }
+  });
+  assert(capturedObservation.observation && capturedObservation.observation.id, "observation capture did not return an id");
+  assert(capturedObservation.observation.status === "raw", `observation status = ${capturedObservation.observation.status}`);
+  const listed = await request(`/observations?scope=${encodeURIComponent(scope)}&query=${encodeURIComponent("release sentinel")}&type=episode&status=raw&limit=10`);
+  const observations = Array.isArray(listed.observations) ? listed.observations : [];
+  assert(observations.some((item) => item.id === capturedObservation.observation.id), "captured observation was not listable by scope/query/type/status");
+  const observationRecall = await request("/recall", {
+    method: "POST",
+    body: {
+      query: `release sentinel ${suffix}`,
+      scope,
+      limit: 10
+    }
+  });
+  assert(!textOf(observationRecall).includes(observationText), "raw observation leaked into trusted recall output");
+  return { observation_id: capturedObservation.observation.id, listed: observations.length };
 });
 
 await runCheck("recall_returns_expected_claim_and_citation", async () => {

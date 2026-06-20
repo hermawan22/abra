@@ -20,6 +20,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Add configurable `--wait-timeout` / `ABRA_CLI_WAIT_TIMEOUT` for queued source ingestion waits.
 - Add release preflight checks for `package-lock.json` version alignment.
 - Add first-party GHCR image release documentation for digest pinning, image provenance, SBOM expectations, and Helm deployment usage.
+- Add first-class raw observations through CLI, HTTP, and MCP so agents can capture scoped episodic memory without promoting it to trusted claims.
 - Add configurable working-memory recall and graph fan-out caps for predictable compose load under concurrent agents.
 - Add webhook ingestion job lineage and idempotent delivery handling so connector events are visible in ingestion job history.
 - Add `abra agents init` to generate AGENTS.md and CLAUDE.md instructions that point coding agents at the exact Abra scope.

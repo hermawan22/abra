@@ -48,6 +48,8 @@ func New(cfg config.Config, db *store.Store) (http.Handler, error) {
 	mux.HandleFunc("GET /recall", methodNotAllowed("POST"))
 	mux.HandleFunc("POST /claims", handler.auth(handler.rememberClaim))
 	mux.HandleFunc("GET /claims", methodNotAllowed("POST"))
+	mux.HandleFunc("POST /observations", handler.auth(handler.captureObservation))
+	mux.HandleFunc("GET /observations", handler.auth(handler.listObservations))
 	mux.HandleFunc("POST /claims/{claimId}/challenge", handler.auth(handler.challengeClaim))
 	mux.HandleFunc("POST /claims/{claimId}/forget", handler.auth(handler.forgetClaim))
 	mux.HandleFunc("GET /conflicts", handler.auth(handler.listConflicts))
@@ -170,8 +172,8 @@ func rankScopeSummaries(scopes []store.ScopeSummary, expectedScope, query string
 		}
 		left := ranked[i].scope
 		right := ranked[j].scope
-		leftTotal := left.Documents + left.Claims + left.Summaries + left.Entities + left.Relations + left.Conflicts + left.Sources + left.Jobs
-		rightTotal := right.Documents + right.Claims + right.Summaries + right.Entities + right.Relations + right.Conflicts + right.Sources + right.Jobs
+		leftTotal := left.Documents + left.Claims + left.Observations + left.Summaries + left.Entities + left.Relations + left.Conflicts + left.Sources + left.Jobs
+		rightTotal := right.Documents + right.Claims + right.Observations + right.Summaries + right.Entities + right.Relations + right.Conflicts + right.Sources + right.Jobs
 		if leftTotal != rightTotal {
 			return leftTotal > rightTotal
 		}
@@ -206,6 +208,7 @@ func (h *handler) index(w http.ResponseWriter, r *http.Request) {
 			"webhooks":      "POST /ingest/webhooks",
 			"recall":        "POST /recall",
 			"claims":        "POST /claims",
+			"observations":  "GET|POST /observations",
 			"challenge":     "POST /claims/{claimId}/challenge",
 			"forget":        "POST /claims/{claimId}/forget",
 			"conflicts":     "GET /conflicts",
@@ -392,6 +395,56 @@ func (h *handler) rememberClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *handler) captureObservation(w http.ResponseWriter, r *http.Request) {
+	var input brain.CaptureObservationInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
+		return
+	}
+	input.Scope = strings.TrimSpace(input.Scope)
+	if !h.requireAccess(w, r, authActionWrite, input.Scope) {
+		return
+	}
+	if !h.requireRiskApproval(w, r, approvalRequirement{
+		Action:        "agent_write",
+		Scope:         input.Scope,
+		TargetType:    "memory_write",
+		TargetID:      input.Scope,
+		ApprovalID:    input.ApprovalID,
+		PrincipalType: "agent",
+		PrincipalID:   input.CreatedBy,
+	}) {
+		return
+	}
+	result, err := h.brain.CaptureObservation(r.Context(), input)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *handler) listObservations(w http.ResponseWriter, r *http.Request) {
+	input := brain.ListObservationsInput{
+		Scope:           strings.TrimSpace(r.URL.Query().Get("scope")),
+		Query:           strings.TrimSpace(r.URL.Query().Get("query")),
+		ObservationType: strings.TrimSpace(firstNonEmpty(r.URL.Query().Get("observation_type"), r.URL.Query().Get("type"))),
+		Status:          strings.TrimSpace(r.URL.Query().Get("status")),
+		Since:           strings.TrimSpace(r.URL.Query().Get("since")),
+		Until:           strings.TrimSpace(r.URL.Query().Get("until")),
+		Limit:           intQuery(r, "limit", 20),
+	}
+	if !h.requireAccess(w, r, authActionRead, input.Scope) {
+		return
+	}
+	observations, err := h.brain.ListObservations(r.Context(), input)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"observations": observations})
 }
 
 func (h *handler) challengeClaim(w http.ResponseWriter, r *http.Request) {
@@ -966,6 +1019,64 @@ func (h *handler) mcpToolCall(w http.ResponseWriter, r *http.Request, id any, pa
 			Authority:  stringArg(args, "authority"),
 			CreatedBy:  stringArg(args, "created_by"),
 			ApprovalID: stringArg(args, "approval_id"),
+		})
+	case "capture_observation":
+		scope := stringArg(args, "scope")
+		if !h.requireAccess(w, r, authActionWrite, scope) {
+			return
+		}
+		if !h.requireRiskApproval(w, r, approvalRequirement{
+			Action:        "agent_write",
+			Scope:         scope,
+			TargetType:    "memory_write",
+			TargetID:      scope,
+			ApprovalID:    stringArg(args, "approval_id"),
+			PrincipalType: "agent",
+			PrincipalID:   stringArg(args, "created_by"),
+		}) {
+			return
+		}
+		result, err = h.brain.CaptureObservation(r.Context(), brain.CaptureObservationInput{
+			Scope:           scope,
+			ObservationText: stringArg(args, "observation_text"),
+			ObservationType: stringArg(args, "observation_type"),
+			Status:          stringArg(args, "status"),
+			Authority:       stringArg(args, "authority"),
+			AuthorityScore:  floatArg(args, "authority_score", 0),
+			Confidence:      floatArg(args, "confidence", 0),
+			FreshnessStatus: stringArg(args, "freshness_status"),
+			SubjectEntityID: stringArg(args, "subject_entity_id"),
+			ObjectEntityID:  stringArg(args, "object_entity_id"),
+			RelationID:      stringArg(args, "relation_id"),
+			ClaimID:         stringArg(args, "claim_id"),
+			DocumentID:      stringArg(args, "document_id"),
+			ChunkID:         stringArg(args, "chunk_id"),
+			SourceConfigID:  stringArg(args, "source_config_id"),
+			IngestionJobID:  stringArg(args, "ingestion_job_id"),
+			SourceURL:       stringArg(args, "source_url"),
+			SourceType:      stringArg(args, "source_type"),
+			SourceID:        stringArg(args, "source_id"),
+			ObservedAt:      stringArg(args, "observed_at"),
+			ValidFrom:       stringArg(args, "valid_from"),
+			ExpiresAt:       stringArg(args, "expires_at"),
+			CreatedBy:       stringArg(args, "created_by"),
+			ApprovalID:      stringArg(args, "approval_id"),
+			Value:           mapArg(args, "value"),
+			Metadata:        mapArg(args, "metadata"),
+		})
+	case "list_observations":
+		scope := stringArg(args, "scope")
+		if !h.requireAccess(w, r, authActionRead, scope) {
+			return
+		}
+		result, err = h.brain.ListObservations(r.Context(), brain.ListObservationsInput{
+			Scope:           scope,
+			Query:           stringArg(args, "query"),
+			ObservationType: stringArg(args, "observation_type"),
+			Status:          stringArg(args, "status"),
+			Since:           stringArg(args, "since"),
+			Until:           stringArg(args, "until"),
+			Limit:           intArg(args, "limit", 20),
 		})
 	case "challenge":
 		claimID := stringArg(args, "claim_id")
@@ -1641,6 +1752,51 @@ func mcpTools() []map[string]any {
 			"inputSchema": objectSchema([]string{"claim", "scope"}, map[string]any{"claim": stringSchema(), "scope": stringSchema(), "source_url": stringSchema(), "source_type": stringSchema(), "authority": stringSchema(), "created_by": stringSchema(), "approval_id": stringSchema()}),
 		},
 		{
+			"name":        "capture_observation",
+			"description": "Capture raw episodic or procedural memory without promoting it to a trusted claim. Requires write access and agent-write approval when enforcement is enabled.",
+			"inputSchema": objectSchema([]string{"scope", "observation_text"}, map[string]any{
+				"scope":             stringSchema(),
+				"observation_text":  stringSchema(),
+				"observation_type":  stringSchema(),
+				"status":            map[string]any{"type": "string", "enum": []string{"raw", "proposed", "accepted", "rejected", "challenged", "deprecated", "expired"}},
+				"authority":         stringSchema(),
+				"authority_score":   map[string]any{"type": "number", "minimum": 0, "maximum": 1},
+				"confidence":        map[string]any{"type": "number", "minimum": 0, "maximum": 1},
+				"freshness_status":  map[string]any{"type": "string", "enum": []string{"fresh", "stale", "expired", "unknown"}},
+				"source_url":        stringSchema(),
+				"source_type":       stringSchema(),
+				"source_id":         stringSchema(),
+				"observed_at":       stringSchema(),
+				"valid_from":        stringSchema(),
+				"expires_at":        stringSchema(),
+				"created_by":        stringSchema(),
+				"approval_id":       stringSchema(),
+				"subject_entity_id": stringSchema(),
+				"object_entity_id":  stringSchema(),
+				"relation_id":       stringSchema(),
+				"claim_id":          stringSchema(),
+				"document_id":       stringSchema(),
+				"chunk_id":          stringSchema(),
+				"source_config_id":  stringSchema(),
+				"ingestion_job_id":  stringSchema(),
+				"value":             map[string]any{"type": "object"},
+				"metadata":          map[string]any{"type": "object"},
+			}),
+		},
+		{
+			"name":        "list_observations",
+			"description": "List or search raw observations for a scope. Observations are not trusted claims unless promoted through review.",
+			"inputSchema": objectSchema([]string{"scope"}, map[string]any{
+				"scope":            stringSchema(),
+				"query":            stringSchema(),
+				"observation_type": stringSchema(),
+				"status":           stringSchema(),
+				"since":            stringSchema(),
+				"until":            stringSchema(),
+				"limit":            map[string]any{"type": "integer", "minimum": 1, "maximum": 100},
+			}),
+		},
+		{
 			"name":        "challenge",
 			"description": "Challenge or correct an existing claim.",
 			"inputSchema": objectSchema([]string{"claim_id", "reason"}, map[string]any{"claim_id": stringSchema(), "reason": stringSchema(), "source_url": stringSchema(), "created_by": stringSchema(), "approval_id": stringSchema(), "conflicting_claim_id": stringSchema(), "severity": map[string]any{"type": "string", "enum": []string{"low", "medium", "high", "blocking"}}, "verdict": map[string]any{"type": "string", "enum": []string{"correct", "incorrect", "stale", "conflict", "useful", "not_useful"}}}),
@@ -1980,7 +2136,7 @@ func mcpTools() []map[string]any {
 
 func mcpToolTraceName(name string) string {
 	switch name {
-	case "recall", "ingest_document", "ingest_documents", "remember_claim", "challenge", "forget", "brain_sources", "brain_summaries", "brain_think", "memory_health", "discover_scopes", "rebuild_summaries", "policy_plan", "working_memory_compose", "list_conflicts", "resolve_conflict", "upsert_acl_policy", "list_acl_policies", "acl_decision", "upsert_agent_policy", "list_agent_policies", "agent_policy_decision", "upsert_agent_profile", "list_agent_profiles", "upsert_source_config", "list_source_configs", "enqueue_ingestion_job", "list_ingestion_jobs", "retry_ingestion_job", "cancel_ingestion_job", "propose_learning", "list_learning_proposals", "decide_learning_proposal", "request_approval":
+	case "recall", "ingest_document", "ingest_documents", "remember_claim", "capture_observation", "list_observations", "challenge", "forget", "brain_sources", "brain_summaries", "brain_think", "memory_health", "discover_scopes", "rebuild_summaries", "policy_plan", "working_memory_compose", "list_conflicts", "resolve_conflict", "upsert_acl_policy", "list_acl_policies", "acl_decision", "upsert_agent_policy", "list_agent_policies", "agent_policy_decision", "upsert_agent_profile", "list_agent_profiles", "upsert_source_config", "list_source_configs", "enqueue_ingestion_job", "list_ingestion_jobs", "retry_ingestion_job", "cancel_ingestion_job", "propose_learning", "list_learning_proposals", "decide_learning_proposal", "request_approval":
 		return name
 	default:
 		return "unknown"
