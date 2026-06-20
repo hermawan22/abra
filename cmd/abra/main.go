@@ -1313,7 +1313,9 @@ func localPathIngest(ctx context.Context, args cliArgs) error {
 		return errors.New("no matching files found; adjust --include, add --code, or check --path")
 	}
 	results := make([]map[string]any, 0, len(documents))
+	failures := make([]map[string]any, 0)
 	skippedEmpty := 0
+	continueOnError := boolFlag(args, "continue-on-error") || boolFlag(args, "continue")
 	for _, doc := range documents {
 		if strings.TrimSpace(doc.Content) == "" {
 			skippedEmpty++
@@ -1334,7 +1336,16 @@ func localPathIngest(ctx context.Context, args cliArgs) error {
 			"metadata":    metadata,
 		}, cliTimeout(args, defaultIngestTimeout))
 		if err != nil {
-			return fmt.Errorf("ingest %s: %w", doc.Path, friendlyProviderError(err))
+			friendly := friendlyProviderError(err)
+			if !continueOnError {
+				return fmt.Errorf("ingest %s: %w", doc.Path, friendly)
+			}
+			failures = append(failures, map[string]any{
+				"path":       doc.Path,
+				"source_url": sourceURL,
+				"error":      friendly.Error(),
+			})
+			continue
 		}
 		results = append(results, map[string]any{
 			"path":        doc.Path,
@@ -1345,18 +1356,37 @@ func localPathIngest(ctx context.Context, args cliArgs) error {
 			"relations":   result["relations"],
 		})
 	}
-	if len(results) == 0 {
+	if len(results) == 0 && len(failures) == 0 {
 		return fmt.Errorf("no non-empty matching files found; skipped %d empty file(s)", skippedEmpty)
 	}
 	if boolFlag(args, "json") {
-		return printJSON(map[string]any{"scope": scope, "documents": results, "skipped_empty": skippedEmpty})
+		if err := printJSON(map[string]any{"scope": scope, "documents": results, "failures": failures, "skipped_empty": skippedEmpty}); err != nil {
+			return err
+		}
+		if len(failures) > 0 {
+			return fmt.Errorf("ingest completed with %d failure(s)", len(failures))
+		}
+		return nil
 	}
 	fmt.Printf("Ingested files: %d\n", len(results))
 	if skippedEmpty > 0 {
 		fmt.Printf("Skipped empty files: %d\n", skippedEmpty)
 	}
+	if len(failures) > 0 {
+		fmt.Printf("Failed files: %d\n", len(failures))
+		for i, failure := range failures {
+			if i >= 5 {
+				fmt.Printf("- ... %d more failure(s)\n", len(failures)-i)
+				break
+			}
+			fmt.Printf("- %s: %s\n", stringValue(failure["path"], ""), stringValue(failure["error"], "unknown error"))
+		}
+	}
 	fmt.Println("scope: " + scope)
 	fmt.Println("source: " + source.ID)
+	if len(failures) > 0 {
+		return fmt.Errorf("ingest completed with %d failure(s)", len(failures))
+	}
 	return nil
 }
 
@@ -3278,7 +3308,7 @@ Usage:
   abra status
   abra doctor
   abra seed [--scope repo:demo]
-  abra ingest . [--code]
+  abra ingest . [--code] [--continue-on-error]
   abra ingest ./notes.md
   abra ingest --scope repo:demo --text "Agents should use Abra" [--title Intro]
   abra ingest --git https://github.com/owner/repo.git [--ref main] [--scope repo:demo]
@@ -3314,7 +3344,7 @@ func commandUsage(command string) string {
 	switch command {
 	case "ingest":
 		return `Usage:
-  abra ingest . [--code]
+  abra ingest . [--code] [--continue-on-error]
   abra ingest ./notes.md
   abra ingest --text "source-backed content" [--title Intro]
   abra ingest --git https://github.com/owner/repo.git [--ref main] [--wait]
@@ -3339,6 +3369,8 @@ Source ingestion flags:
   --no-wait        return immediately after queueing a tracked local path ingestion job
   --wait-timeout   max wait for queued worker jobs, default 1m
   --direct         force direct local ingestion through /ingest/documents
+  --continue-on-error
+                  keep direct local ingestion running after per-file failures; exits nonzero if any fail
   --timeout        HTTP timeout for direct local/file/text ingest, default 10m
 `
 	case "config":

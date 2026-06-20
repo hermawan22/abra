@@ -256,6 +256,7 @@ From a source checkout, run the CLI as `go run ./cmd/abra <command>`. In a relea
 | compatibility setup alias | `abra install` |
 | ingest one document | `abra ingest --text "source-backed content"` |
 | ingest local repo directly from the CLI | `abra ingest . --code --scope <scope-from-abra-scope>` |
+| ingest local repo and keep going after per-file failures | `abra ingest . --code --continue-on-error --scope <scope-from-abra-scope>` |
 | ingest remote git | `abra ingest --git https://github.com/owner/repo.git --ref main --code --scope repo:owner-repo --wait --wait-timeout 10m` |
 | list sources | `abra sources` |
 | list jobs | `abra jobs` |

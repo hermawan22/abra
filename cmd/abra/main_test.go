@@ -2380,6 +2380,60 @@ func TestLocalPathIngestSkipsEmptyFiles(t *testing.T) {
 	}
 }
 
+func TestLocalPathIngestContinueOnErrorReportsFailures(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "a-ok.md"), "# Alpha\n\nAgents should use Abra.")
+	mustWrite(t, filepath.Join(root, "b-fail.md"), "# Broken\n\nThis file triggers a provider failure.")
+	mustWrite(t, filepath.Join(root, "c-ok.md"), "# Charlie\n\nRelease checks should pass.")
+
+	var requests []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ingest/documents" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		requests = append(requests, body)
+		sourceURL := stringValue(body["source_url"], "")
+		if strings.Contains(sourceURL, "b-fail.md") {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"ai provider request failed: Post \"http://host.docker.internal:8080/v1/embeddings\": dial tcp: connect: connection refused"}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"document_id": "doc"})
+	}))
+	defer server.Close()
+
+	output := captureStdout(t, func() {
+		err := run(context.Background(), []string{
+			"ingest",
+			root,
+			"--include", "**/*.md",
+			"--continue-on-error",
+			"--base-url", server.URL,
+			"--token", "test-token",
+		})
+		if err == nil || !strings.Contains(err.Error(), "ingest completed with 1 failure") {
+			t.Fatalf("error = %v, want continue-on-error summary failure", err)
+		}
+	})
+	if len(requests) != 3 {
+		t.Fatalf("requests = %d, want 3 (%#v)", len(requests), requests)
+	}
+	for _, want := range []string{
+		"Ingested files: 2",
+		"Failed files: 1",
+		"b-fail.md",
+		"abra models up",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q:\n%s", want, output)
+		}
+	}
+}
+
 func TestDefaultEnvPathOutsideCheckoutUsesAbraHome(t *testing.T) {
 	root := t.TempDir()
 	home := t.TempDir()
