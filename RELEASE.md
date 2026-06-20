@@ -67,6 +67,10 @@ available for both supported Linux platforms, and image provenance plus SBOM
 attestations are present in GHCR. Production deployment examples must pin the
 digest rather than relying only on mutable tags.
 
+All external GitHub Actions used by CI, security, release-gate, and release
+workflows must be pinned to full commit SHAs. The OSS hygiene gate rejects
+mutable action tags or branches before release.
+
 ## Tagging
 
 ```sh

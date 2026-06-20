@@ -75,6 +75,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Run managed release-gate Compose stacks under an isolated project and cleanup them afterward so local Codex MCP does not inherit release-gate credentials.
 - Align runtime build version reporting across MCP server info, Prometheus metrics, and tracing resources.
 - Pin GitHub Actions workflow dependencies to immutable commit SHAs across CI, security, release-gate, and release workflows.
+- Make the OSS hygiene gate reject mutable GitHub Actions refs so workflow pinning cannot regress silently.
 - Prefer query-form working-memory MCP resources so scopes containing slashes are preserved.
 - Make `abra upgrade` download the install script before executing it so wrong installer URLs produce actionable recovery guidance instead of a raw curl pipe failure.
 - Raise local demo/setup and managed release-gate worker intervals to reduce background ingestion contention during recall and working-memory latency gates.

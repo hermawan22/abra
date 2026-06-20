@@ -107,7 +107,56 @@ function scanFile(file) {
   return findings;
 }
 
-const findings = trackedFiles().flatMap(scanFile);
+function workflowActionRefFindings(files) {
+  const workflowFiles = files.filter((file) => /^\.github\/workflows\/[^/]+\.ya?ml$/.test(file));
+  const findings = [];
+  for (const file of workflowFiles) {
+    let content;
+    try {
+      content = readFileSync(file, "utf8");
+    } catch {
+      continue;
+    }
+    const lines = content.split(/\r?\n/);
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index];
+      const match = line.match(/^\s*uses:\s*['"]?([^'"\s#]+)['"]?/);
+      if (!match) {
+        continue;
+      }
+      const spec = match[1];
+      if (spec.startsWith("./") || spec.startsWith("../")) {
+        continue;
+      }
+      const at = spec.lastIndexOf("@");
+      if (at < 0) {
+        findings.push({
+          file,
+          line: index + 1,
+          rule: "unpinned_github_action",
+          message: `external action ${spec} must be pinned to a full commit SHA`
+        });
+        continue;
+      }
+      const ref = spec.slice(at + 1);
+      if (!/^[0-9a-f]{40}$/i.test(ref)) {
+        findings.push({
+          file,
+          line: index + 1,
+          rule: "unpinned_github_action",
+          message: `external action ${spec} must use a 40-character commit SHA, not a mutable tag or branch`
+        });
+      }
+    }
+  }
+  return findings;
+}
+
+const files = trackedFiles();
+const findings = [
+  ...files.flatMap(scanFile),
+  ...workflowActionRefFindings(files)
+];
 
 if (findings.length > 0) {
   console.error("OSS hygiene check failed. Remove private context or secrets before publishing:");
