@@ -66,7 +66,15 @@ docker compose --env-file .env.production run --rm migrate
 docker compose --env-file .env.production up -d api worker
 ```
 
-If `ABRA_IMAGE` points at a pushed registry image, use `docker compose --env-file .env.production pull` instead of the build command.
+If `ABRA_IMAGE` points at a pushed registry image, use a digest-pinned
+first-party GHCR reference and pull instead of building locally:
+
+```sh
+ABRA_IMAGE=ghcr.io/hermawan22/abra@sha256:... \
+  docker compose --env-file .env.production pull
+docker compose --env-file .env.production run --rm migrate
+docker compose --env-file .env.production up -d api worker
+```
 
 Back up the `abra-postgres` volume or, for serious production use, point `ABRA_DATABASE_URL` at managed Postgres with `pgvector` and an existing backup policy. The bundled backup, restore-drill, and reindex scripts are in `scripts/`.
 
@@ -75,7 +83,8 @@ Back up the `abra-postgres` volume or, for serious production use, point `ABRA_D
 Prerequisites:
 
 - Managed Postgres with `pgvector`.
-- A private image registry containing the Abra image.
+- Access to the first-party GHCR image `ghcr.io/hermawan22/abra`, pinned by
+  digest from the release `IMAGE_DIGEST` asset.
 - Kubernetes Secrets management for `DATABASE_URL`, `ABRA_API_KEYS`, and embedding credentials.
 - Internal ingress or service mesh routing; do not publish Abra directly to the internet.
 
@@ -94,7 +103,32 @@ kubectl apply -f deploy/kubernetes/service.yaml
 
 Before using the example secret, replace all values and preferably manage it through your platform secret store. Run the migration job once per deploy and inspect completion before rolling the API and worker. The fixed-name example Job must be deleted before each run; otherwise Kubernetes will keep the completed Job and will not rerun migrations for a later deploy.
 
-The Helm chart is available in `deploy/helm`; render it with `helm template abra ./deploy/helm` and install it with your registry image and existing secret.
+The Helm chart is available in `deploy/helm`; render it with
+`helm template abra ./deploy/helm` and install it with your existing secret plus
+the first-party GHCR image digest.
+
+## Image Provenance and Pinning
+
+Release images are published to `ghcr.io/hermawan22/abra` for `linux/amd64` and
+`linux/arm64`. Each GitHub release includes an `IMAGE_DIGEST` asset. The first
+line is the digest-pinned image reference and the remaining lines are tag aliases
+for traceability.
+
+Before promoting a release, verify the release-attested `IMAGE_DIGEST` file and
+the registry image provenance:
+
+```sh
+gh attestation verify --repo hermawan22/abra IMAGE_DIGEST
+image_ref="$(sed -n '1p' IMAGE_DIGEST)"
+docker buildx imagetools inspect "$image_ref"
+gh attestation verify "oci://${image_ref}" --repo hermawan22/abra
+```
+
+BuildKit SBOM and provenance attestations are attached to the GHCR image during
+release. Treat missing SBOM/provenance, a missing platform, or a digest that
+does not start with `ghcr.io/hermawan22/abra@sha256:` as a release-blocking
+condition. Promote and roll back by digest, not by `latest`, semantic-version
+tags, or locally rebuilt images.
 
 ## Required Configuration
 
@@ -169,6 +203,22 @@ Recommended deployment:
 - Run one worker replica by default; scale `WORKER_CONCURRENCY` first for job-level ingestion parallelism.
 - Use `POST /mcp` on the API service for remote MCP clients.
 - Operate Abra through the CLI, API, MCP, metrics, and runbooks.
+
+## Kubernetes Hardening
+
+The Helm chart is the primary Kubernetes install path and renders the runtime
+pods with non-root users, `RuntimeDefault` seccomp, disabled service-account
+token automount, read-only root filesystems, dropped Linux capabilities,
+resource requests and limits, and bounded writable `emptyDir` mounts for `/tmp`
+and the worker git cache. Keep those controls enabled when translating the chart
+to another deployment system.
+
+Cluster operators should add namespace-level Pod Security admission, platform
+secret management, image-pull policy controls, NetworkPolicy or service-mesh
+policy, internal-only ingress, gateway rate limits, and admission policy that
+requires `ghcr.io/hermawan22/abra@sha256:...` image references. Do not grant
+the API or worker pods broad Kubernetes API access; the chart does not require a
+mounted service account token for normal operation.
 
 ## Network
 
@@ -332,6 +382,20 @@ go test ./...
 docker build -t abra:local .
 helm lint deploy/helm
 helm template abra deploy/helm >/tmp/abra-rendered.yaml
+```
+
+For a release candidate, also verify the published artifacts and render Helm
+with the promoted digest:
+
+```sh
+sha256sum -c SHA256SUMS
+gh attestation verify --repo hermawan22/abra IMAGE_DIGEST
+image_ref="$(sed -n '1p' IMAGE_DIGEST)"
+gh attestation verify "oci://${image_ref}" --repo hermawan22/abra
+helm template abra deploy/helm \
+  --set image.repository=ghcr.io/hermawan22/abra \
+  --set image.digest="${image_ref#*@}" \
+  >/tmp/abra-rendered.yaml
 ```
 
 Then run a database smoke test against a disposable Postgres:

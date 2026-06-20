@@ -128,7 +128,7 @@ services:
       WORKER_SOURCE_TIMEOUT: ${WORKER_SOURCE_TIMEOUT:-}
       WORKER_LEASE_TIMEOUT: ${WORKER_LEASE_TIMEOUT:-}
       WORKER_MAX_CHANGED_DOCUMENTS_PER_SOURCE: ${WORKER_MAX_CHANGED_DOCUMENTS_PER_SOURCE:-100}
-      ABRA_GIT_CACHE_DIR: ${ABRA_GIT_CACHE_DIR:-/tmp/abra-git-cache}
+      ABRA_GIT_CACHE_DIR: ${ABRA_GIT_CACHE_DIR:-/var/cache/abra/git}
       ABRA_GIT_CLONE_DEPTH: ${ABRA_GIT_CLONE_DEPTH:-1}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       ABRA_OTEL_EXPORTER_OTLP_ENDPOINT: ${ABRA_OTEL_EXPORTER_OTLP_ENDPOINT:-}
@@ -143,7 +143,7 @@ services:
       postgres:
         condition: service_healthy
     volumes:
-      - abra-git-cache:/tmp/abra-git-cache
+      - abra-git-cache:/var/cache/abra/git
     restart: unless-stopped
 
 volumes:

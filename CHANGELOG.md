@@ -19,6 +19,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Add bounded Prometheus counters for verifier `required_actions` so operators can see recurring agent-blocking causes without exposing scopes, tasks, queries, or recommendation text.
 - Add configurable `--wait-timeout` / `ABRA_CLI_WAIT_TIMEOUT` for queued source ingestion waits.
 - Add release preflight checks for `package-lock.json` version alignment.
+- Add first-party GHCR image release documentation for digest pinning, image provenance, SBOM expectations, and Helm deployment usage.
 - Add configurable working-memory recall and graph fan-out caps for predictable compose load under concurrent agents.
 - Add webhook ingestion job lineage and idempotent delivery handling so connector events are visible in ingestion job history.
 - Add `abra agents init` to generate AGENTS.md and CLAUDE.md instructions that point coding agents at the exact Abra scope.
@@ -82,6 +83,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Validate the Abra MCP endpoint before mutating Codex MCP config during `abra mcp install-codex`.
 - Treat summary-only and graph/context-only packets as usable source-backed context in CLI and governed think output.
 - Align stale public release metadata in lockfile, Helm examples, and supported-version docs.
+- Mark npm metadata as private developer tooling while adding standard repository, license, issue, and homepage fields.
 
 ### Security
 
@@ -89,6 +91,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Replace public CI hygiene denylist wording with generic secret-pattern checks.
 - Harden the curl installer to fail closed for missing checksums, checksum mismatches, invalid archives, and missing executables; source builds now require explicit `ABRA_ALLOW_SOURCE_BUILD=1`.
 - Add optional installer-side GitHub Artifact Attestation verification for release archives and `SHA256SUMS`.
+- Document production image promotion around GHCR digests, release-attested `IMAGE_DIGEST`, registry image provenance, and Kubernetes pod hardening.
 - Omit example env files from the production runtime image so fixed demo credentials stay in source documentation and release archives, not deployed containers.
 - Reject unsigned production webhooks by default unless explicitly overridden for deployments that disable webhook ingestion or verify signatures upstream.
 - Fail startup on malformed numeric, boolean, duration, tracing sample, port, and bind-address configuration.

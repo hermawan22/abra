@@ -1,9 +1,18 @@
 {
   "name": "abra",
   "version": "0.3.7",
-  "description": "Developer scripts for Abra. The production runtime and CLI are Go.",
+  "description": "Private developer scripts for Abra. The production runtime, CLI, and release image are Go.",
   "type": "module",
   "private": true,
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hermawan22/abra.git"
+  },
+  "bugs": {
+    "url": "https://github.com/hermawan22/abra/issues"
+  },
+  "homepage": "https://github.com/hermawan22/abra#readme",
   "keywords": [
     "ai-agents",
     "agent-memory",

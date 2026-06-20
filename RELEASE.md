@@ -36,16 +36,29 @@ Each release should publish:
 - `abra_darwin_amd64.tar.gz`
 - `abra_darwin_arm64.tar.gz`
 - `SHA256SUMS`
+- `IMAGE_DIGEST`
+- `abra-release-gate.json`
+- A multi-architecture image at `ghcr.io/hermawan22/abra` for `linux/amd64`
+  and `linux/arm64`
 - GitHub Artifact Attestations for the CLI archives and `SHA256SUMS`
+- GitHub Artifact Attestations for `IMAGE_DIGEST` and `abra-release-gate.json`
+- Registry-attached image provenance and SBOM attestations for the GHCR image
 
-Container images and SBOMs should only be documented in release notes after the
-workflow publishes them.
+The npm package metadata is private developer tooling only. Do not publish Abra
+to npm as a release artifact; the Go CLI archives and the GHCR image are the
+published runtime artifacts.
 
 Do not document a platform as supported until the release contains its archive,
 the archive is listed in `SHA256SUMS`, and both files have published
 attestations. The install script fails closed for missing platform assets,
 missing checksums, checksum mismatches, and invalid archives. Source builds are
 developer fallback installs only; they are not release artifacts.
+
+Do not document a container image as supported until `IMAGE_DIGEST` contains the
+image digest, the digest points at `ghcr.io/hermawan22/abra`, the image is
+available for both supported Linux platforms, and image provenance plus SBOM
+attestations are present in GHCR. Production deployment examples must pin the
+digest rather than relying only on mutable tags.
 
 ## Tagging
 
@@ -60,7 +73,8 @@ signatures, and release tags whose version does not match `package.json`,
 `CHANGELOG.md` entry, and a commit reachable from `origin/main`. It then runs
 Go and npm vulnerability checks and the full managed release gate before
 building CLI archives, verifying `SHA256SUMS`, creating GitHub Artifact
-Attestations, and uploading the release assets.
+Attestations, publishing the multi-architecture GHCR image with provenance and
+SBOM attestations, and uploading the release assets.
 
 ## Verification
 
@@ -71,11 +85,13 @@ sha256sum -c SHA256SUMS
 ```
 
 Verify artifact provenance with GitHub CLI for every archive and for
-`SHA256SUMS`:
+`SHA256SUMS`, `IMAGE_DIGEST`, and `abra-release-gate.json`:
 
 ```sh
 gh attestation verify --repo OWNER/REPO abra_linux_amd64.tar.gz
 gh attestation verify --repo OWNER/REPO SHA256SUMS
+gh attestation verify --repo OWNER/REPO IMAGE_DIGEST
+gh attestation verify --repo OWNER/REPO abra-release-gate.json
 ```
 
 Hardened install-script verification:
@@ -89,7 +105,21 @@ The hardened installer path must install from the release archive for the
 detected platform. Do not set `ABRA_ALLOW_SOURCE_BUILD=1` when verifying a
 published release.
 
-For container images published by downstream deployment workflows, prefer digests over mutable tags in production deploy manifests.
+For the first-party GHCR image, prefer digests over mutable tags in production
+deploy manifests.
+
+Verify and promote the first-party GHCR image by digest:
+
+```sh
+image_ref="$(sed -n '1p' IMAGE_DIGEST)"
+docker buildx imagetools inspect "$image_ref"
+gh attestation verify "oci://${image_ref}" --repo OWNER/REPO
+```
+
+The first line of `IMAGE_DIGEST` is the digest-pinned image reference to use in
+production, for example `ghcr.io/hermawan22/abra@sha256:...`. The other lines
+list human-friendly tags for traceability only. Do not deploy from `latest` or
+from an unpinned semantic version tag.
 
 ## Rollback
 

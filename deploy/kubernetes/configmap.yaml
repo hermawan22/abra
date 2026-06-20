@@ -32,5 +32,5 @@ data:
   WORKER_INTERVAL: "5m"
   WORKER_MAX_SOURCES_PER_RUN: "25"
   WORKER_CONCURRENCY: "1"
-  ABRA_GIT_CACHE_DIR: "/tmp/abra-git-cache"
+  ABRA_GIT_CACHE_DIR: "/var/cache/abra/git"
   ABRA_GIT_CLONE_DEPTH: "1"

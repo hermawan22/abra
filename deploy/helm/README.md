@@ -38,9 +38,20 @@ helm template abra ./deploy/helm
 Install or upgrade:
 
 ```sh
+image_ref="$(sed -n '1p' IMAGE_DIGEST)"
 helm upgrade --install abra ./deploy/helm \
-  --set image.repository=ghcr.io/your-org/abra \
-  --set image.tag=0.3.7
+  --set image.repository=ghcr.io/hermawan22/abra \
+  --set image.digest="${image_ref#*@}"
+```
+
+`IMAGE_DIGEST` is published with each GitHub release. The first line is the
+digest-pinned GHCR image reference, such as
+`ghcr.io/hermawan22/abra@sha256:...`. Verify it before promotion:
+
+```sh
+gh attestation verify --repo hermawan22/abra IMAGE_DIGEST
+docker buildx imagetools inspect "$(sed -n '1p' IMAGE_DIGEST)"
+gh attestation verify "oci://$(sed -n '1p' IMAGE_DIGEST)" --repo hermawan22/abra
 ```
 
 ## Values
@@ -49,8 +60,38 @@ Important values:
 
 ```yaml
 image:
-  repository: ghcr.io/your-org/abra
-  tag: 0.3.7
+  repository: ghcr.io/hermawan22/abra
+  tag: ""
+  digest: sha256:...
+  pullPolicy: IfNotPresent
+
+api:
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+      ephemeral-storage: 128Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+      ephemeral-storage: 512Mi
+
+worker:
+  interval: 5m
+  maxSourcesPerRun: "25"
+  concurrency: "1"
+  gitCacheDir: /var/cache/abra/git
+  gitCacheSizeLimit: 1Gi
+  gitCloneDepth: "1"
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+      ephemeral-storage: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+      ephemeral-storage: 2Gi
 
 secrets:
   existingSecret: abra-secrets
@@ -87,26 +128,33 @@ config:
   serviceName: abra
   deploymentEnvironment: production
 
-worker:
-  interval: 5m
-  maxSourcesPerRun: "25"
-  concurrency: "1"
-  gitCacheDir: /tmp/abra-git-cache
-  gitCloneDepth: "1"
-
 migrate:
   enabled: true
+  backoffLimit: 1
   activeDeadlineSeconds: 600
   ttlSecondsAfterFinished: 86400
   hookDeletePolicy: before-hook-creation,hook-succeeded
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+      ephemeral-storage: 64Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+      ephemeral-storage: 256Mi
 ```
 
 ## Rules
 
 - Do not create a database by default; production should use managed Postgres with `pgvector`.
 - Do not embed secret literals in values files.
+- Use the first-party image `ghcr.io/hermawan22/abra` and set `image.digest` from the release `IMAGE_DIGEST` asset for production. Leave `image.tag` empty when a digest is set.
+- Verify `IMAGE_DIGEST` and image provenance with GitHub Artifact Attestations before promotion. Treat missing SBOM/provenance or unsupported platforms as release blockers.
 - Run migrations as Helm pre-install/pre-upgrade hooks with a delete policy or unique job names so migrations run once on every release.
 - Keep Abra internal-only by default.
+- Keep the rendered pod hardening controls: non-root UID/GID, `RuntimeDefault` seccomp, disabled service-account token automount, read-only root filesystem, dropped capabilities, resource requests/limits, and bounded writable `emptyDir` mounts.
+- Add namespace Pod Security, NetworkPolicy or service-mesh policy, internal ingress, gateway rate limits, and admission rules that require digest-pinned GHCR images in the target cluster.
 - Keep `config.bindAddress="0.0.0.0"` for containerized API pods and restrict exposure through the Service, Ingress, gateway, or network policy layers.
 - Keep `config.approvalMode=enforce` before exposing write-capable credentials to autonomous agents.
 - Keep `ABRA_WEBHOOK_SECRETS` present in the existing secret. The chart requires it by default for the migration, API, and worker pods; set `config.allowUnsignedWebhooksInProduction="true"` only when webhook ingestion is disabled or an upstream gateway verifies webhook signatures.

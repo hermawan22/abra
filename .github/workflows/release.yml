@@ -195,11 +195,97 @@ jobs:
           name: abra_${{ matrix.os }}_${{ matrix.arch }}
           path: dist/abra_${{ matrix.os }}_${{ matrix.arch }}.tar.gz
 
-  publish:
-    name: publish release
-    needs: build
+  image:
+    name: build image
+    needs: release_gate
     permissions:
       attestations: write
+      artifact-metadata: write
+      contents: read
+      id-token: write
+      packages: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Set image metadata
+        id: image_metadata
+        run: |
+          set -euo pipefail
+          echo "image_name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "image_version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push image
+        id: image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.image_metadata.outputs.image_name }}:${{ github.ref_name }}
+            ${{ steps.image_metadata.outputs.image_name }}:${{ steps.image_metadata.outputs.image_version }}
+            ${{ steps.image_metadata.outputs.image_name }}:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.title=Abra
+            org.opencontainers.image.description=CLI-first governed brain layer for AI agents
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ github.ref_name }}
+          build-args: |
+            ABRA_VERSION=${{ github.ref_name }}
+            ABRA_COMMIT=${{ github.sha }}
+            ABRA_DATE=${{ steps.image_metadata.outputs.build_date }}
+          provenance: mode=max
+          sbom: true
+
+      - name: Attest image provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ steps.image_metadata.outputs.image_name }}
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true
+
+      - name: Write image digest artifact
+        run: |
+          set -euo pipefail
+          mkdir -p dist-image
+          {
+            echo "${IMAGE_NAME}@${DIGEST}"
+            echo "${IMAGE_NAME}:${GITHUB_REF_NAME}@${DIGEST}"
+            echo "${IMAGE_NAME}:${ABRA_IMAGE_VERSION}@${DIGEST}"
+            echo "${IMAGE_NAME}:${GITHUB_SHA}@${DIGEST}"
+          } > dist-image/IMAGE_DIGEST
+        env:
+          IMAGE_NAME: ${{ steps.image_metadata.outputs.image_name }}
+          ABRA_IMAGE_VERSION: ${{ steps.image_metadata.outputs.image_version }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: abra_image_digest
+          path: dist-image/IMAGE_DIGEST
+
+  publish:
+    name: publish release
+    needs:
+      - build
+      - image
+    permissions:
+      attestations: write
+      artifact-metadata: write
       contents: write
       id-token: write
     runs-on: ubuntu-latest
@@ -217,8 +303,18 @@ jobs:
             find dist -maxdepth 1 -type f -print >&2
             exit 1
           fi
+          if [ ! -s dist/IMAGE_DIGEST ]; then
+            echo "Expected image digest artifact at dist/IMAGE_DIGEST" >&2
+            find dist -maxdepth 1 -type f -print >&2
+            exit 1
+          fi
+          if [ ! -s dist/abra-release-gate.json ]; then
+            echo "Expected release gate report at dist/abra-release-gate.json" >&2
+            find dist -maxdepth 1 -type f -print >&2
+            exit 1
+          fi
           cd dist
-          sha256sum abra_*.tar.gz > SHA256SUMS
+          sha256sum abra_*.tar.gz IMAGE_DIGEST abra-release-gate.json > SHA256SUMS
           sha256sum -c SHA256SUMS
 
       - name: Attest release artifacts
@@ -226,6 +322,8 @@ jobs:
         with:
           subject-path: |
             dist/abra_*.tar.gz
+            dist/IMAGE_DIGEST
+            dist/abra-release-gate.json
             dist/SHA256SUMS
 
       - name: Upload release assets
@@ -234,3 +332,5 @@ jobs:
           files: |
             dist/abra_*.tar.gz
             dist/SHA256SUMS
+            dist/IMAGE_DIGEST
+            dist/abra-release-gate.json

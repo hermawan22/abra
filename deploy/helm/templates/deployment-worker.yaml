@@ -17,8 +17,13 @@ spec:
         {{- include "abra.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: worker
     spec:
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -28,6 +33,7 @@ spec:
           command: ["/app/abra-worker"]
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
           envFrom:
@@ -86,10 +92,16 @@ spec:
                   key: {{ .Values.secrets.keys.rerankerApiKey }}
                   optional: true
           volumeMounts:
+            - name: tmp
+              mountPath: /tmp
             - name: git-cache
               mountPath: {{ .Values.worker.gitCacheDir | quote }}
           resources:
             {{- toYaml .Values.worker.resources | nindent 12 }}
       volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
         - name: git-cache
-          emptyDir: {}
+          emptyDir:
+            sizeLimit: {{ .Values.worker.gitCacheSizeLimit | quote }}

@@ -1,6 +1,7 @@
 image:
-  repository: abra
-  tag: local
+  repository: ghcr.io/hermawan22/abra
+  tag: ""
+  digest: ""
   pullPolicy: IfNotPresent
 
 api:
@@ -10,24 +11,29 @@ api:
     requests:
       cpu: 250m
       memory: 512Mi
+      ephemeral-storage: 128Mi
     limits:
       cpu: "1"
       memory: 1Gi
+      ephemeral-storage: 512Mi
 
 worker:
   replicas: 1
   interval: 5m
   maxSourcesPerRun: "25"
   concurrency: "1"
-  gitCacheDir: /tmp/abra-git-cache
+  gitCacheDir: /var/cache/abra/git
+  gitCacheSizeLimit: 1Gi
   gitCloneDepth: "1"
   resources:
     requests:
       cpu: 100m
       memory: 256Mi
+      ephemeral-storage: 256Mi
     limits:
       cpu: 500m
       memory: 512Mi
+      ephemeral-storage: 2Gi
 
 migrate:
   enabled: true
@@ -35,6 +41,15 @@ migrate:
   activeDeadlineSeconds: 600
   ttlSecondsAfterFinished: 86400
   hookDeletePolicy: before-hook-creation,hook-succeeded
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+      ephemeral-storage: 64Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+      ephemeral-storage: 256Mi
 
 config:
   nodeEnv: production

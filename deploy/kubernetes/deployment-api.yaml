@@ -12,16 +12,22 @@ spec:
       labels:
         app: abra-api
     spec:
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: api
-          image: abra:local
+          image: ghcr.io/hermawan22/abra:0.3.7
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
           ports:
@@ -47,6 +53,15 @@ spec:
             requests:
               cpu: 250m
               memory: 512Mi
+              ephemeral-storage: 128Mi
             limits:
               cpu: "1"
               memory: 1Gi
+              ephemeral-storage: 512Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi

@@ -375,6 +375,10 @@ Generic manifests live in `deploy/kubernetes`. Apply them with your own image, n
 5. Deploy `deployment-api.yaml`, `deployment-worker.yaml`, and `service.yaml`.
 
 The Helm chart lives in `deploy/helm`; render it with `helm template abra ./deploy/helm` and install it with your image, secret, namespace, and ingress settings.
+For released builds, use the first-party GHCR image
+`ghcr.io/hermawan22/abra` and pin production installs to the digest published
+in the release `IMAGE_DIGEST` asset. Tags such as `v0.3.7`, `0.3.7`, and the
+commit SHA are traceability labels; the digest is the deployable identity.
 
 ## Services
 
@@ -389,7 +393,27 @@ Abra is a service with a CLI operator workflow: use the Go `abra` binary, or `go
 
 ## Container
 
-The Docker image defaults to the API service:
+The release image is published to GitHub Container Registry as
+`ghcr.io/hermawan22/abra` for `linux/amd64` and `linux/arm64`. Each GitHub
+release includes an `IMAGE_DIGEST` asset whose first line is the digest-pinned
+image reference:
+
+```text
+ghcr.io/hermawan22/abra@sha256:...
+```
+
+Verify the image reference and its provenance before promoting it:
+
+```sh
+docker buildx imagetools inspect ghcr.io/hermawan22/abra@sha256:...
+gh attestation verify oci://ghcr.io/hermawan22/abra@sha256:... --repo hermawan22/abra
+```
+
+BuildKit SBOM and provenance attestations are attached to the GHCR image during
+release. Use the digest in Docker Compose, Helm, raw Kubernetes manifests, and
+rollback records instead of relying on mutable tags.
+
+The image defaults to the API service:
 
 ```text
 /app/abra-api
