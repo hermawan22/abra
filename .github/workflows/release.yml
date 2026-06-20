@@ -290,10 +290,16 @@ jobs:
       id-token: write
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
+      - name: Stage installer script
+        run: |
+          set -euo pipefail
+          cp scripts/install.sh dist/install.sh
+          chmod 0644 dist/install.sh
       - name: Checksums
         run: |
           set -euo pipefail
@@ -314,23 +320,46 @@ jobs:
             exit 1
           fi
           cd dist
-          sha256sum abra_*.tar.gz IMAGE_DIGEST abra-release-gate.json > SHA256SUMS
+          sha256sum abra_*.tar.gz install.sh IMAGE_DIGEST abra-release-gate.json > SHA256SUMS
           sha256sum -c SHA256SUMS
+
+      - name: Verify staged install script
+        run: |
+          set -euo pipefail
+          install_dir="$(mktemp -d)"
+          ABRA_RELEASE_BASE_URL="file://${PWD}/dist" \
+            ABRA_VERSION="${GITHUB_REF_NAME}" \
+            ABRA_INSTALL_DIR="$install_dir" \
+            ABRA_VERIFY_ATTESTATION=0 \
+            sh scripts/install.sh
+          "$install_dir/abra" version --json
+          "$install_dir/abra" agents verify . --scope repo:abra --files-only --strict
 
       - name: Attest release artifacts
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: |
             dist/abra_*.tar.gz
+            dist/install.sh
             dist/IMAGE_DIGEST
             dist/abra-release-gate.json
             dist/SHA256SUMS
+
+      - name: Verify release artifact attestations
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for artifact in dist/abra_*.tar.gz dist/install.sh dist/SHA256SUMS dist/IMAGE_DIGEST dist/abra-release-gate.json; do
+            gh attestation verify --repo "$GITHUB_REPOSITORY" "$artifact"
+          done
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/abra_*.tar.gz
+            dist/install.sh
             dist/SHA256SUMS
             dist/IMAGE_DIGEST
             dist/abra-release-gate.json

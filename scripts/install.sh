@@ -6,6 +6,7 @@ VERSION="${ABRA_VERSION:-latest}"
 INSTALL_DIR="${ABRA_INSTALL_DIR:-}"
 ALLOW_SOURCE_BUILD="${ABRA_ALLOW_SOURCE_BUILD:-0}"
 VERIFY_ATTESTATION="${ABRA_VERIFY_ATTESTATION:-auto}"
+RELEASE_BASE_URL="${ABRA_RELEASE_BASE_URL:-}"
 
 log() {
   printf '%s\n' "$*" >&2
@@ -60,7 +61,9 @@ try_release() {
   asset="abra_${os}_${arch}.tar.gz"
   archive="$tmp/$asset"
   sums="$tmp/SHA256SUMS"
-  if [ "$VERSION" = "latest" ]; then
+  if [ -n "$RELEASE_BASE_URL" ]; then
+    base_url="${RELEASE_BASE_URL%/}"
+  elif [ "$VERSION" = "latest" ]; then
     base_url="https://github.com/$REPO/releases/latest/download"
   else
     base_url="https://github.com/$REPO/releases/download/$VERSION"

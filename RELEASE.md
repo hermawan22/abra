@@ -35,12 +35,14 @@ Each release should publish:
 - `abra_linux_arm64.tar.gz`
 - `abra_darwin_amd64.tar.gz`
 - `abra_darwin_arm64.tar.gz`
+- `install.sh`
 - `SHA256SUMS`
 - `IMAGE_DIGEST`
 - `abra-release-gate.json`
 - A multi-architecture image at `ghcr.io/hermawan22/abra` for `linux/amd64`
   and `linux/arm64`
-- GitHub Artifact Attestations for the CLI archives and `SHA256SUMS`
+- GitHub Artifact Attestations for the CLI archives, `install.sh`, and
+  `SHA256SUMS`
 - GitHub Artifact Attestations for `IMAGE_DIGEST` and `abra-release-gate.json`
 - Registry-attached image provenance and SBOM attestations for the GHCR image
 
@@ -73,8 +75,10 @@ signatures, and release tags whose version does not match `package.json`,
 `CHANGELOG.md` entry, and a commit reachable from `origin/main`. It then runs
 Go and npm vulnerability checks and the full managed release gate before
 building CLI archives, verifying `SHA256SUMS`, creating GitHub Artifact
-Attestations, publishing the multi-architecture GHCR image with provenance and
-SBOM attestations, and uploading the release assets.
+Attestations, verifying those attestations, verifying the staged install script
+path against the archive that will be uploaded, publishing the
+multi-architecture GHCR image with provenance and SBOM attestations, and
+uploading the release assets.
 
 ## Verification
 
@@ -84,11 +88,12 @@ Download release artifacts and verify checksums:
 sha256sum -c SHA256SUMS
 ```
 
-Verify artifact provenance with GitHub CLI for every archive and for
+Verify artifact provenance with GitHub CLI for every archive, `install.sh`,
 `SHA256SUMS`, `IMAGE_DIGEST`, and `abra-release-gate.json`:
 
 ```sh
 gh attestation verify --repo OWNER/REPO abra_linux_amd64.tar.gz
+gh attestation verify --repo OWNER/REPO install.sh
 gh attestation verify --repo OWNER/REPO SHA256SUMS
 gh attestation verify --repo OWNER/REPO IMAGE_DIGEST
 gh attestation verify --repo OWNER/REPO abra-release-gate.json
@@ -97,13 +102,27 @@ gh attestation verify --repo OWNER/REPO abra-release-gate.json
 Hardened install-script verification:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/scripts/install.sh \
+curl -fsSL https://github.com/OWNER/REPO/releases/download/vX.Y.Z/install.sh \
   | ABRA_VERSION=vX.Y.Z ABRA_VERIFY_ATTESTATION=1 sh
 ```
 
 The hardened installer path must install from the release archive for the
 detected platform. Do not set `ABRA_ALLOW_SOURCE_BUILD=1` when verifying a
 published release.
+
+For immutable installer provenance, download the release-pinned installer asset
+and verify its attestation before executing it:
+
+```sh
+curl -fsSLO https://github.com/OWNER/REPO/releases/download/vX.Y.Z/install.sh
+gh attestation verify --repo OWNER/REPO install.sh
+ABRA_VERSION=vX.Y.Z ABRA_VERIFY_ATTESTATION=1 sh install.sh
+```
+
+The release workflow also runs the installer against the staged `dist`
+directory before uploading assets by setting `ABRA_RELEASE_BASE_URL` to a local
+file URL. This variable is for release verification only; normal users should
+install from the published GitHub release URL above.
 
 For the first-party GHCR image, prefer digests over mutable tags in production
 deploy manifests.

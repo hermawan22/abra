@@ -36,6 +36,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Add a queue-pressure eval gate that verifies signed webhook ingestion jobs drain, leave no queued/retry/stale residue, and become recallable.
 - Add the full managed release gate, vulnerability checks, runtime version alignment, and main-branch ancestry checks to the tag release workflow before CLI archives are built and published.
 - Add hot query embedding caching for recall and working-memory paths, and make full release dogfood/performance gates stable on the default local Qwen embedding runner.
+- Add staged install-script verification, installer asset publishing, and pre-upload attestation verification to the release workflow so CLI archives must pass the same installer path users run with `curl | sh`.
 
 ### Changed
 
