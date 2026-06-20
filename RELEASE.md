@@ -57,8 +57,10 @@ git push origin vX.Y.Z
 The release workflow rejects lightweight tags, unsigned or unverified tag
 signatures, and release tags whose version does not match `package.json`,
 `deploy/helm/Chart.yaml`, chart `appVersion`, and the latest numbered
-`CHANGELOG.md` entry. It then builds CLI archives, verifies `SHA256SUMS`, creates
-GitHub Artifact Attestations, and uploads the release assets.
+`CHANGELOG.md` entry, and a commit reachable from `origin/main`. It then runs
+Go and npm vulnerability checks and the full managed release gate before
+building CLI archives, verifying `SHA256SUMS`, creating GitHub Artifact
+Attestations, and uploading the release assets.
 
 ## Verification
 

@@ -14,6 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Verify release tag and version metadata
         env:
@@ -34,8 +36,14 @@ jobs:
           package_lock_root_version="$(node -p "require('./package-lock.json').packages[''].version")"
           chart_version="$(awk -F': *' '$1 == "version" {gsub(/"/, "", $2); print $2}' deploy/helm/Chart.yaml)"
           chart_app_version="$(awk -F': *' '$1 == "appVersion" {gsub(/"/, "", $2); print $2}' deploy/helm/Chart.yaml)"
+          runtime_version="$(awk -F'"' '$1 ~ /Version = / {print $2; exit}' internal/version/info.go)"
           changelog_version="$(awk '/^## [0-9]+\.[0-9]+\.[0-9]+ / {print $2; exit}' CHANGELOG.md)"
 
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then
+            echo "Release tag ${TAG} must point to a commit reachable from origin/main" >&2
+            exit 1
+          fi
           if [[ "$package_version" != "$version" ]]; then
             echo "package.json version $package_version does not match tag $TAG" >&2
             exit 1
@@ -50,6 +58,10 @@ jobs:
           fi
           if [[ "$chart_app_version" != "$version" ]]; then
             echo "Helm appVersion $chart_app_version does not match tag $TAG" >&2
+            exit 1
+          fi
+          if [[ "$runtime_version" != "$version" ]]; then
+            echo "internal/version/info.go version $runtime_version does not match tag $TAG" >&2
             exit 1
           fi
           if [[ "$changelog_version" != "$version" ]]; then
@@ -97,9 +109,55 @@ jobs:
           console.log(`Verified signed release tag: ${expectedTag}`);
           NODE
 
+  release_gate:
+    name: release gate
+    needs: preflight
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Run Go vulnerability check
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+      - name: Run npm vulnerability check
+        run: npm audit --audit-level=high
+
+      - name: Start local embedding model
+        run: go run ./cmd/abra models up
+
+      - name: Run release gate
+        run: |
+          ABRA_RELEASE_PROFILE=full \
+          ABRA_RELEASE_MANAGE_STACK=1 \
+          ABRA_RELEASE_COMMAND_TIMEOUT_MS=900000 \
+          npm run release:gate | tee abra-release-gate.json
+
+      - name: Upload release gate report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: abra-release-gate-${{ github.ref_name }}
+          path: abra-release-gate.json
+
   build:
     name: build ${{ matrix.os }} ${{ matrix.arch }}
-    needs: preflight
+    needs: release_gate
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

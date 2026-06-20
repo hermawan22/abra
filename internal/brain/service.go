@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -21,11 +22,21 @@ import (
 )
 
 type Service struct {
-	cfg           config.Config
-	db            *store.Store
-	embeddings    ai.EmbeddingProvider
-	reranker      ai.RerankerProvider
-	providerSlots chan struct{}
+	cfg                 config.Config
+	db                  *store.Store
+	embeddings          ai.EmbeddingProvider
+	reranker            ai.RerankerProvider
+	providerSlots       chan struct{}
+	queryEmbeddingCache *embeddingCache
+}
+
+const defaultQueryEmbeddingCacheEntries = 1024
+
+type embeddingCache struct {
+	mu      sync.Mutex
+	max     int
+	order   []string
+	entries map[string][]float64
 }
 
 type IngestDocumentInput struct {
@@ -123,7 +134,60 @@ func New(cfg config.Config, db *store.Store) (*Service, error) {
 	if providerConcurrency < 1 {
 		providerConcurrency = 1
 	}
-	return &Service{cfg: cfg, db: db, embeddings: embeddingProvider, reranker: rerankerProvider, providerSlots: make(chan struct{}, providerConcurrency)}, nil
+	return &Service{
+		cfg:                 cfg,
+		db:                  db,
+		embeddings:          embeddingProvider,
+		reranker:            rerankerProvider,
+		providerSlots:       make(chan struct{}, providerConcurrency),
+		queryEmbeddingCache: newEmbeddingCache(defaultQueryEmbeddingCacheEntries),
+	}, nil
+}
+
+func newEmbeddingCache(max int) *embeddingCache {
+	if max < 1 {
+		max = defaultQueryEmbeddingCacheEntries
+	}
+	return &embeddingCache{max: max, entries: map[string][]float64{}}
+}
+
+func (c *embeddingCache) get(key string) ([]float64, bool) {
+	if c == nil {
+		return nil, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	value, ok := c.entries[key]
+	if !ok {
+		return nil, false
+	}
+	return cloneVector(value), true
+}
+
+func (c *embeddingCache) set(key string, value []float64) {
+	if c == nil || key == "" || len(value) == 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, exists := c.entries[key]; !exists {
+		c.order = append(c.order, key)
+	}
+	c.entries[key] = cloneVector(value)
+	for len(c.entries) > c.max && len(c.order) > 0 {
+		evict := c.order[0]
+		c.order = c.order[1:]
+		delete(c.entries, evict)
+	}
+}
+
+func cloneVector(value []float64) []float64 {
+	if len(value) == 0 {
+		return nil
+	}
+	out := make([]float64, len(value))
+	copy(out, value)
+	return out
 }
 
 func newEmbeddingProvider(cfg config.Config) (ai.EmbeddingProvider, error) {
@@ -246,10 +310,7 @@ func (s *Service) Recall(ctx context.Context, query, scope string, limit int, in
 	if query == "" || scope == "" {
 		return store.RecallResult{Claims: []store.ClaimResult{}, SupportingDocuments: []store.DocumentResult{}, GraphContext: []store.RelationResult{}, RetrievalMode: "empty"}, nil
 	}
-	embedding, err := s.embed(ctx, ai.EmbeddingRequest{
-		Input:      []string{query},
-		Dimensions: s.cfg.Embedding.Dimensions,
-	})
+	queryEmbedding, ok, err := s.recallQueryEmbedding(ctx, query)
 	if err != nil {
 		result, fallbackErr := s.db.Recall(ctx, query, scope, limit, includeUnverified)
 		if fallbackErr != nil {
@@ -258,7 +319,7 @@ func (s *Service) Recall(ctx context.Context, query, scope string, limit int, in
 		result.RetrievalMode = "full_text_embedding_error"
 		return result, nil
 	}
-	if len(embedding.Embeddings) == 0 {
+	if !ok {
 		result, fallbackErr := s.db.Recall(ctx, query, scope, limit, includeUnverified)
 		if fallbackErr != nil {
 			return store.RecallResult{}, fallbackErr
@@ -266,11 +327,42 @@ func (s *Service) Recall(ctx context.Context, query, scope string, limit int, in
 		result.RetrievalMode = "full_text_empty_embedding"
 		return result, nil
 	}
-	result, err := s.db.RecallHybrid(ctx, query, scope, limit, includeUnverified, embedding.Embeddings[0].Vector)
+	result, err := s.db.RecallHybrid(ctx, query, scope, limit, includeUnverified, queryEmbedding)
 	if err != nil {
 		return store.RecallResult{}, err
 	}
 	return s.rerankRecall(ctx, query, result), nil
+}
+
+func (s *Service) recallQueryEmbedding(ctx context.Context, query string) ([]float64, bool, error) {
+	key := s.recallQueryEmbeddingCacheKey(query)
+	if cached, ok := s.queryEmbeddingCache.get(key); ok {
+		return cached, true, nil
+	}
+	embedding, err := s.embed(ctx, ai.EmbeddingRequest{
+		Input:      []string{query},
+		Dimensions: s.cfg.Embedding.Dimensions,
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	if len(embedding.Embeddings) == 0 || len(embedding.Embeddings[0].Vector) == 0 {
+		return nil, false, nil
+	}
+	vector := cloneVector(embedding.Embeddings[0].Vector)
+	s.queryEmbeddingCache.set(key, vector)
+	return vector, true, nil
+}
+
+func (s *Service) recallQueryEmbeddingCacheKey(query string) string {
+	parts := []string{
+		strings.ToLower(strings.TrimSpace(s.cfg.Embedding.Provider)),
+		s.cfg.Embedding.BaseURL,
+		s.cfg.Embedding.Model,
+		fmt.Sprintf("%d", s.cfg.Embedding.Dimensions),
+		strings.TrimSpace(query),
+	}
+	return strings.Join(parts, "\x00")
 }
 
 func (s *Service) rerankRecall(ctx context.Context, query string, result store.RecallResult) store.RecallResult {

@@ -43,7 +43,9 @@ const managedStackEnv = {
   EMBEDDING_BASE_URL: process.env.EMBEDDING_BASE_URL || "http://host.docker.internal:8080/v1",
   EMBEDDING_API_KEY: process.env.EMBEDDING_API_KEY || "unused-local-embedding-key",
   RATE_LIMIT_MAX: process.env.RATE_LIMIT_MAX || "1000",
-  WORKER_INTERVAL: process.env.WORKER_INTERVAL || "30s"
+  WORKER_INTERVAL: process.env.WORKER_INTERVAL || "30s",
+  WORKER_SOURCE_TIMEOUT: process.env.WORKER_SOURCE_TIMEOUT || "10m",
+  WORKER_LEASE_TIMEOUT: process.env.WORKER_LEASE_TIMEOUT || "15m"
 };
 
 function placeholderSecret(value) {
@@ -187,6 +189,16 @@ function quickPerfEnv() {
   };
 }
 
+function fullPerfEnv() {
+  if (quick) {
+    return quickPerfEnv();
+  }
+  return {
+    ABRA_PERF_MEMORY_P95_MS: process.env.ABRA_PERF_MEMORY_P95_MS || "3000",
+    ABRA_PERF_MEMORY_CAPACITY_P95_MS: process.env.ABRA_PERF_MEMORY_CAPACITY_P95_MS || "6000"
+  };
+}
+
 function quickTier1Env() {
   if (!quick) {
     return {};
@@ -291,6 +303,11 @@ async function main() {
       await runCommand("eval_tier23_enforced", "npm", ["run", "eval:tier23"], {
         env: { ABRA_TIER23_EXPECT_APPROVAL_ENFORCEMENT: "1" }
       });
+      if (manageStack) {
+        await runCommand("docker_compose_advisory_up", "docker", ["compose", "up", "-d", "--force-recreate", "api", "worker"], {
+          env: managedStackEnv
+        });
+      }
     }
     if (prepareDogfoodSource) {
       await runCommand("prepare_dogfood_source_dir", "docker", ["compose", "exec", "-T", "worker", "sh", "-lc", `rm -rf ${dogfoodContainerSourceRoot} && mkdir -p ${dogfoodContainerSourceRoot}`], {
@@ -310,11 +327,12 @@ async function main() {
       env: {
         ABRA_DOGFOOD_SCOPE: process.env.ABRA_DOGFOOD_SCOPE || `repo:abra-release-${runId}`,
         ABRA_DOGFOOD_SOURCE_NAME: process.env.ABRA_DOGFOOD_SOURCE_NAME || `abra-self-${runId}`,
+        ABRA_DOGFOOD_TIMEOUT_MS: process.env.ABRA_DOGFOOD_TIMEOUT_MS || "360000",
         ...(prepareDogfoodSource ? { ABRA_DOGFOOD_SOURCE_ROOT: dogfoodContainerSourceRoot } : {})
       }
     });
   }
-  await runCommand("perf_local", "npm", ["run", "perf:local"], { env: quickPerfEnv() });
+  await runCommand("perf_local", "npm", ["run", "perf:local"], { env: fullPerfEnv() });
 }
 
 async function cleanup() {
@@ -337,6 +355,11 @@ const summary = {
   suite: "abra-release-gate",
   status: failed.length === 0 ? "passed" : "failed",
   profile,
+  failed_checks: failed.map((check) => ({
+    name: check.name,
+    exit_code: check.exit_code,
+    error: check.stderr || check.stdout || ""
+  })),
   started_at: startedAt,
   finished_at: new Date().toISOString(),
   checks,

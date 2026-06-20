@@ -39,10 +39,14 @@ jobs:
       - name: Install Helm
         uses: azure/setup-helm@v4
 
+      - name: Start local embedding model
+        run: go run ./cmd/abra models up
+
       - name: Run quick managed release gate
         run: |
           ABRA_RELEASE_PROFILE=quick \
           ABRA_RELEASE_MANAGE_STACK=1 \
+          ABRA_RELEASE_QUEUE_PRESSURE_GATE=1 \
           ABRA_RELEASE_COMMAND_TIMEOUT_MS=300000 \
           npm run release:gate | tee abra-release-gate.json
 

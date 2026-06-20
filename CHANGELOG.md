@@ -28,6 +28,8 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Add CLI setup/config/doctor visibility for `ABRA_AI_PROVIDER_CONCURRENCY`, including local-model overload warnings.
 - Add Prometheus metrics for AI provider calls, wait time, in-flight calls, and queued calls so operators can diagnose embedding and reranker saturation.
 - Add a queue-pressure eval gate that verifies signed webhook ingestion jobs drain, leave no queued/retry/stale residue, and become recallable.
+- Add the full managed release gate, vulnerability checks, runtime version alignment, and main-branch ancestry checks to the tag release workflow before CLI archives are built and published.
+- Add hot query embedding caching for recall and working-memory paths, and make full release dogfood/performance gates stable on the default local Qwen embedding runner.
 
 ### Changed
 

@@ -53,10 +53,13 @@ curl -fsSL https://raw.githubusercontent.com/hermawan22/abra/main/scripts/instal
 The installer downloads the matching platform release archive, verifies it
 against `SHA256SUMS`, and installs only after the verified archive contains an
 executable `abra` binary. When GitHub CLI (`gh`) is available, the default
-`ABRA_VERIFY_ATTESTATION=auto` mode also attempts GitHub Artifact Attestation
-verification. Set `ABRA_VERIFY_ATTESTATION=1` to require provenance for the
-archive and `SHA256SUMS`. Missing platform assets, missing checksums, checksum
-mismatches, and invalid archives stop the install.
+`ABRA_VERIFY_ATTESTATION=auto` mode also enforces GitHub Artifact Attestation
+verification; if `gh` is missing, auto mode falls back to checksum-only install
+with a warning. Set `ABRA_VERIFY_ATTESTATION=1` to require provenance for the
+archive and `SHA256SUMS` even when `gh` is not installed, or
+`ABRA_VERIFY_ATTESTATION=0` only when you intentionally accept checksum-only
+installation. Missing platform assets, missing checksums, checksum mismatches,
+failed available attestation checks, and invalid archives stop the install.
 
 Source builds are disabled by default so a missing release asset cannot silently
 replace a verified binary install. For local development only, opt in explicitly:

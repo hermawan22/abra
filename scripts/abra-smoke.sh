@@ -1169,8 +1169,41 @@ if (!recall.claims.every((claim) => Number.isFinite(Number(claim.text_score)) &&
 if (!policy.required || !Array.isArray(policy.queries) || policy.queries.length < 1) {
   throw new Error("policy plan did not require recall queries");
 }
-if (!memory.intent || !memory.strategy || !memory.retrieval_plan || !memory.retrieval_plan.mode || !memory.retrieval_plan.budget || memory.retrieval_plan.budget.context_tokens < 300 || !Array.isArray(memory.retrieval_trace) || memory.retrieval_trace.length < 1 || !memory.memory_health || !memory.memory_health.status || !Array.isArray(memory.memory_health.signals) || memory.memory_health.signals.length < 1 || !memory.verification || !memory.verification.verdict || !Array.isArray(memory.agent_policy_decisions) || memory.agent_policy_decisions.length < 1 || !memory.agent_decision || !memory.agent_decision.decision || !Array.isArray(memory.agent_decision.allowed_next_actions) || !memory.context_window || !Array.isArray(memory.context_window.blocks) || memory.context_window.blocks.length < 1 || !memory.context_window.prompt || memory.context_window.estimated_tokens < 1 || memory.context_window.estimated_tokens > memory.context_window.max_tokens || !Array.isArray(memory.learning_suggestions) || memory.learning_suggestions.length < 1 || !Array.isArray(memory.summaries) || memory.summaries.length < 1 || !Array.isArray(memory.facts) || !Array.isArray(memory.supporting_documents) || !Array.isArray(memory.impact_map) || memory.impact_map.length < 1 || !Array.isArray(memory.validation_plan) || memory.validation_plan.length < 1 || !memory.stats || memory.stats.queries_run < 1 || memory.stats.graph_relations < 1 || memory.stats.graph_queries < 1 || memory.stats.health_signals !== memory.memory_health.signals.length || memory.stats.graph_warnings !== (Array.isArray(memory.graph_warnings) ? memory.graph_warnings.length : 0) || memory.stats.impact_items !== memory.impact_map.length || memory.stats.validation_steps !== memory.validation_plan.length || memory.stats.context_blocks !== memory.context_window.blocks.length || memory.stats.context_tokens !== memory.context_window.estimated_tokens || memory.stats.context_dropped_blocks !== (Array.isArray(memory.context_window.dropped_blocks) ? memory.context_window.dropped_blocks.length : 0) || memory.stats.retrieval_trace_items !== memory.retrieval_trace.length || memory.stats.retrieval_warnings !== (Array.isArray(memory.retrieval_warnings) ? memory.retrieval_warnings.length : 0) || memory.stats.total_duration_ms < 0 || memory.stats.parallel_queries < 1 || memory.stats.parallel_graph_queries < 1) {
-  throw new Error("memory compose did not return an agent-ready packet");
+const memoryReadyChecks = [
+  ["intent", !!memory.intent],
+  ["strategy", !!memory.strategy],
+  ["retrieval_plan.mode", !!memory.retrieval_plan?.mode],
+  ["retrieval_plan.budget.context_tokens", Number(memory.retrieval_plan?.budget?.context_tokens || 0) >= 300],
+  ["retrieval_trace", Array.isArray(memory.retrieval_trace) && memory.retrieval_trace.length >= 1],
+  ["memory_health.signals", !!memory.memory_health?.status && Array.isArray(memory.memory_health?.signals) && memory.memory_health.signals.length >= 1],
+  ["verification.verdict", !!memory.verification?.verdict],
+  ["agent_policy_decisions", Array.isArray(memory.agent_policy_decisions) && memory.agent_policy_decisions.length >= 1],
+  ["agent_decision", !!memory.agent_decision?.decision && Array.isArray(memory.agent_decision?.allowed_next_actions)],
+  ["context_window", Array.isArray(memory.context_window?.blocks) && memory.context_window.blocks.length >= 1 && !!memory.context_window.prompt && memory.context_window.estimated_tokens >= 1 && memory.context_window.estimated_tokens <= memory.context_window.max_tokens],
+  ["learning_suggestions", Array.isArray(memory.learning_suggestions)],
+  ["summaries", Array.isArray(memory.summaries) && memory.summaries.length >= 1],
+  ["facts/supporting_documents", Array.isArray(memory.facts) && Array.isArray(memory.supporting_documents)],
+  ["impact_map", Array.isArray(memory.impact_map) && memory.impact_map.length >= 1],
+  ["validation_plan", Array.isArray(memory.validation_plan) && memory.validation_plan.length >= 1],
+  ["stats.queries_run", Number(memory.stats?.queries_run || 0) >= 1],
+  ["stats.graph_relations", Number(memory.stats?.graph_relations || 0) >= 1],
+  ["stats.graph_queries", Number(memory.stats?.graph_queries || 0) >= 1],
+  ["stats.health_signals", memory.stats?.health_signals === memory.memory_health?.signals?.length],
+  ["stats.graph_warnings", memory.stats?.graph_warnings === (Array.isArray(memory.graph_warnings) ? memory.graph_warnings.length : 0)],
+  ["stats.impact_items", memory.stats?.impact_items === memory.impact_map?.length],
+  ["stats.validation_steps", memory.stats?.validation_steps === memory.validation_plan?.length],
+  ["stats.context_blocks", memory.stats?.context_blocks === memory.context_window?.blocks?.length],
+  ["stats.context_tokens", memory.stats?.context_tokens === memory.context_window?.estimated_tokens],
+  ["stats.context_dropped_blocks", memory.stats?.context_dropped_blocks === (Array.isArray(memory.context_window?.dropped_blocks) ? memory.context_window.dropped_blocks.length : 0)],
+  ["stats.retrieval_trace_items", memory.stats?.retrieval_trace_items === memory.retrieval_trace?.length],
+  ["stats.retrieval_warnings", memory.stats?.retrieval_warnings === (Array.isArray(memory.retrieval_warnings) ? memory.retrieval_warnings.length : 0)],
+  ["stats.total_duration_ms", Number(memory.stats?.total_duration_ms || 0) >= 0],
+  ["stats.parallel_queries", Number(memory.stats?.parallel_queries || 0) >= 1],
+  ["stats.parallel_graph_queries", Number(memory.stats?.parallel_graph_queries || 0) >= 1],
+];
+const failedMemoryReadyChecks = memoryReadyChecks.filter(([, ok]) => !ok).map(([name]) => name);
+if (failedMemoryReadyChecks.length > 0) {
+  throw new Error("memory compose did not return an agent-ready packet; failed checks: " + failedMemoryReadyChecks.join(", ") + "; stats=" + JSON.stringify(memory.stats || {}) + "; health=" + JSON.stringify({status: memory.memory_health?.status, signals: memory.memory_health?.signals?.map((signal) => signal.code) || []}));
 }
 const memoryCitationRefs = new Set((Array.isArray(memory.citations) ? memory.citations : []).map((citation) => citation.ref).filter(Boolean));
 if (memoryCitationRefs.size < 1 || !Array.isArray(memory.evidence) || !memory.evidence.some((item) => item.ref && memoryCitationRefs.has(item.ref))) {

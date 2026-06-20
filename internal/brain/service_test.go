@@ -227,6 +227,46 @@ func TestProviderLimiterSerializesEmbeddingCalls(t *testing.T) {
 	}
 }
 
+func TestRecallQueryEmbeddingCacheReusesAndCopiesVectors(t *testing.T) {
+	provider := &recordingEmbeddingProvider{}
+	service := Service{
+		cfg:                 config.Config{Embedding: config.AIProviderConfig{Provider: "local", BaseURL: "http://example.test/v1", Model: "qwen3", Dimensions: 3}},
+		embeddings:          provider,
+		providerSlots:       make(chan struct{}, 1),
+		queryEmbeddingCache: newEmbeddingCache(8),
+	}
+
+	first, ok, err := service.recallQueryEmbedding(context.Background(), "Source Scoped Recall")
+	if err != nil {
+		t.Fatalf("first embedding error = %v", err)
+	}
+	if !ok {
+		t.Fatal("first embedding was not returned")
+	}
+	first[0] = 99
+
+	second, ok, err := service.recallQueryEmbedding(context.Background(), "Source Scoped Recall")
+	if err != nil {
+		t.Fatalf("second embedding error = %v", err)
+	}
+	if !ok {
+		t.Fatal("second embedding was not returned")
+	}
+	if len(provider.callSizes) != 1 {
+		t.Fatalf("embedding provider calls = %d, want 1", len(provider.callSizes))
+	}
+	if second[0] == 99 {
+		t.Fatalf("cached vector was mutated through caller-owned slice: %#v", second)
+	}
+
+	if _, ok, err := service.recallQueryEmbedding(context.Background(), "Working Memory Compose"); err != nil || !ok {
+		t.Fatalf("different query embedding ok=%v err=%v", ok, err)
+	}
+	if len(provider.callSizes) != 2 {
+		t.Fatalf("embedding provider calls after different query = %d, want 2", len(provider.callSizes))
+	}
+}
+
 func aiProviderMetricValue(metrics []observability.AIProviderMetric, operation, provider, status, field string) int64 {
 	var total int64
 	for _, metric := range metrics {
