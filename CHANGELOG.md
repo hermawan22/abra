@@ -66,7 +66,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Make `abra setup --no-start`, `abra mcp install-codex`, CLI help, and docs surface model logs and exact-scope recovery steps for Codex no-context cases.
 - Print `abra ingest` before `abra agents verify` in `abra scope` guidance now that verification requires source-backed working memory.
 - Make `abra agents ready` a non-mutating readiness-check alias instead of bootstrapping, ingesting, or installing MCP.
-- Make `abra agents verify` and `abra agents ready --json` return a ready prompt and recovery next steps for AI-client launchers.
+- Make `abra agents verify` and `abra agents ready` print recovery next steps in terminal output, and keep returning `ready_prompt` plus `next_steps` for JSON-based AI-client launchers.
 - Lower default working-memory recall fan-out to one to reduce local embedding oversubscription and stabilize compose p95 under concurrent agents.
 - Make the self-host smoke gate require AI provider call, wait, and gauge metrics for embedding paths so provider observability cannot silently regress.
 - Make managed release-gate stacks use a non-placeholder local API token so production secret validation runs during bootstrap.

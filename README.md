@@ -115,8 +115,9 @@ Claude Code reads the same instructions, ingests the repo with `--code`,
 verifies source-backed `working_memory_compose` for that scope, and installs
 the Abra MCP endpoint into Codex without writing the token literally to disk.
 Use `abra agents init` and `abra agents verify` separately when you want the
-manual steps. Use `abra agents ready --json` when an editor, CI job, or agent
-launcher needs the exact `ready_prompt` and recovery `next_steps` without
+manual steps. `abra agents verify` and `abra agents ready` print the exact
+ready prompt plus next steps. Use `abra agents ready --json` when an editor, CI
+job, or agent launcher needs `ready_prompt` and recovery `next_steps` without
 scraping terminal output.
 
 Connect a custom compatible embedding provider during setup without editing env files:
@@ -195,6 +196,10 @@ abra scope
 abra ingest . --code --scope <scope-from-abra-scope>
 abra agents verify . --scope <scope-from-abra-scope>
 ```
+
+If `abra agents verify` says ready but Codex still says Abra has no context,
+restart that Codex client so it reloads MCP config and token environment, then
+rerun the same verify command and retry with the printed ready prompt.
 
 Prompt pattern:
 

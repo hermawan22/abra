@@ -2131,6 +2131,7 @@ func verifyAgentContext(ctx context.Context, args cliArgs, path, scope string) e
 		}
 	}
 	if !ok {
+		printAgentNextSteps(nextSteps)
 		if filesOnly {
 			return errors.New("agent instruction verification failed; run `abra agents init --force` after confirming local custom instructions are backed up")
 		}
@@ -2139,15 +2140,17 @@ func verifyAgentContext(ctx context.Context, args cliArgs, path, scope string) e
 	if filesOnly {
 		fmt.Println("Ready: agent instruction files are ready for scope " + scope + ".")
 		fmt.Println("Prompt: " + readyPrompt)
+		printAgentNextSteps(nextSteps)
 		return nil
 	}
 	fmt.Println("Ready: MCP clients can use scope " + scope + " with working_memory_compose.")
 	fmt.Println("Prompt: " + readyPrompt)
+	printAgentNextSteps(nextSteps)
 	return nil
 }
 
 func agentReadyPrompt(scope string) string {
-	return `Use Abra MCP first. Exact scope: ` + scope + `. Call discover_scopes with expected_scope="` + scope + `", then call working_memory_compose with that exact scope before answering or changing code. If discover_scopes does not show ` + scope + ` or working_memory_compose returns no source-backed context, run abra scope, ingest the project with that exact scope, and rerun abra agents verify.`
+	return `Use Abra MCP first. Exact scope: ` + scope + `. Call discover_scopes with expected_scope="` + scope + `", then call working_memory_compose with that exact scope before answering or changing code. If discover_scopes does not show ` + scope + ` or working_memory_compose returns no source-backed context, run abra scope, ingest the project with that exact scope, rerun abra agents verify, then retry with this exact scope.`
 }
 
 func agentVerifyNextSteps(path, scope string, ok, filesOnly bool) []string {
@@ -2168,6 +2171,16 @@ func agentVerifyNextSteps(path, scope string, ok, filesOnly bool) []string {
 		"Run `abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope) + "` if scope discovery or working memory is empty.",
 		"Run `abra doctor` to check API, MCP, token, and local model readiness.",
 		"Rerun `abra agents verify " + shellQuote(path) + " --scope " + shellQuote(scope) + "`.",
+	}
+}
+
+func printAgentNextSteps(steps []string) {
+	if len(steps) == 0 {
+		return
+	}
+	fmt.Println("Next:")
+	for _, step := range steps {
+		fmt.Println("- " + step)
 	}
 }
 

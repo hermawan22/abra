@@ -388,7 +388,17 @@ func TestAgentsVerifyChecksMCPAndScopeDiscovery(t *testing.T) {
 			t.Fatalf("agents verify error = %v", err)
 		}
 	})
-	for _, want := range []string{"AGENTS.md", "warn  CLAUDE.md", "scope_discovery", "working_memory", "Ready", wantScope} {
+	for _, want := range []string{
+		"AGENTS.md",
+		"warn  CLAUDE.md",
+		"scope_discovery",
+		"working_memory",
+		"Ready",
+		wantScope,
+		"Next:",
+		"Give the ready_prompt to the AI client.",
+		"fully restart that client",
+	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("verify output missing %q:\n%s", want, output)
 		}
@@ -504,7 +514,14 @@ func TestAgentsVerifyFilesOnlyStrictSkipsMCP(t *testing.T) {
 			t.Fatalf("agents verify --files-only --strict error = %v", err)
 		}
 	})
-	for _, want := range []string{"ok  AGENTS.md", "ok  CLAUDE.md", "skip  mcp skipped by --files-only", "Ready: agent instruction files are ready"} {
+	for _, want := range []string{
+		"ok  AGENTS.md",
+		"ok  CLAUDE.md",
+		"skip  mcp skipped by --files-only",
+		"Ready: agent instruction files are ready",
+		"Next:",
+		"Run `abra agents verify " + shellQuote(root) + " --scope " + shellQuote(wantScope) + "` against a live Abra MCP server",
+	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("files-only verify output missing %q:\n%s", want, output)
 		}
@@ -631,7 +648,7 @@ func TestAgentsVerifyFailsWhenScopeIsMissing(t *testing.T) {
 			t.Fatalf("agents verify error = %v", err)
 		}
 	})
-	if !strings.Contains(output, "fail  scope_discovery") || !strings.Contains(output, "abra ingest . --code --scope") {
+	if !strings.Contains(output, "fail  scope_discovery") || !strings.Contains(output, "abra ingest . --code --scope") || !strings.Contains(output, "Next:") {
 		t.Fatalf("verify output did not explain missing scope:\n%s", output)
 	}
 }
@@ -703,7 +720,7 @@ func TestAgentsVerifyFailsWhenWorkingMemoryIsEmpty(t *testing.T) {
 			t.Fatalf("agents verify error = %v", err)
 		}
 	})
-	for _, want := range []string{"ok  scope_discovery", "fail  working_memory", "facts=0 documents=0 summaries=0 graph=0", "abra ingest . --code --scope " + wantScope} {
+	for _, want := range []string{"ok  scope_discovery", "fail  working_memory", "facts=0 documents=0 summaries=0 graph=0", "Next:", "abra ingest . --code --scope " + wantScope} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("verify output missing %q:\n%s", want, output)
 		}
