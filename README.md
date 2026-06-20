@@ -100,6 +100,7 @@ Use `abra setup --yes --no-models` only when you intentionally manage the embedd
 ```sh
 abra models up
 abra models status
+abra models logs
 ```
 
 Generate repo-local agent instructions for Codex, Claude Code, and other MCP-capable coding agents:
@@ -179,6 +180,8 @@ pass the printed scope to the agent:
 
 ```sh
 abra scope
+abra ingest . --code --scope <scope-from-abra-scope>
+abra agents verify . --scope <scope-from-abra-scope>
 ```
 
 Prompt pattern:
@@ -258,7 +261,8 @@ Ingest local repo docs and code intelligence immediately from the CLI:
 
 ```sh
 go run ./cmd/abra scope
-go run ./cmd/abra ingest . --code --scope repo:abra
+go run ./cmd/abra ingest . --code --scope <scope-from-abra-scope>
+go run ./cmd/abra agents verify . --scope <scope-from-abra-scope>
 ```
 
 Think with governed memory:

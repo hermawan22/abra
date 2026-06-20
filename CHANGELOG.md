@@ -22,6 +22,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Add first-party GHCR image release documentation for digest pinning, image provenance, SBOM expectations, and Helm deployment usage.
 - Add first-class raw observations through CLI, HTTP, and MCP so agents can capture scoped episodic memory without promoting it to trusted claims.
 - Add observation-target learning proposals so raw observations can move into review while staying outside trusted recall until explicitly applied.
+- Add smoke and Tier 2/3 coverage for HTTP and MCP observation-to-learning proposal review, dedupe, audit, and no trusted auto-promotion.
 - Add configurable working-memory recall and graph fan-out caps for predictable compose load under concurrent agents.
 - Add webhook ingestion job lineage and idempotent delivery handling so connector events are visible in ingestion job history.
 - Add `abra agents init` to generate AGENTS.md and CLAUDE.md instructions that point coding agents at the exact Abra scope.
@@ -51,6 +52,8 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Make CLI docs and generated agent instructions treat `abra scope` as the source of truth and recover empty agent context by ingesting and verifying the exact scope.
 - Make `abra agents verify` call `working_memory_compose` and fail when the exact scope returns no source-backed context.
 - Make `abra agents verify` use diagnostic working-memory compose so context checks do not write compose audit events or automatic learning proposals.
+- Make accepted claim-promotion apply plans target scoped `memory_write` even when the proposal originated from a raw observation.
+- Make `abra setup --no-start`, `abra mcp install-codex`, CLI help, and docs surface model logs and exact-scope recovery steps for Codex no-context cases.
 - Print `abra ingest` before `abra agents verify` in `abra scope` guidance now that verification requires source-backed working memory.
 - Lower default working-memory recall fan-out to one to reduce local embedding oversubscription and stabilize compose p95 under concurrent agents.
 - Make the self-host smoke gate require AI provider call, wait, and gauge metrics for embedding paths so provider observability cannot silently regress.

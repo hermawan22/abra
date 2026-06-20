@@ -265,6 +265,31 @@ await runCheck("raw_observation_is_searchable_but_not_trusted_recall", async () 
   });
   assert(proposed.learning_proposal && proposed.learning_proposal.id, "observation proposal did not return a learning proposal");
   assert(proposed.learning_proposal.target_type === "observation", `proposal target_type = ${proposed.learning_proposal.target_type}`);
+  const repeatedProposal = await request("/learning/proposals", {
+    method: "POST",
+    expectStatus: 202,
+    body: {
+      scope,
+      proposal_type: "claim",
+      title: `Promote observation ${capturedObservation.observation.id}`,
+      rationale: "Tier 1 verifies observation review without trusted auto-promotion.",
+      target_type: "observation",
+      target_id: capturedObservation.observation.id,
+      source_url: `file://abra-tier1-observation-${suffix}.md`,
+      confidence: 0.7,
+      payload: {
+        observation_id: capturedObservation.observation.id,
+        claim: observationText,
+        promotion_flow: "observation_to_claim"
+      },
+      created_by: "abra-tier1-eval"
+    }
+  });
+  assert(
+    repeatedProposal.learning_proposal && repeatedProposal.learning_proposal.id === proposed.learning_proposal.id,
+    "repeated observation proposal did not reuse the pending proposal"
+  );
+  assert(repeatedProposal.created === false, "repeated observation proposal should not create a duplicate proposal");
   const proposedObservations = await request(`/observations?scope=${encodeURIComponent(scope)}&query=${encodeURIComponent("release sentinel")}&type=episode&status=proposed&limit=10`);
   assert(
     Array.isArray(proposedObservations.observations) && proposedObservations.observations.some((item) => item.id === capturedObservation.observation.id),
@@ -278,7 +303,16 @@ await runCheck("raw_observation_is_searchable_but_not_trusted_recall", async () 
       review_reason: "Tier 1 verifies apply-plan handoff only."
     }
   });
-  assert(decided.apply_plan && decided.apply_plan.action === "review_claim_promotion", `apply_plan.action = ${decided.apply_plan && decided.apply_plan.action}`);
+  assert(
+    decided.apply_plan &&
+      decided.apply_plan.ready === true &&
+      decided.apply_plan.proposal_type === "claim" &&
+      decided.apply_plan.action === "review_claim_promotion" &&
+      decided.apply_plan.endpoint === "/claims" &&
+      decided.apply_plan.target_type === "memory_write" &&
+      decided.apply_plan.target_id === scope,
+    `unexpected apply_plan = ${JSON.stringify(decided.apply_plan)}`
+  );
   const afterProposalRecall = await request("/recall", {
     method: "POST",
     body: {

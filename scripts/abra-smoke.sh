@@ -717,9 +717,43 @@ json_post "/learning/proposals/${learning_proposal_id}/decide" "{
   \"review_reason\":\"Smoke proposal lifecycle\"
 }" >"${tmpdir}/learning-proposal-decision.json"
 
-	json_post "/mcp" "{
-	  \"jsonrpc\":\"2.0\",
-	  \"id\":100,
+observation_text="Smoke observation review sentinel ${STAMP} must not become trusted recall automatically."
+json_post "/observations" "{
+  \"scope\":\"${SCOPE}\",
+  \"observation_text\":\"${observation_text}\",
+  \"observation_type\":\"episode\",
+  \"status\":\"raw\",
+  \"source_url\":\"file://abra-smoke-observation-${STAMP}.md\",
+  \"source_type\":\"smoke\",
+  \"created_by\":\"smoke\",
+  \"metadata\":{\"fixture\":\"http-observation-review\",\"stamp\":\"${STAMP}\"}
+}" >"${tmpdir}/observation.json"
+observation_id="$(node -e 'let d="";process.stdin.on("data",x=>d+=x);process.stdin.on("end",()=>console.log(JSON.parse(d).observation.id))' <"${tmpdir}/observation.json")"
+json_get "/observations?scope=${SCOPE}&query=observation%20review%20sentinel&type=episode&status=raw&limit=10" >"${tmpdir}/observations-raw.json"
+json_post "/learning/proposals" "{
+  \"scope\":\"${SCOPE}\",
+  \"proposal_type\":\"claim\",
+  \"target_type\":\"observation\",
+  \"target_id\":\"${observation_id}\",
+  \"created_by\":\"smoke\"
+}" >"${tmpdir}/observation-learning-proposal.json"
+observation_learning_proposal_id="$(node -e 'let d="";process.stdin.on("data",x=>d+=x);process.stdin.on("end",()=>console.log(JSON.parse(d).learning_proposal.id))' <"${tmpdir}/observation-learning-proposal.json")"
+json_get "/observations?scope=${SCOPE}&query=observation%20review%20sentinel&type=episode&status=proposed&limit=10" >"${tmpdir}/observations-proposed.json"
+json_post "/learning/proposals/${observation_learning_proposal_id}/decide" "{
+  \"status\":\"accepted\",
+  \"reviewed_by\":\"smoke\",
+  \"review_reason\":\"Smoke observation proposal lifecycle\"
+}" >"${tmpdir}/observation-learning-proposal-decision.json"
+json_post "/recall" "{
+  \"scope\":\"${SCOPE}\",
+  \"query\":\"Smoke observation review sentinel ${STAMP}\",
+  \"limit\":10
+}" >"${tmpdir}/observation-recall-after-proposal.json"
+json_get "/audit/events?scope=${SCOPE}&event_type=observation.proposed&target_type=observation&limit=50" >"${tmpdir}/observation-proposed-audit.json"
+
+		json_post "/mcp" "{
+		  \"jsonrpc\":\"2.0\",
+		  \"id\":100,
 	  \"method\":\"initialize\",
 	  \"params\":{}
 	}" >"${tmpdir}/mcp-init.json"
@@ -919,6 +953,42 @@ json_post "/mcp" "{
 
 json_post "/mcp" "{
   \"jsonrpc\":\"2.0\",
+  \"id\":37,
+  \"method\":\"tools/call\",
+  \"params\":{\"name\":\"capture_observation\",\"arguments\":{\"scope\":\"${SCOPE}\",\"observation_text\":\"MCP observation review sentinel ${STAMP} must remain outside trusted recall.\",\"observation_type\":\"episode\",\"status\":\"raw\",\"source_url\":\"file://abra-smoke-mcp-observation-${STAMP}.md\",\"source_type\":\"smoke\",\"created_by\":\"smoke-mcp\",\"metadata\":{\"fixture\":\"mcp-observation-review\",\"stamp\":\"${STAMP}\"}}}
+}" >"${tmpdir}/mcp-observation.json"
+mcp_observation_id="$(node -e 'let d="";process.stdin.on("data",x=>d+=x);process.stdin.on("end",()=>{const r=JSON.parse(d); const p=JSON.parse(r.result.content[0].text); console.log(p.id);})' <"${tmpdir}/mcp-observation.json")"
+
+json_post "/mcp" "{
+  \"jsonrpc\":\"2.0\",
+  \"id\":38,
+  \"method\":\"tools/call\",
+  \"params\":{\"name\":\"propose_learning\",\"arguments\":{\"scope\":\"${SCOPE}\",\"proposal_type\":\"claim\",\"target_type\":\"observation\",\"target_id\":\"${mcp_observation_id}\",\"created_by\":\"smoke-mcp\"}}
+}" >"${tmpdir}/mcp-observation-learning.json"
+mcp_observation_learning_id="$(node -e 'let d="";process.stdin.on("data",x=>d+=x);process.stdin.on("end",()=>{const r=JSON.parse(d); const p=JSON.parse(r.result.content[0].text); console.log(p.id);})' <"${tmpdir}/mcp-observation-learning.json")"
+
+json_post "/mcp" "{
+  \"jsonrpc\":\"2.0\",
+  \"id\":39,
+  \"method\":\"tools/call\",
+  \"params\":{\"name\":\"list_observations\",\"arguments\":{\"scope\":\"${SCOPE}\",\"query\":\"MCP observation review sentinel\",\"observation_type\":\"episode\",\"status\":\"proposed\",\"limit\":10}}
+}" >"${tmpdir}/mcp-observations-proposed.json"
+
+json_post "/mcp" "{
+  \"jsonrpc\":\"2.0\",
+  \"id\":40,
+  \"method\":\"tools/call\",
+  \"params\":{\"name\":\"decide_learning_proposal\",\"arguments\":{\"proposal_id\":\"${mcp_observation_learning_id}\",\"status\":\"accepted\",\"reviewed_by\":\"smoke-mcp\",\"review_reason\":\"Verify MCP observation proposal lifecycle\"}}
+}" >"${tmpdir}/mcp-observation-learning-decision.json"
+json_post "/recall" "{
+  \"scope\":\"${SCOPE}\",
+  \"query\":\"MCP observation review sentinel ${STAMP}\",
+  \"limit\":10
+}" >"${tmpdir}/mcp-observation-recall-after-proposal.json"
+json_get "/audit/events?scope=${SCOPE}&event_type=observation.proposed&target_type=observation&limit=50" >"${tmpdir}/mcp-observation-proposed-audit.json"
+
+json_post "/mcp" "{
+  \"jsonrpc\":\"2.0\",
   \"id\":6,
   \"method\":\"tools/call\",
   \"params\":{\"name\":\"propose_learning\",\"arguments\":{\"scope\":\"${SCOPE}\",\"proposal_type\":\"graph\",\"title\":\"MCP learning proposal ${STAMP}\",\"rationale\":\"Verify MCP learning proposal workflow\",\"target_type\":\"scope\",\"target_id\":\"${SCOPE}\",\"created_by\":\"smoke\"}}
@@ -996,6 +1066,13 @@ const rebuildSummaries = read("rebuild-summaries.json");
 const learningProposal = read("learning-proposal.json");
 const learningProposals = read("learning-proposals.json");
 const learningProposalDecision = read("learning-proposal-decision.json");
+const observation = read("observation.json");
+const observationsRaw = read("observations-raw.json");
+const observationLearningProposal = read("observation-learning-proposal.json");
+const observationsProposed = read("observations-proposed.json");
+const observationLearningProposalDecision = read("observation-learning-proposal-decision.json");
+const observationRecallAfterProposal = read("observation-recall-after-proposal.json");
+const observationProposedAudit = read("observation-proposed-audit.json");
 const sourceApproval = read("source-approval.json");
 const sourceApprovalDecision = read("source-approval-decision.json");
 const sourceStatusApproval = read("source-status-approval.json");
@@ -1065,6 +1142,12 @@ const mcpAgentPolicies = read("mcp-agent-policies.json");
 const mcpAgentPolicyDecision = read("mcp-agent-policy-decision.json");
 const mcpAgentPolicyAudit = read("mcp-agent-policy-audit.json");
 const mcpAgentProfiles = read("mcp-agent-profiles.json");
+const mcpObservation = read("mcp-observation.json");
+const mcpObservationLearning = read("mcp-observation-learning.json");
+const mcpObservationsProposed = read("mcp-observations-proposed.json");
+const mcpObservationLearningDecision = read("mcp-observation-learning-decision.json");
+const mcpObservationRecallAfterProposal = read("mcp-observation-recall-after-proposal.json");
+const mcpObservationProposedAudit = read("mcp-observation-proposed-audit.json");
 const mcpLearning = read("mcp-learning.json");
 const mcpLearningDecision = read("mcp-learning-decision.json");
 const mcpLearningProposedAudit = read("mcp-learning-proposed-audit.json");
@@ -1280,6 +1363,30 @@ if (!learningProposalDecision.learning_proposal || learningProposalDecision.lear
 }
 if (!learningProposalDecision.apply_plan || learningProposalDecision.apply_plan.ready !== true || learningProposalDecision.apply_plan.action !== "rebuild_summaries") {
   throw new Error("learning proposal decision did not return a summary rebuild apply plan");
+}
+if (!observation.observation || !observation.observation.id || observation.observation.status !== "raw") {
+  throw new Error("HTTP observation capture did not return a raw observation");
+}
+if (!Array.isArray(observationsRaw.observations) || !observationsRaw.observations.some((item) => item.id === observation.observation.id)) {
+  throw new Error("HTTP raw observation was not listable before proposal");
+}
+if (!observationLearningProposal.learning_proposal || observationLearningProposal.learning_proposal.status !== "pending" || observationLearningProposal.learning_proposal.target_type !== "observation" || observationLearningProposal.learning_proposal.target_id !== observation.observation.id) {
+  throw new Error("HTTP observation learning proposal did not target the captured observation");
+}
+if (!observationLearningProposal.learning_proposal.payload || observationLearningProposal.learning_proposal.payload.observation_id !== observation.observation.id || observationLearningProposal.learning_proposal.payload.promotion_flow !== "observation_to_claim") {
+  throw new Error("HTTP observation proposal did not preserve observation promotion payload");
+}
+if (!Array.isArray(observationsProposed.observations) || !observationsProposed.observations.some((item) => item.id === observation.observation.id && item.status === "proposed")) {
+  throw new Error("HTTP observation was not marked proposed after learning proposal");
+}
+if (!observationLearningProposalDecision.learning_proposal || observationLearningProposalDecision.learning_proposal.status !== "accepted" || !observationLearningProposalDecision.apply_plan || observationLearningProposalDecision.apply_plan.action !== "review_claim_promotion" || observationLearningProposalDecision.apply_plan.endpoint !== "/claims" || observationLearningProposalDecision.apply_plan.target_type !== "memory_write" || observationLearningProposalDecision.apply_plan.target_id !== process.env.SCOPE) {
+  throw new Error("HTTP observation learning decision did not return a claim-promotion apply plan");
+}
+if (JSON.stringify(observationRecallAfterProposal).includes(`Smoke observation review sentinel ${process.env.STAMP}`)) {
+  throw new Error("HTTP accepted observation proposal leaked into trusted recall");
+}
+if (!Array.isArray(observationProposedAudit.audit_events) || !observationProposedAudit.audit_events.some((event) => event.target_id === observation.observation.id && event.metadata && event.metadata.channel === "http")) {
+  throw new Error("HTTP observation proposed audit event was not recorded");
 }
 if (!mcp.result && !mcp.error) throw new Error("mcp response was not JSON-RPC shaped");
 if (!mcpSummaries.result && !mcpSummaries.error) throw new Error("mcp summaries response was not JSON-RPC shaped");
@@ -1507,6 +1614,34 @@ if (!Array.isArray(mcpAgentPolicyAudit.audit_events) || !mcpAgentPolicyAudit.aud
 if (!mcpAgentProfiles.result || mcpAgentProfiles.error) throw new Error("mcp agent profile list response failed");
 if (!mcpTextPayload(mcpAgentProfiles).some((item) => item.id === agentProfile.agent_profile.id && item.profile_key === "agent-alpha")) {
   throw new Error("mcp list_agent_profiles did not return the configured profile");
+}
+if (!mcpObservation.result || mcpObservation.error) throw new Error("mcp capture_observation response failed");
+const mcpObservationPayload = mcpTextPayload(mcpObservation);
+if (!mcpObservationPayload.id || mcpObservationPayload.status !== "raw" || mcpObservationPayload.scope !== process.env.SCOPE) {
+  throw new Error("mcp capture_observation did not return a raw scoped observation");
+}
+if (!mcpObservationLearning.result || mcpObservationLearning.error) throw new Error("mcp observation propose_learning response failed");
+const mcpObservationLearningPayload = mcpTextPayload(mcpObservationLearning);
+if (!mcpObservationLearningPayload.id || mcpObservationLearningPayload.status !== "pending" || mcpObservationLearningPayload.target_type !== "observation" || mcpObservationLearningPayload.target_id !== mcpObservationPayload.id) {
+  throw new Error("mcp observation propose_learning did not return a pending observation-target proposal");
+}
+if (!mcpObservationLearningPayload.payload || mcpObservationLearningPayload.payload.observation_id !== mcpObservationPayload.id || mcpObservationLearningPayload.payload.promotion_flow !== "observation_to_claim") {
+  throw new Error("mcp observation proposal did not preserve observation promotion payload");
+}
+if (!mcpObservationsProposed.result || mcpObservationsProposed.error) throw new Error("mcp list_observations proposed response failed");
+if (!mcpTextPayload(mcpObservationsProposed).some((item) => item.id === mcpObservationPayload.id && item.status === "proposed")) {
+  throw new Error("mcp observation was not marked proposed after learning proposal");
+}
+if (!mcpObservationLearningDecision.result || mcpObservationLearningDecision.error) throw new Error("mcp observation learning decision response failed");
+const mcpObservationLearningDecisionPayload = mcpTextPayload(mcpObservationLearningDecision);
+if (!mcpObservationLearningDecisionPayload.learning_proposal || mcpObservationLearningDecisionPayload.learning_proposal.status !== "accepted" || !mcpObservationLearningDecisionPayload.apply_plan || mcpObservationLearningDecisionPayload.apply_plan.action !== "review_claim_promotion" || mcpObservationLearningDecisionPayload.apply_plan.endpoint !== "/claims" || mcpObservationLearningDecisionPayload.apply_plan.target_type !== "memory_write" || mcpObservationLearningDecisionPayload.apply_plan.target_id !== process.env.SCOPE) {
+  throw new Error("mcp observation learning decision did not return a claim-promotion apply plan");
+}
+if (JSON.stringify(mcpObservationRecallAfterProposal).includes(`MCP observation review sentinel ${process.env.STAMP}`)) {
+  throw new Error("mcp accepted observation proposal leaked into trusted recall");
+}
+if (!Array.isArray(mcpObservationProposedAudit.audit_events) || !mcpObservationProposedAudit.audit_events.some((event) => event.target_id === mcpObservationPayload.id && event.metadata && event.metadata.channel === "mcp")) {
+  throw new Error("mcp observation proposed audit event was not recorded");
 }
 if (!mcpIngestDocument.result || mcpIngestDocument.error) throw new Error("mcp ingest_document response failed");
 const mcpIngestDocumentPayload = mcpTextPayload(mcpIngestDocument);

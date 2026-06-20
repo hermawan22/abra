@@ -52,6 +52,30 @@ func TestBuildLearningApplyPlanForAcceptedClaimRequiresApprovalWhenEnforced(t *t
 	}
 }
 
+func TestBuildLearningApplyPlanForObservationClaimTargetsMemoryWrite(t *testing.T) {
+	plan := buildLearningApplyPlan(store.LearningProposalRecord{
+		ID:           "proposal-1",
+		Scope:        "repo:app",
+		ProposalType: "claim",
+		Status:       "accepted",
+		TargetType:   "observation",
+		TargetID:     "observation-1",
+		Payload: map[string]any{
+			"observation_id": "observation-1",
+			"claim":          "Agents should verify memory before trusting it.",
+		},
+	}, "enforce")
+	if !plan.Ready || plan.Action != "review_claim_promotion" || plan.Endpoint != "/claims" {
+		t.Fatalf("unexpected apply plan: %#v", plan)
+	}
+	if !plan.RequiresApproval || plan.ApprovalAction != "agent_write" {
+		t.Fatalf("observation claim promotion should require agent_write approval in enforce mode: %#v", plan)
+	}
+	if plan.TargetType != "memory_write" || plan.TargetID != "repo:app" {
+		t.Fatalf("claim apply plan should target scoped memory write, got %#v", plan)
+	}
+}
+
 func TestBuildLearningApplyPlanForSummaryRebuild(t *testing.T) {
 	plan := buildLearningApplyPlan(store.LearningProposalRecord{
 		ID:           "proposal-1",

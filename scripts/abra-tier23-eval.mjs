@@ -73,6 +73,30 @@ async function rawRequest(path, { method = "GET", body } = {}) {
   return { status: response.status, raw, json, headers: response.headers };
 }
 
+async function mcpTool(name, args) {
+  const response = await request("/mcp", {
+    method: "POST",
+    body: {
+      jsonrpc: "2.0",
+      id: `tier23-${name}-${Date.now()}`,
+      method: "tools/call",
+      params: {
+        name,
+        arguments: args
+      }
+    }
+  });
+  assert(!response.error, `mcp ${name} returned error: ${JSON.stringify(response.error)}`);
+  assert(
+    response.result &&
+      Array.isArray(response.result.content) &&
+      response.result.content[0] &&
+      typeof response.result.content[0].text === "string",
+    `mcp ${name} did not return text content`
+  );
+  return JSON.parse(response.result.content[0].text);
+}
+
 function assert(condition, message) {
   if (!condition) {
     throw new Error(message);
@@ -776,6 +800,228 @@ await runCheck("tier3_working_memory_auto_persists_learning_proposals", async ()
     repeated_persisted_new: repeatedSuggestion.persisted_new,
     concurrent_reused: true,
     pending_proposals: listed.learning_proposals.length
+  };
+});
+
+await runCheck("tier3_observation_learning_proposal_requires_review_and_dedupes", async () => {
+  const observationText = `ABRA Tier 3 observation sentinel ${stamp} must stay outside trusted recall until explicit promotion.`;
+  const captured = await request("/observations", {
+    method: "POST",
+    body: {
+      scope,
+      observation_text: observationText,
+      observation_type: "episode",
+      status: "raw",
+      source_url: `file://abra-tier23-observation-${stamp}.md`,
+      source_type: "eval",
+      created_by: "abra-tier23-eval",
+      metadata: {
+        eval_suite: "tier23",
+        fixture: "observation_learning_proposal"
+      }
+    }
+  });
+  const observation = captured.observation;
+  assert(observation && observation.id && observation.status === "raw", "observation capture did not return a raw observation");
+
+  await request("/learning/proposals", {
+    method: "POST",
+    expectStatus: 400,
+    body: {
+      scope: isolatedScope,
+      proposal_type: "claim",
+      target_type: "observation",
+      target_id: observation.id,
+      created_by: "abra-tier23-eval"
+    }
+  });
+
+  const proposalBody = {
+    scope,
+    proposal_type: "claim",
+    target_type: "observation",
+    target_id: observation.id,
+    created_by: "abra-tier23-eval"
+  };
+  const firstProposal = await request("/learning/proposals", {
+    method: "POST",
+    body: proposalBody
+  });
+  assert(firstProposal.learning_proposal && firstProposal.learning_proposal.id, "observation proposal did not return a learning proposal");
+  assert(firstProposal.created === true, "first observation proposal was not reported as newly created");
+  assert(firstProposal.learning_proposal.status === "pending", "observation proposal was not pending");
+  assert(firstProposal.learning_proposal.target_type === "observation", "observation proposal target_type was not observation");
+  assert(firstProposal.learning_proposal.target_id === observation.id, "observation proposal target_id did not match observation");
+  assert(
+    firstProposal.learning_proposal.payload &&
+      firstProposal.learning_proposal.payload.observation_id === observation.id &&
+      firstProposal.learning_proposal.payload.observation_text === observationText &&
+      firstProposal.learning_proposal.payload.promotion_flow === "observation_to_claim",
+    "observation proposal payload did not preserve promotion context"
+  );
+
+  const secondProposal = await request("/learning/proposals", {
+    method: "POST",
+    body: proposalBody
+  });
+  assert(secondProposal.learning_proposal && secondProposal.learning_proposal.id === firstProposal.learning_proposal.id, "duplicate observation proposal did not reuse the pending proposal");
+  assert(secondProposal.created === false, "duplicate observation proposal was reported as newly created");
+
+  const proposedObservations = await request(
+    `/observations?scope=${encodeURIComponent(scope)}&query=${encodeURIComponent("Tier 3 observation sentinel")}&type=episode&status=proposed&limit=10`
+  );
+  assert(
+    Array.isArray(proposedObservations.observations) &&
+      proposedObservations.observations.some((item) => item.id === observation.id && item.status === "proposed"),
+    "observation was not marked proposed after learning proposal creation"
+  );
+
+  const decided = await request(`/learning/proposals/${encodeURIComponent(firstProposal.learning_proposal.id)}/decide`, {
+    method: "POST",
+    body: {
+      status: "accepted",
+      reviewed_by: "abra-tier23-eval",
+      review_reason: "Tier 3 validates observation proposal review handoff.",
+      metadata: {
+        eval_suite: "tier23"
+      }
+    }
+  });
+  assert(decided.learning_proposal && decided.learning_proposal.status === "accepted", "observation proposal was not accepted");
+  assert(
+    decided.apply_plan &&
+      decided.apply_plan.ready === true &&
+      decided.apply_plan.proposal_type === "claim" &&
+      decided.apply_plan.action === "review_claim_promotion" &&
+      decided.apply_plan.endpoint === "/claims" &&
+      decided.apply_plan.target_type === "memory_write" &&
+      decided.apply_plan.target_id === scope,
+    `unexpected observation proposal apply plan: ${JSON.stringify(decided.apply_plan)}`
+  );
+  assert(
+    decided.apply_plan.requires_approval === approvalEnforcementExpected,
+    `observation proposal approval requirement = ${decided.apply_plan.requires_approval}, want ${approvalEnforcementExpected}`
+  );
+
+  const recall = await request("/recall", {
+    method: "POST",
+    body: {
+      scope,
+      query: `Tier 3 observation sentinel ${stamp}`,
+      limit: 10
+    }
+  });
+  assert(!textOf(recall).includes(observationText.toLowerCase()), "accepted observation proposal auto-promoted into trusted recall");
+
+  return {
+    observation_id: observation.id,
+    proposal_id: firstProposal.learning_proposal.id,
+    duplicate_created: secondProposal.created,
+    apply_action: decided.apply_plan.action,
+    requires_approval: decided.apply_plan.requires_approval
+  };
+});
+
+await runCheck("tier3_mcp_observation_learning_proposal_lifecycle", async () => {
+  const observationText = `ABRA Tier 3 MCP observation sentinel ${stamp} must stay outside trusted recall until explicit promotion.`;
+  const observation = await mcpTool("capture_observation", {
+    scope,
+    observation_text: observationText,
+    observation_type: "episode",
+    status: "raw",
+    source_url: `file://abra-tier23-mcp-observation-${stamp}.md`,
+    source_type: "eval",
+    created_by: "abra-tier23-eval-mcp",
+    metadata: {
+      eval_suite: "tier23",
+      fixture: "mcp_observation_learning_proposal"
+    }
+  });
+  assert(observation && observation.id && observation.status === "raw", "mcp observation capture did not return a raw observation");
+
+  const rawObservations = await mcpTool("list_observations", {
+    scope,
+    query: "Tier 3 MCP observation sentinel",
+    observation_type: "episode",
+    status: "raw",
+    limit: 10
+  });
+  assert(Array.isArray(rawObservations) && rawObservations.some((item) => item.id === observation.id), "mcp raw observation was not listable");
+
+  const proposalArgs = {
+    scope,
+    proposal_type: "claim",
+    target_type: "observation",
+    target_id: observation.id,
+    created_by: "abra-tier23-eval-mcp"
+  };
+  const firstProposal = await mcpTool("propose_learning", proposalArgs);
+  assert(firstProposal && firstProposal.id && firstProposal.status === "pending", "mcp observation proposal was not pending");
+  assert(firstProposal.target_type === "observation" && firstProposal.target_id === observation.id, "mcp observation proposal target did not match observation");
+  assert(
+    firstProposal.payload &&
+      firstProposal.payload.observation_id === observation.id &&
+      firstProposal.payload.observation_text === observationText &&
+      firstProposal.payload.promotion_flow === "observation_to_claim",
+    "mcp observation proposal payload did not preserve promotion context"
+  );
+
+  const secondProposal = await mcpTool("propose_learning", proposalArgs);
+  assert(secondProposal && secondProposal.id === firstProposal.id, "mcp duplicate observation proposal did not reuse the pending proposal");
+
+  const proposedObservations = await mcpTool("list_observations", {
+    scope,
+    query: "Tier 3 MCP observation sentinel",
+    observation_type: "episode",
+    status: "proposed",
+    limit: 10
+  });
+  assert(
+    Array.isArray(proposedObservations) &&
+      proposedObservations.some((item) => item.id === observation.id && item.status === "proposed"),
+    "mcp observation was not marked proposed after learning proposal creation"
+  );
+
+  const decided = await mcpTool("decide_learning_proposal", {
+    proposal_id: firstProposal.id,
+    status: "accepted",
+    reviewed_by: "abra-tier23-eval-mcp",
+    review_reason: "Tier 3 validates MCP observation proposal review handoff.",
+    metadata: {
+      eval_suite: "tier23"
+    }
+  });
+  assert(decided.learning_proposal && decided.learning_proposal.status === "accepted", "mcp observation proposal was not accepted");
+  assert(
+    decided.apply_plan &&
+      decided.apply_plan.ready === true &&
+      decided.apply_plan.proposal_type === "claim" &&
+      decided.apply_plan.action === "review_claim_promotion" &&
+      decided.apply_plan.endpoint === "/claims" &&
+      decided.apply_plan.target_type === "memory_write" &&
+      decided.apply_plan.target_id === scope,
+    `unexpected mcp observation proposal apply plan: ${JSON.stringify(decided.apply_plan)}`
+  );
+  assert(
+    decided.apply_plan.requires_approval === approvalEnforcementExpected,
+    `mcp observation proposal approval requirement = ${decided.apply_plan.requires_approval}, want ${approvalEnforcementExpected}`
+  );
+
+  const recall = await request("/recall", {
+    method: "POST",
+    body: {
+      scope,
+      query: `Tier 3 MCP observation sentinel ${stamp}`,
+      limit: 10
+    }
+  });
+  assert(!textOf(recall).includes(observationText.toLowerCase()), "accepted mcp observation proposal auto-promoted into trusted recall");
+
+  return {
+    observation_id: observation.id,
+    proposal_id: firstProposal.id,
+    apply_action: decided.apply_plan.action,
+    requires_approval: decided.apply_plan.requires_approval
   };
 });
 

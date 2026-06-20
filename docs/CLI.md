@@ -233,6 +233,7 @@ From a source checkout, run the CLI as `go run ./cmd/abra <command>`. In a relea
 | verify agent instruction files in CI | `abra agents verify --files-only --strict` |
 | start local Qwen embedding runner | `abra models up` |
 | check local embedding runner | `abra models status` |
+| inspect local embedding runner logs | `abra models logs` |
 | start local stack and default local embedding runner | `abra up` |
 | init env only | `abra init` |
 | compatibility setup alias | `abra install` |

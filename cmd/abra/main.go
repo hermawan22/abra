@@ -2229,6 +2229,7 @@ func installCodexMCP(ctx context.Context, args cliArgs) error {
 	fmt.Println("Fully quit and reopen Codex Desktop after installing or changing the token env.")
 	fmt.Println("Opening a new thread is enough only when the env var was already available to the Codex process.")
 	fmt.Println("Scope hint: run `abra scope` in each project, compare it with discover_scopes in Codex, and pass the exact scope to working_memory_compose.")
+	fmt.Println("If Codex says Abra has no context: run `abra ingest . --code --scope <scope-from-abra-scope>` and `abra agents verify . --scope <scope-from-abra-scope>`.")
 	return nil
 }
 
@@ -3098,6 +3099,7 @@ Usage:
   abra scope
   abra models up
   abra models status
+  abra models logs
   abra config model local
   abra config model openai --api-key-stdin
   abra config model compatible --base-url <url> --model <model> [--api-key-stdin]

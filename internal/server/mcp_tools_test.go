@@ -140,6 +140,40 @@ func TestProposeLearningMCPSupportsObservationTargets(t *testing.T) {
 	}
 }
 
+func TestLearningProposalReviewMCPToolsAreDiscoverable(t *testing.T) {
+	listSchema := mcpToolSchema(t, "list_learning_proposals")
+	listRequired := requiredSet(t, listSchema)
+	if !listRequired["scope"] {
+		t.Fatalf("list_learning_proposals required = %#v, want scope", listSchema["required"])
+	}
+	listProperties, ok := listSchema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("list properties = %#v", listSchema["properties"])
+	}
+	for _, property := range []string{"scope", "status", "limit"} {
+		if _, ok := listProperties[property]; !ok {
+			t.Fatalf("list_learning_proposals missing property %q in %#v", property, listProperties)
+		}
+	}
+
+	decideSchema := mcpToolSchema(t, "decide_learning_proposal")
+	decideRequired := requiredSet(t, decideSchema)
+	for _, property := range []string{"proposal_id", "status"} {
+		if !decideRequired[property] {
+			t.Fatalf("decide_learning_proposal required = %#v, missing %s", decideSchema["required"], property)
+		}
+	}
+	decideProperties, ok := decideSchema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("decide properties = %#v", decideSchema["properties"])
+	}
+	for _, property := range []string{"proposal_id", "status", "reviewed_by", "review_reason", "approval_id", "metadata"} {
+		if _, ok := decideProperties[property]; !ok {
+			t.Fatalf("decide_learning_proposal missing property %q in %#v", property, decideProperties)
+		}
+	}
+}
+
 func TestRankScopeSummariesPrioritizesExpectedScope(t *testing.T) {
 	scopes := []store.ScopeSummary{
 		{Scope: "repo:large-release", Documents: 1000},

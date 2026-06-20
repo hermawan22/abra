@@ -453,6 +453,7 @@ func printSetupNext(args cliArgs) {
 	fmt.Println("  abra ingest . --code --scope " + shellQuote(scope))
 	fmt.Println("  abra agents verify . --scope " + shellQuote(scope))
 	fmt.Println(`  abra think "What should I know before changing this project?" --scope ` + shellQuote(scope))
+	fmt.Println("  abra mcp install-codex")
 }
 
 func setupConfiguredValues(args cliArgs) map[string]string {

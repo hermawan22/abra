@@ -66,8 +66,8 @@ func buildLearningApplyPlan(proposal store.LearningProposalRecord, approvalMode 
 		plan.Endpoint = "/claims"
 		plan.RequiresApproval = approvalMode == "enforce"
 		plan.ApprovalAction = "agent_write"
-		plan.TargetType = nonEmpty(plan.TargetType, "memory_write")
-		plan.TargetID = nonEmpty(plan.TargetID, proposal.Scope)
+		plan.TargetType = "memory_write"
+		plan.TargetID = proposal.Scope
 		plan.Notes = []string{"attach durable source evidence before promoting unverified memory to a trusted claim"}
 	case "challenge":
 		plan.Action = "apply_claim_challenge"
