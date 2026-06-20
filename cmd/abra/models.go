@@ -56,6 +56,9 @@ func models(ctx context.Context, args cliArgs) error {
 }
 
 func modelsUp(ctx context.Context, args cliArgs) error {
+	if err := requireLocalModelProvider(args, "up"); err != nil {
+		return err
+	}
 	cfg := embeddingRunner(args)
 	if err := syncLocalRunnerEnv(args); err != nil {
 		return err
@@ -127,6 +130,16 @@ func modelsUp(ctx context.Context, args cliArgs) error {
 }
 
 func modelsStatus(ctx context.Context, args cliArgs) error {
+	if notice := inactiveLocalModelNotice(args); notice != nil {
+		if boolFlag(args, "json") {
+			return printJSON(notice)
+		}
+		fmt.Println("Local embeddings: inactive")
+		fmt.Println("provider: " + stringValue(notice["provider"], ""))
+		fmt.Println("detail:   " + stringValue(notice["detail"], ""))
+		fmt.Println("hint:     " + stringValue(notice["hint"], ""))
+		return nil
+	}
 	cfg := embeddingRunner(args)
 	err := checkEmbeddingReady(ctx, cfg)
 	status := map[string]any{
@@ -158,6 +171,9 @@ func modelsStatus(ctx context.Context, args cliArgs) error {
 }
 
 func modelsDown(args cliArgs) error {
+	if err := requireLocalModelProvider(args, "down"); err != nil {
+		return err
+	}
 	cfg := embeddingRunner(args)
 	if !dockerContainerExists(cfg.Container) {
 		fmt.Println("Local embedding container is not present: " + cfg.Container)
@@ -171,12 +187,52 @@ func modelsDown(args cliArgs) error {
 }
 
 func modelsLogs(args cliArgs) error {
+	if err := requireLocalModelProvider(args, "logs"); err != nil {
+		return err
+	}
 	cfg := embeddingRunner(args)
 	if !dockerContainerExists(cfg.Container) {
 		return errors.New("local embedding container is not present; run: abra models up")
 	}
 	lines := flag(args, "tail", "120")
 	return runCommand("docker", "logs", "--tail", lines, cfg.Container)
+}
+
+func requireLocalModelProvider(args cliArgs, action string) error {
+	if boolFlag(args, "force") {
+		return nil
+	}
+	provider := configuredEmbeddingProvider(args)
+	if provider == "" || provider == "local" {
+		return nil
+	}
+	return fmt.Errorf("abra models %s manages only the built-in local Qwen runner, but EMBEDDING_PROVIDER=%s in %s. Abra will use the configured provider instead. Use `abra config` to inspect it, or pass --force only if you intentionally want to manage the unused local runner", action, provider, envPath(args))
+}
+
+func inactiveLocalModelNotice(args cliArgs) map[string]any {
+	if boolFlag(args, "force") {
+		return nil
+	}
+	provider := configuredEmbeddingProvider(args)
+	if provider == "" || provider == "local" {
+		return nil
+	}
+	return map[string]any{
+		"container": defaultEmbeddingContainer,
+		"ready":     false,
+		"active":    false,
+		"provider":  provider,
+		"detail":    "Abra is configured to use EMBEDDING_PROVIDER=" + provider + ", so the built-in local runner is not part of the active path.",
+		"hint":      "run `abra config` to inspect the active provider; use `abra models status --force` only to inspect the unused local runner",
+	}
+}
+
+func configuredEmbeddingProvider(args cliArgs) string {
+	values, err := readEnvValues(envPath(args))
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(values["EMBEDDING_PROVIDER"]))
 }
 
 func embeddingRunner(args cliArgs) embeddingRunnerConfig {

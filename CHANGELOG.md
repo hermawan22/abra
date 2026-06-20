@@ -66,6 +66,9 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Gate low-confidence retrieval on lexical and semantic relevance signal instead of allowing boosted rank alone to make weak matches look strong, while preserving moderate rank-only compatibility paths.
 - Make `abra setup --openai/--compatible --no-start` print provider-appropriate next steps instead of telling users to start local models.
 - Rewrite loopback custom embedding provider URLs to `host.docker.internal` in setup/config flows so Dockerized Abra services can reach host-served models.
+- Make production setup recommend a compatible/self-hosted embedding endpoint instead of the development local-Qwen shortcut unless operators explicitly allow local embeddings in production.
+- Make `abra models status/up/down/logs` report inactive local-runner state when the active embedding provider is compatible/custom, avoiding repair commands for a runner Abra will not use.
+- Require an OpenAI API key for non-interactive `abra setup --openai` via `--api-key-stdin` or `OPENAI_API_KEY`.
 - Harden production Compose and Helm defaults around compatible embeddings, loopback publish defaults, webhook signing, bind address, and request sizing.
 - Make the release gate provide production-valid placeholder embedding and webhook settings for Docker Compose config validation.
 
@@ -86,6 +89,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Replace public CI hygiene denylist wording with generic secret-pattern checks.
 - Harden the curl installer to fail closed for missing checksums, checksum mismatches, invalid archives, and missing executables; source builds now require explicit `ABRA_ALLOW_SOURCE_BUILD=1`.
 - Add optional installer-side GitHub Artifact Attestation verification for release archives and `SHA256SUMS`.
+- Omit example env files from the production runtime image so fixed demo credentials stay in source documentation and release archives, not deployed containers.
 - Reject unsigned production webhooks by default unless explicitly overridden for deployments that disable webhook ingestion or verify signatures upstream.
 - Fail startup on malformed numeric, boolean, duration, tracing sample, port, and bind-address configuration.
 

@@ -42,7 +42,7 @@ abra config model openai --api-key-stdin
 abra config model compatible --base-url https://api.example.com/v1 --model embedding-model --dimensions 1024
 ```
 
-For non-interactive local setup, use `abra setup --yes`. For authenticated compatible providers during onboarding, use `printf '%s' "$PROVIDER_API_KEY" | abra setup --compatible --embedding-base-url https://api.example.com/v1 --embedding-model embedding-model --api-key-stdin`.
+For non-interactive local setup, use `abra setup --yes`. For authenticated compatible providers during onboarding, use `printf '%s' "$PROVIDER_API_KEY" | abra setup --compatible --embedding-base-url https://api.example.com/v1 --embedding-model embedding-model --api-key-stdin`. For OpenAI, non-interactive setup requires `--api-key-stdin` or `OPENAI_API_KEY`.
 Use `abra setup --yes --no-models` only when you intentionally manage the embedding endpoint yourself; otherwise the default local provider is started for you by setup or `abra up`.
 
 Generate repo-local AI agent instruction files after setup:
@@ -64,7 +64,7 @@ abra up
 abra status
 ```
 
-For local-runner troubleshooting, use `abra models status` and `abra models up` directly.
+For local-runner troubleshooting, use `abra models status` and `abra models up` directly. These commands manage only the built-in local Qwen runner; when `EMBEDDING_PROVIDER=compatible`, they report the local runner as inactive unless `--force` is passed.
 
 Use these defaults for the remaining commands:
 

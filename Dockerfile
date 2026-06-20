@@ -24,7 +24,6 @@ COPY --from=build /out/abra-worker /app/abra-worker
 COPY --from=build /out/abra-migrate /app/abra-migrate
 COPY --from=build /out/abra /app/abra
 COPY migrations ./migrations
-COPY examples ./examples
 USER abra
 EXPOSE 8080
 CMD ["/app/abra-api"]

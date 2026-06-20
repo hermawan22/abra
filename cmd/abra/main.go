@@ -419,7 +419,7 @@ func configModelLocalNeural(args cliArgs, label string) error {
 	}
 	if err := updateEnvValues(args, map[string]string{
 		"EMBEDDING_PROVIDER":                   "local",
-		"EMBEDDING_BASE_URL":                   flag(args, "base-url", defaultEmbeddingBaseURL),
+		"EMBEDDING_BASE_URL":                   containerReachableBaseURL(flag(args, "base-url", defaultEmbeddingBaseURL)),
 		"EMBEDDING_API_KEY":                    apiKey,
 		"EMBEDDING_MODEL":                      flag(args, "model", defaultServedModelName),
 		"EMBEDDING_DIMENSIONS":                 flag(args, "dimensions", "1024"),

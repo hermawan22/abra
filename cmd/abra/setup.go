@@ -23,7 +23,8 @@ func setup(ctx context.Context, args cliArgs) error {
 		}
 		fmt.Println("Production env created.")
 		fmt.Println("Configure embeddings with:")
-		fmt.Println("  abra config model local --env-file " + envPath(args))
+		fmt.Println("  abra config model compatible --base-url https://models.example.com/v1 --model embedding-model --dimensions 1024 --env-file " + envPath(args))
+		fmt.Println("For an intentionally self-hosted local Qwen endpoint in production, also set ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=true after reviewing capacity and security.")
 		fmt.Println("Then start with:")
 		fmt.Println("  abra up --env-file " + envPath(args))
 		return nil
@@ -266,7 +267,7 @@ func setupEmbeddingModel(args cliArgs, fallback string) string {
 }
 
 func setupLocalNeuralEmbeddings(args cliArgs, reader *bufio.Reader, interactive bool) error {
-	baseURL := setupEmbeddingBaseURL(args, defaultEmbeddingBaseURL)
+	baseURL := containerReachableBaseURL(setupEmbeddingBaseURL(args, defaultEmbeddingBaseURL))
 	model := setupEmbeddingModel(args, defaultServedModelName)
 	dimensions := firstNonEmpty(flag(args, "dimensions", ""), "1024")
 	rerankerProvider := firstNonEmpty(flag(args, "reranker-provider", ""), "")
@@ -309,9 +310,10 @@ func setupLocalNeuralEmbeddings(args cliArgs, reader *bufio.Reader, interactive 
 			}
 		}
 	}
+	baseURL = containerReachableBaseURL(strings.TrimSpace(baseURL))
 	if err := updateEnvValues(args, map[string]string{
 		"EMBEDDING_PROVIDER":                   "local",
-		"EMBEDDING_BASE_URL":                   strings.TrimSpace(baseURL),
+		"EMBEDDING_BASE_URL":                   strings.TrimRight(strings.TrimSpace(baseURL), "/"),
 		"EMBEDDING_API_KEY":                    strings.TrimSpace(apiKey),
 		"EMBEDDING_MODEL":                      strings.TrimSpace(model),
 		"EMBEDDING_DIMENSIONS":                 strings.TrimSpace(dimensions),
@@ -337,6 +339,13 @@ func setupOpenAIEmbeddings(args cliArgs, reader *bufio.Reader, interactive bool)
 	args.Flags["embedding-base-url"] = setupEmbeddingBaseURL(args, "https://api.openai.com/v1")
 	args.Flags["embedding-model"] = setupEmbeddingModel(args, "text-embedding-3-small")
 	args.Flags["dimensions"] = firstNonEmpty(flag(args, "dimensions", ""), "1536")
+	if flag(args, "api-key", "") == "" && !boolFlag(args, "api-key-stdin") {
+		if envKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY")); envKey != "" {
+			args.Flags["api-key"] = envKey
+		} else if !interactive || boolFlag(args, "yes") {
+			return errors.New("setup --openai requires an API key in non-interactive mode; pass --api-key-stdin or set OPENAI_API_KEY")
+		}
+	}
 	return setupCompatibleEmbeddings(args, reader, interactive)
 }
 

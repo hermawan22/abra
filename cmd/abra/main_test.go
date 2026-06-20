@@ -854,6 +854,64 @@ func TestSetupYesNoStartDefaultsLocalQwen(t *testing.T) {
 	}
 }
 
+func TestSetupProductionGuidesCompatibleProvider(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+
+	output := captureStdout(t, func() {
+		if err := run(context.Background(), []string{"setup", "--production", "--no-start"}); err != nil {
+			t.Fatalf("setup production error = %v", err)
+		}
+	})
+	for _, want := range []string{
+		"Production env created.",
+		"abra config model compatible",
+		"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=true",
+		"abra up --env-file",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("production setup output missing %q:\n%s", want, output)
+		}
+	}
+	if strings.Contains(output, "abra config model local") {
+		t.Fatalf("production setup should not recommend local model by default:\n%s", output)
+	}
+}
+
+func TestSetupOpenAINonInteractiveRequiresAPIKey(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Chdir(root)
+
+	err := run(context.Background(), []string{"setup", "--yes", "--openai", "--no-start"})
+	if err == nil || !strings.Contains(err.Error(), "requires an API key") {
+		t.Fatalf("setup --openai error = %v", err)
+	}
+}
+
+func TestSetupOpenAINonInteractiveUsesEnvAPIKey(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Setenv("OPENAI_API_KEY", "test-openai-key")
+	t.Chdir(root)
+
+	if err := run(context.Background(), []string{"setup", "--yes", "--openai", "--no-start"}); err != nil {
+		t.Fatalf("setup --openai error = %v", err)
+	}
+	values, err := readEnvValues(filepath.Join(home, "quickstart.env"))
+	if err != nil {
+		t.Fatalf("read env: %v", err)
+	}
+	if values["EMBEDDING_PROVIDER"] != "compatible" || values["EMBEDDING_API_KEY"] != "test-openai-key" {
+		t.Fatalf("openai values = %#v", values)
+	}
+}
+
 func TestUpAutoStartsLocalModelsOnlyForLocalProvider(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("ABRA_HOME", home)
@@ -881,6 +939,54 @@ func TestUpAutoStartsLocalModelsOnlyForLocalProvider(t *testing.T) {
 	mustWrite(t, localEnv, "NODE_ENV=production\nEMBEDDING_PROVIDER=local\nALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=true\n")
 	if !shouldStartLocalModelsForUp(parseArgs([]string{"up"})) {
 		t.Fatal("up should auto-start local models in production when local embeddings are explicitly allowed")
+	}
+}
+
+func TestModelsCommandsRespectActiveCompatibleProvider(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	mustWrite(t, filepath.Join(home, "quickstart.env"), strings.Join([]string{
+		"EMBEDDING_PROVIDER=compatible",
+		"EMBEDDING_BASE_URL=https://models.example.com/v1",
+		"EMBEDDING_MODEL=embedding-model",
+		"",
+	}, "\n"))
+
+	output := captureStdout(t, func() {
+		if err := run(context.Background(), []string{"models", "status"}); err != nil {
+			t.Fatalf("models status error = %v", err)
+		}
+	})
+	for _, want := range []string{
+		"Local embeddings: inactive",
+		"provider: compatible",
+		"abra config",
+		"models status --force",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("models status output missing %q:\n%s", want, output)
+		}
+	}
+
+	err := run(context.Background(), []string{"models", "up"})
+	if err == nil || !strings.Contains(err.Error(), "EMBEDDING_PROVIDER=compatible") {
+		t.Fatalf("models up error = %v", err)
+	}
+}
+
+func TestConfigModelLocalRewritesLoopbackForCompose(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+
+	if err := run(context.Background(), []string{"config", "model", "local", "--base-url", "http://localhost:8080/v1"}); err != nil {
+		t.Fatalf("config model local error = %v", err)
+	}
+	values, err := readEnvValues(filepath.Join(home, "quickstart.env"))
+	if err != nil {
+		t.Fatalf("read env: %v", err)
+	}
+	if values["EMBEDDING_BASE_URL"] != "http://host.docker.internal:8080/v1" {
+		t.Fatalf("embedding base url = %q", values["EMBEDDING_BASE_URL"])
 	}
 }
 

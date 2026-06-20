@@ -653,6 +653,8 @@ Recall responses include `retrieval_mode`, plus `text_score` and `vector_score` 
 
 The default embedding provider is `local`, meaning self-hosted Qwen-compatible neural retrieval. `abra models up` starts Qwen/Qwen3-Embedding-0.6B-GGUF through a local llama.cpp OpenAI-compatible embedding runner. Local embeddings default to `EMBEDDING_TIMEOUT=10m` because CPU-backed model calls can take longer than normal API requests on large files, and local neural providers default to `ABRA_AI_PROVIDER_CONCURRENCY=1` so ingest, recall, readiness checks, and reranking do not overwhelm a single local model runner. Compatible remote providers default to `ABRA_AI_PROVIDER_CONCURRENCY=4`; raise it only after watching provider latency, timeout rate, and Abra p95 under expected agent and ingestion traffic. Qwen/Qwen3-Reranker-0.6B remains configurable for deployments that expose a compatible rerank endpoint. Custom providers replace the local defaults by setting `EMBEDDING_PROVIDER=compatible`, `EMBEDDING_BASE_URL`, `EMBEDDING_MODEL`, and `EMBEDDING_DIMENSIONS`; set `RERANKER_PROVIDER` only when the custom provider also exposes a rerank endpoint.
 
+`abra models status/up/logs/down` manages only the built-in local Qwen runner. When `EMBEDDING_PROVIDER=compatible`, those commands report the local runner as inactive unless `--force` is passed, because Abra will use the configured custom endpoint instead. For non-interactive OpenAI setup, pass the key with `--api-key-stdin` or set `OPENAI_API_KEY`.
+
 Forgetting a claim marks it `deprecated`. Source re-ingestion will not reactivate a manually forgotten claim; only claims and relations temporarily deprecated by source refresh can be reactivated.
 
 ## Environment
