@@ -87,12 +87,7 @@ jobs:
           docker compose --env-file /tmp/abra.env.production.test --profile setup config >/tmp/abra-compose-config.yaml
 
       - name: Check public repo hygiene
-        run: |
-          test ! -e .env
-          test ! -e .tmp
-          ! rg -n -i \
-            '-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9_]{36,}|github_pat_[A-Za-z0-9_]{22,}|xox[baprs]-[A-Za-z0-9-]+|AIza[0-9A-Za-z_-]{35}' \
-            README.md CONTRIBUTING.md CODE_OF_CONDUCT.md PRODUCTION.md SECURITY.md CHANGELOG.md RELEASE.md docs package.json deploy internal scripts examples .github
+        run: npm run check:oss
 
       - name: Build Go binaries
         run: |

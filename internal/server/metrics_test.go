@@ -72,6 +72,13 @@ func TestSmartPathMetricsPrometheus(t *testing.T) {
 		MemoryHealth: store.MemoryHealthResult{
 			Status: "critical",
 			Score:  45,
+			Ingestion: store.MemoryHealthIngestion{
+				FailedJobs:       2,
+				RunningJobs:      3,
+				StaleRunningJobs: 1,
+				QueuedJobs:       5,
+				RetryJobs:        4,
+			},
 			Signals: []store.MemoryHealthSignal{
 				{Code: "trusted_claims_from_code_documents", Category: "trust_guard", Severity: "critical"},
 				{Code: "ingestion_jobs_retrying", Category: "ingestion", Severity: "warning"},
@@ -123,6 +130,11 @@ func TestSmartPathMetricsPrometheus(t *testing.T) {
 		`abra_working_memory_health_critical_signals_sum{api_status="ok",health_status="critical"} 1`,
 		`abra_working_memory_health_warning_signals_sum{api_status="ok",health_status="critical"} 1`,
 		`abra_working_memory_health_last_score{api_status="ok",health_status="healthy"} 100`,
+		`abra_working_memory_health_ingestion_queued_jobs{api_status="ok",health_status="critical"} 5`,
+		`abra_working_memory_health_ingestion_running_jobs{api_status="ok",health_status="critical"} 3`,
+		`abra_working_memory_health_ingestion_retry_jobs{api_status="ok",health_status="critical"} 4`,
+		`abra_working_memory_health_ingestion_failed_jobs{api_status="ok",health_status="critical"} 2`,
+		`abra_working_memory_health_ingestion_stale_running_jobs{api_status="ok",health_status="critical"} 1`,
 		`abra_working_memory_health_lookup_total{api_status="ok",cache_status="fresh"} 1`,
 		`abra_working_memory_health_lookup_total{api_status="ok",cache_status="cache_hit"} 1`,
 		`abra_working_memory_health_lookup_total{api_status="error",cache_status="unknown"} 1`,

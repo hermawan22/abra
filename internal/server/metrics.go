@@ -64,12 +64,17 @@ type retrievalQualityMetric struct {
 }
 
 type memoryHealthMetric struct {
-	Count           int64
-	SignalCount     int64
-	CriticalSignals int64
-	WarningSignals  int64
-	LastScore       int64
-	LastSignals     int64
+	Count                 int64
+	SignalCount           int64
+	CriticalSignals       int64
+	WarningSignals        int64
+	LastScore             int64
+	LastSignals           int64
+	LastIngestionQueued   int64
+	LastIngestionRunning  int64
+	LastIngestionRetry    int64
+	LastIngestionFailed   int64
+	LastIngestionStaleRun int64
 }
 
 type statusRecorder struct {
@@ -201,6 +206,11 @@ func (m *metricsCollector) observeMemoryHealth(apiStatus string, health store.Me
 	metric.SignalCount += int64(len(signals))
 	metric.LastScore = int64(health.Score)
 	metric.LastSignals = int64(len(signals))
+	metric.LastIngestionQueued = int64(health.Ingestion.QueuedJobs)
+	metric.LastIngestionRunning = int64(health.Ingestion.RunningJobs)
+	metric.LastIngestionRetry = int64(health.Ingestion.RetryJobs)
+	metric.LastIngestionFailed = int64(health.Ingestion.FailedJobs)
+	metric.LastIngestionStaleRun = int64(health.Ingestion.StaleRunningJobs)
 	for _, signal := range signals {
 		severity := normalizeMemoryHealthSeverity(signal.Severity)
 		switch severity {
@@ -726,6 +736,11 @@ func (m *metricsCollector) prometheus() string {
 	writeMemoryHealthInt(&out, "abra_working_memory_health_warning_signals_sum", "Total warning memory health signals returned by working-memory executions.", "counter", healthKeys, m.health, func(metric *memoryHealthMetric) int64 { return metric.WarningSignals })
 	writeMemoryHealthInt(&out, "abra_working_memory_health_last_score", "Last memory health score observed by working-memory executions.", "gauge", healthKeys, m.health, func(metric *memoryHealthMetric) int64 { return metric.LastScore })
 	writeMemoryHealthInt(&out, "abra_working_memory_health_last_signal_count", "Last memory health signal count observed by working-memory executions.", "gauge", healthKeys, m.health, func(metric *memoryHealthMetric) int64 { return metric.LastSignals })
+	writeMemoryHealthInt(&out, "abra_working_memory_health_ingestion_queued_jobs", "Last queued ingestion job count observed in scoped memory health.", "gauge", healthKeys, m.health, func(metric *memoryHealthMetric) int64 { return metric.LastIngestionQueued })
+	writeMemoryHealthInt(&out, "abra_working_memory_health_ingestion_running_jobs", "Last running ingestion job count observed in scoped memory health.", "gauge", healthKeys, m.health, func(metric *memoryHealthMetric) int64 { return metric.LastIngestionRunning })
+	writeMemoryHealthInt(&out, "abra_working_memory_health_ingestion_retry_jobs", "Last retrying ingestion job count observed in scoped memory health.", "gauge", healthKeys, m.health, func(metric *memoryHealthMetric) int64 { return metric.LastIngestionRetry })
+	writeMemoryHealthInt(&out, "abra_working_memory_health_ingestion_failed_jobs", "Last failed ingestion job count observed in scoped memory health.", "gauge", healthKeys, m.health, func(metric *memoryHealthMetric) int64 { return metric.LastIngestionFailed })
+	writeMemoryHealthInt(&out, "abra_working_memory_health_ingestion_stale_running_jobs", "Last stale running ingestion job count observed in scoped memory health.", "gauge", healthKeys, m.health, func(metric *memoryHealthMetric) int64 { return metric.LastIngestionStaleRun })
 
 	healthLookupKeys := make([]string, 0, len(m.healthLookups))
 	for key := range m.healthLookups {
