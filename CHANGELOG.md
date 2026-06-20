@@ -27,6 +27,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Add `ABRA_AI_PROVIDER_CONCURRENCY` to bound service-wide embedding and reranker calls across ingest, recall, readiness checks, and working-memory paths.
 - Add CLI setup/config/doctor visibility for `ABRA_AI_PROVIDER_CONCURRENCY`, including local-model overload warnings.
 - Add Prometheus metrics for AI provider calls, wait time, in-flight calls, and queued calls so operators can diagnose embedding and reranker saturation.
+- Add a queue-pressure eval gate that verifies signed webhook ingestion jobs drain, leave no queued/retry/stale residue, and become recallable.
 
 ### Changed
 
@@ -69,6 +70,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 ### Fixed
 
 - Keep worker ingestion jobs heartbeated during document processing and only allow the owning worker lease to finish a running job.
+- Keep unmanaged release gates on the target stack's token while still generating non-placeholder secrets for managed release-gate stacks.
 - Return webhook ingestion job IDs and detect duplicate signed deliveries in the smoke gate.
 - Make the Tier 1 working-memory eval seed corroborating evidence so its strong-verification expectation matches source-diversity gates.
 - Align the self-host smoke test with the query-form working-memory MCP resource template used to preserve scopes containing slashes.

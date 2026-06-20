@@ -12,9 +12,9 @@ const managedHTTPPort = process.env.ABRA_RELEASE_ABRA_PORT || "18081";
 const baseUrl = process.env.ABRA_BASE_URL || (manageStack ? `http://127.0.0.1:${managedHTTPPort}` : "http://127.0.0.1:18080");
 const releaseSecretSuffix = `${runId.toLowerCase()}-${randomBytes(12).toString("hex")}`;
 const defaultReleaseToken = `release-gate-${releaseSecretSuffix}`;
-const token = placeholderSecret(process.env.ABRA_API_TOKEN) ? defaultReleaseToken : process.env.ABRA_API_TOKEN;
+const token = manageStack && placeholderSecret(process.env.ABRA_API_TOKEN) ? defaultReleaseToken : process.env.ABRA_API_TOKEN || "dev-token";
 const defaultWebhookSecret = `release-gate-webhook-${releaseSecretSuffix}`;
-const webhookSecret = placeholderSecret(process.env.ABRA_WEBHOOK_SECRET) ? defaultWebhookSecret : process.env.ABRA_WEBHOOK_SECRET;
+const webhookSecret = manageStack && placeholderSecret(process.env.ABRA_WEBHOOK_SECRET) ? defaultWebhookSecret : process.env.ABRA_WEBHOOK_SECRET || "dev-webhook-secret";
 const commandTimeoutMs = numberEnv("ABRA_RELEASE_COMMAND_TIMEOUT_MS", quick ? 120_000 : 600_000);
 const outputLimit = numberEnv("ABRA_RELEASE_OUTPUT_LIMIT", 12_000);
 const prepareDogfoodSource = !quick && boolEnv("ABRA_RELEASE_PREPARE_DOGFOOD_SOURCE", manageStack);
@@ -196,6 +196,18 @@ function quickTier1Env() {
   };
 }
 
+function quickQueuePressureEnv() {
+  if (!quick) {
+    return {};
+  }
+  return {
+    ABRA_QUEUE_PRESSURE_BATCHES: process.env.ABRA_QUEUE_PRESSURE_BATCHES || "1",
+    ABRA_QUEUE_PRESSURE_DOCS_PER_BATCH: process.env.ABRA_QUEUE_PRESSURE_DOCS_PER_BATCH || "2",
+    ABRA_QUEUE_PRESSURE_TIMEOUT_MS: process.env.ABRA_QUEUE_PRESSURE_TIMEOUT_MS || "120000",
+    ABRA_QUEUE_PRESSURE_MAX_DRAIN_MS: process.env.ABRA_QUEUE_PRESSURE_MAX_DRAIN_MS || "120000"
+  };
+}
+
 async function main() {
   if (!["quick", "full"].includes(profile)) {
     checks.push({
@@ -259,6 +271,9 @@ async function main() {
   }
 
   await runCommand("smoke_selfhost", "npm", ["run", "smoke:selfhost"]);
+  if (!quick || boolEnv("ABRA_RELEASE_QUEUE_PRESSURE_GATE")) {
+    await runCommand("eval_queue_pressure", "npm", ["run", "eval:queue-pressure"], { env: quickQueuePressureEnv() });
+  }
   await runCommand("eval_tier1", "npm", ["run", "eval:tier1"], { env: quickTier1Env() });
   if (!quick) {
     await runCommand("eval_golden", "npm", ["run", "eval:golden"]);
@@ -334,6 +349,7 @@ const summary = {
     base_url: baseUrl,
     run_id: runId,
     dogfood_included: !quick,
+    queue_pressure_included: !quick || boolEnv("ABRA_RELEASE_QUEUE_PRESSURE_GATE"),
     docker_build_included: !quick || boolEnv("ABRA_RELEASE_DOCKER_BUILD"),
     dogfood_source_prepared: prepareDogfoodSource,
     approval_enforcement_gate_included: approvalEnforcementGate,

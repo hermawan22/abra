@@ -20,7 +20,7 @@
   "scripts": {
     "quickstart": "go run ./cmd/abra demo",
     "quickstart:down": "go run ./cmd/abra down",
-    "check:scripts": "bash -n scripts/*.sh && node --check scripts/abra-tier1-eval.mjs && node --check scripts/abra-tier23-eval.mjs && node --check scripts/abra-golden-eval.mjs && node --check scripts/abra-provider-benchmark.mjs && node --check scripts/abra-perf-eval.mjs && node --check scripts/abra-dogfood-eval.mjs && node --check scripts/abra-release-gate.mjs",
+    "check:scripts": "bash -n scripts/*.sh && node --check scripts/abra-tier1-eval.mjs && node --check scripts/abra-tier23-eval.mjs && node --check scripts/abra-golden-eval.mjs && node --check scripts/abra-provider-benchmark.mjs && node --check scripts/abra-perf-eval.mjs && node --check scripts/abra-dogfood-eval.mjs && node --check scripts/abra-queue-pressure-eval.mjs && node --check scripts/abra-release-gate.mjs",
     "ops:backup": "bash scripts/abra-backup.sh",
     "ops:restore-drill": "bash scripts/abra-restore-drill.sh",
     "ops:reindex": "bash scripts/abra-reindex.sh",
@@ -30,6 +30,7 @@
     "eval:golden": "node scripts/abra-golden-eval.mjs",
     "eval:provider": "node scripts/abra-provider-benchmark.mjs",
     "eval:dogfood": "node scripts/abra-dogfood-eval.mjs",
+    "eval:queue-pressure": "node scripts/abra-queue-pressure-eval.mjs",
     "perf:local": "node scripts/abra-perf-eval.mjs",
     "release:gate": "node scripts/abra-release-gate.mjs",
     "test": "npm run check:scripts"

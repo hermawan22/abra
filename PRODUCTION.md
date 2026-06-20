@@ -360,7 +360,7 @@ ABRA_BASE_URL=http://localhost:18080 ABRA_API_TOKEN=replace-with-generated-token
 
 The eval process defaults to the current checkout path, but the worker must be able to read that path. For container layouts, mount the checkout read-only and set `ABRA_DOGFOOD_SOURCE_ROOT` to the mounted path visible to the worker. The gate pauses its source config after success unless `ABRA_DOGFOOD_KEEP_SOURCE_ACTIVE=1` is set. This gate proves Abra can ingest its own docs and Go source, rebuild summaries, return graph-aware working memory for `repo:abra`, and expose Go code intelligence in graph relations.
 
-Smoke tests are not quality evaluation. The full release gate covers recall quality, citation precision, scope leakage, graph quality, policy planning, dogfood ingestion, and embedding provider checks.
+Smoke tests are not quality evaluation. The full release gate covers recall quality, citation precision, scope leakage, graph quality, policy planning, webhook queue-pressure drain, dogfood ingestion, and embedding provider checks.
 
 ## Backup, Restore, Reindex, and Embedding Changes
 
