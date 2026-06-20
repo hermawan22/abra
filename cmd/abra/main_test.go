@@ -1501,6 +1501,91 @@ func TestInstallCodexPrevalidatesMCPBeforeMutatingConfig(t *testing.T) {
 	}
 }
 
+func TestInstallCodexMutatesConfigAfterSuccessfulMCPValidation(t *testing.T) {
+	root := t.TempDir()
+	logPath := filepath.Join(root, "commands.log")
+	writeFake := func(name string) string {
+		path := filepath.Join(root, name)
+		mustWrite(t, path, "#!/bin/sh\nprintf '"+name+" %s\\n' \"$*\" >> "+shellQuote(logPath)+"\nexit 0\n")
+		if err := os.Chmod(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	codexPath := writeFake("codex")
+	writeFake("launchctl")
+	t.Setenv("ABRA_CODEX_COMMAND", codexPath)
+	t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	const tokenEnv = "ABRA_TEST_CODEX_TOKEN"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/mcp" {
+			t.Fatalf("request = %s %s, want POST /mcp", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("authorization"); got != "Bearer test-token" {
+			t.Fatalf("authorization = %q", got)
+		}
+		var rpc map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&rpc); err != nil {
+			t.Fatalf("decode mcp request: %v", err)
+		}
+		if rpc["method"] != "tools/list" {
+			t.Fatalf("mcp method = %#v", rpc["method"])
+		}
+		writeTestJSON(t, w, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result": map[string]any{
+				"tools": []map[string]any{
+					{"name": "discover_scopes"},
+					{"name": "working_memory_compose"},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	output := captureStdout(t, func() {
+		if err := run(context.Background(), []string{"mcp", "install-codex", "--base-url", server.URL, "--token", "test-token", "--token-env", tokenEnv}); err != nil {
+			t.Fatalf("install-codex error = %v", err)
+		}
+	})
+	if os.Getenv(tokenEnv) != "test-token" {
+		t.Fatalf("%s was not set", tokenEnv)
+	}
+	for _, want := range []string{
+		"Installed Abra MCP for Codex:",
+		"token env: " + tokenEnv,
+		"endpoint:  validated (2 tools)",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q:\n%s", want, output)
+		}
+	}
+
+	logBytes, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logText := string(logBytes)
+	wants := []string{
+		"codex mcp list",
+		"codex mcp remove abra",
+		"codex mcp add abra --url " + server.URL + "/mcp --bearer-token-env-var " + tokenEnv,
+	}
+	last := -1
+	for _, want := range wants {
+		idx := strings.Index(logText, want)
+		if idx < 0 {
+			t.Fatalf("command log missing %q:\n%s", want, logText)
+		}
+		if idx < last {
+			t.Fatalf("command %q ran out of order:\n%s", want, logText)
+		}
+		last = idx
+	}
+}
+
 func TestSetupCompatibleNoStartDoesNotSuggestLocalModels(t *testing.T) {
 	root := t.TempDir()
 	home := t.TempDir()
