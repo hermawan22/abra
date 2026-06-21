@@ -1769,6 +1769,91 @@ func TestMemoryStatusAndDoctor(t *testing.T) {
 	}
 }
 
+func TestMemoryStatusAndDoctorSourceDiagnostics(t *testing.T) {
+	payload := map[string]any{
+		"status": "critical",
+		"score":  41,
+		"sources": map[string]any{
+			"total":             3,
+			"healthy":           1,
+			"unhealthy":         2,
+			"refresh_due":       1,
+			"custom_new_metric": 7,
+			"unhealthy_sources": []any{
+				map[string]any{
+					"source_config_id":  "source-wiki",
+					"source_type":       "mcp",
+					"status":            "error",
+					"last_error":        "401 unauthorized",
+					"last_error_at":     "2026-06-21T02:03:04Z",
+					"remediation_hints": []any{"Rotate CONFLUENCE_MCP_TOKEN.", "Retry after credentials are valid."},
+				},
+			},
+			"remediation_hints": []any{"Run `abra sources logs <source-config-id>` for failed connector details."},
+		},
+		"source_diagnostics": []any{
+			map[string]any{
+				"id":      "source-code",
+				"status":  "overdue",
+				"message": "last successful refresh is older than freshness policy",
+				"action":  "run abra sources sync source-code --scope repo:demo",
+			},
+		},
+		"signals": []any{
+			map[string]any{"code": "source_configs_error", "severity": "critical", "count": 1, "action": "fix source configuration or credentials and retry ingestion"},
+		},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/memory/health" {
+			t.Fatalf("request = %s %s, want GET /memory/health", r.Method, r.URL.Path)
+		}
+		writeTestJSON(t, w, payload)
+	}))
+	defer server.Close()
+
+	statusOutput := captureStdout(t, func() {
+		if err := run(context.Background(), []string{"memory", "status", "--scope", "repo:demo", "--base-url", server.URL, "--token", "test-token"}); err != nil {
+			t.Fatalf("memory status error = %v", err)
+		}
+	})
+	for _, want := range []string{
+		"sources: total=3 healthy=1 unhealthy=2 refresh_due=1 custom_new_metric=7",
+		"Run `abra memory doctor --scope repo:demo` for source diagnostics.",
+	} {
+		if !strings.Contains(statusOutput, want) {
+			t.Fatalf("memory status output missing %q:\n%s", want, statusOutput)
+		}
+	}
+	for _, notWant := range []string{" due=", " overdue=", " error=", "source-wiki", "401 unauthorized"} {
+		if strings.Contains(statusOutput, notWant) {
+			t.Fatalf("memory status output should not include %q:\n%s", notWant, statusOutput)
+		}
+	}
+
+	doctorOutput := captureStdout(t, func() {
+		if err := run(context.Background(), []string{"memory", "doctor", "--scope", "repo:demo", "--base-url", server.URL, "--token", "test-token"}); err != nil {
+			t.Fatalf("memory doctor error = %v", err)
+		}
+	})
+	for _, want := range []string{
+		"source diagnostics:",
+		"source-code (overdue): last successful refresh is older than freshness policy",
+		"action: run abra sources sync source-code --scope repo:demo",
+		"inspect: abra sources status 'source-code'",
+		"logs: abra sources logs 'source-code' --scope 'repo:demo'",
+		"source-wiki (mcp, error): 401 unauthorized",
+		"last_error_at: 2026-06-21T02:03:04Z",
+		"remediation_hints:",
+		"Rotate CONFLUENCE_MCP_TOKEN.",
+		"source remediation:",
+		"Run `abra sources logs <source-config-id>` for failed connector details.",
+	} {
+		if !strings.Contains(doctorOutput, want) {
+			t.Fatalf("memory doctor output missing %q:\n%s", want, doctorOutput)
+		}
+	}
+}
+
 func TestShellQuoteEscapesSingleQuotes(t *testing.T) {
 	if got := shellQuote("dev'token"); got != "'dev'\"'\"'token'" {
 		t.Fatalf("shellQuote = %q", got)

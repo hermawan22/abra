@@ -43,6 +43,7 @@ type ScopeSummary struct {
 }
 
 const maxListScopesLimit = 10000
+const maxMemoryHealthSourceDetails = 10
 
 var fullTextTermPattern = regexp.MustCompile(`[A-Za-z0-9_]+`)
 
@@ -587,22 +588,23 @@ type MemorySummaryResult struct {
 }
 
 type MemoryHealthResult struct {
-	Scope       string                `json:"scope,omitempty"`
-	Status      string                `json:"status"`
-	Score       int                   `json:"score"`
-	CheckedAt   string                `json:"checked_at"`
-	Reasons     []string              `json:"reasons"`
-	Signals     []MemoryHealthSignal  `json:"signals"`
-	Documents   MemoryHealthDocument  `json:"documents"`
-	Claims      MemoryHealthClaim     `json:"claims"`
-	Graph       MemoryHealthGraph     `json:"graph"`
-	Summaries   MemoryHealthSummary   `json:"summaries"`
-	Sources     MemoryHealthSource    `json:"sources"`
-	Ingestion   MemoryHealthIngestion `json:"ingestion"`
-	Conflicts   MemoryHealthConflict  `json:"conflicts"`
-	Learning    MemoryHealthLearning  `json:"learning"`
-	Approvals   MemoryHealthApproval  `json:"approvals"`
-	LastUpdated map[string]string     `json:"last_updated,omitempty"`
+	Scope        string                     `json:"scope,omitempty"`
+	Status       string                     `json:"status"`
+	Score        int                        `json:"score"`
+	CheckedAt    string                     `json:"checked_at"`
+	Reasons      []string                   `json:"reasons"`
+	Signals      []MemoryHealthSignal       `json:"signals"`
+	Documents    MemoryHealthDocument       `json:"documents"`
+	Claims       MemoryHealthClaim          `json:"claims"`
+	Graph        MemoryHealthGraph          `json:"graph"`
+	Summaries    MemoryHealthSummary        `json:"summaries"`
+	Sources      MemoryHealthSource         `json:"sources"`
+	Ingestion    MemoryHealthIngestion      `json:"ingestion"`
+	Conflicts    MemoryHealthConflict       `json:"conflicts"`
+	Learning     MemoryHealthLearning       `json:"learning"`
+	Approvals    MemoryHealthApproval       `json:"approvals"`
+	SourceHealth []MemoryHealthSourceDetail `json:"source_health,omitempty"`
+	LastUpdated  map[string]string          `json:"last_updated,omitempty"`
 }
 
 type MemoryHealthSignal struct {
@@ -659,6 +661,27 @@ type MemoryHealthSource struct {
 	Error    int `json:"error"`
 	Due      int `json:"due"`
 	Overdue  int `json:"overdue"`
+}
+
+type MemoryHealthSourceDetail struct {
+	ID               string  `json:"id"`
+	Name             string  `json:"name"`
+	Type             string  `json:"type"`
+	Status           string  `json:"status"`
+	LastSuccessAt    *string `json:"last_success_at,omitempty"`
+	LastErrorAt      *string `json:"last_error_at,omitempty"`
+	LastError        string  `json:"last_error,omitempty"`
+	Due              bool    `json:"due"`
+	Overdue          bool    `json:"overdue"`
+	RetryJobs        int     `json:"retry_jobs"`
+	FailedJobs       int     `json:"failed_jobs"`
+	RunningJobs      int     `json:"running_jobs"`
+	QueuedJobs       int     `json:"queued_jobs"`
+	StaleRunningJobs int     `json:"stale_running_jobs,omitempty"`
+	LatestJobID      string  `json:"latest_job_id,omitempty"`
+	LatestJobStatus  string  `json:"latest_job_status,omitempty"`
+	LatestJobUpdated string  `json:"latest_job_updated,omitempty"`
+	RemediationHint  string  `json:"remediation_hint"`
 }
 
 type MemoryHealthIngestion struct {
@@ -1439,7 +1462,31 @@ func (s *Store) SearchClaims(ctx context.Context, query, scope, excludeID string
 	return claims, rows.Err()
 }
 
+func recordEffectiveSQL(alias string) string {
+	return fmt.Sprintf(`(%[1]s.valid_from IS NULL OR %[1]s.valid_from <= now())
+		  AND (%[1]s.expires_at IS NULL OR %[1]s.expires_at > now())`, alias)
+}
+
 func claimEffectiveSQL(alias string) string {
+	return claimEffectiveWithSupersedingStatusSQL(alias, "superseding_claim.status NOT IN ('deprecated', 'expired')")
+}
+
+func trustedClaimEffectiveSQL(alias string) string {
+	return claimEffectiveWithSupersedingStatusSQL(alias, "superseding_claim.status IN ('verified', 'inferred')")
+}
+
+func claimEffectiveSQLForRecall(alias string, includeUnverified bool) string {
+	if includeUnverified {
+		return claimEffectiveSQL(alias)
+	}
+	return trustedClaimEffectiveSQL(alias)
+}
+
+func claimEffectiveWithSupersedingStatusSQL(alias, supersedingStatusFilter string) string {
+	supersedingStatusFilter = strings.TrimSpace(supersedingStatusFilter)
+	if supersedingStatusFilter == "" {
+		supersedingStatusFilter = "superseding_claim.status NOT IN ('deprecated', 'expired')"
+	}
 	return fmt.Sprintf(`(%[1]s.valid_from IS NULL OR %[1]s.valid_from <= now())
 		  AND (%[1]s.expires_at IS NULL OR %[1]s.expires_at > now())
 		  AND NOT EXISTS (
@@ -1447,10 +1494,10 @@ func claimEffectiveSQL(alias string) string {
 		    FROM claims superseding_claim
 		    WHERE superseding_claim.supersedes_claim_id = %[1]s.id
 		      AND superseding_claim.scope = %[1]s.scope
-		      AND superseding_claim.status NOT IN ('deprecated', 'expired')
+		      AND %s
 		      AND (superseding_claim.valid_from IS NULL OR superseding_claim.valid_from <= now())
 		      AND (superseding_claim.expires_at IS NULL OR superseding_claim.expires_at > now())
-		  )`, alias)
+		  )`, alias, supersedingStatusFilter)
 }
 
 func activeClaimStatusSQL(alias string, includeUnverified bool) string {
@@ -2263,82 +2310,7 @@ func (s *Store) MemoryHealth(ctx context.Context, scope string) (MemoryHealthRes
 		return MemoryHealthResult{}, err
 	}
 	result.Summaries.Levels = levels
-	if err := s.pool.QueryRow(ctx, `
-		WITH source_readiness AS (
-		  SELECT
-		    sc.*,
-		    freshness.freshness_interval,
-		    freshness.schedule_interval,
-		    (
-		      sc.status = 'active'
-		      AND sc.source_type IN ('local_repo', 'markdown', 'git_repo', 'mcp')
-		      AND NOT EXISTS (
-		        SELECT 1
-		        FROM ingestion_jobs ij
-		        WHERE ij.source_config_id = sc.id
-		          AND ij.status IN ('queued', 'retry', 'running')
-		      )
-		      AND (
-		        sc.last_success_at IS NULL
-		        OR sc.updated_at > sc.last_success_at
-		        OR (freshness.freshness_interval IS NOT NULL AND sc.last_success_at < now() - freshness.freshness_interval)
-		        OR (freshness.schedule_interval IS NOT NULL AND sc.last_success_at < now() - freshness.schedule_interval)
-		      )
-		    ) AS refresh_due
-		  FROM source_configs sc
-		  CROSS JOIN LATERAL (
-		    SELECT
-		      CASE
-		        WHEN sc.freshness_policy->>'max_age_seconds' ~ '^[1-9][0-9]*$'
-		          THEN make_interval(secs => (sc.freshness_policy->>'max_age_seconds')::int)
-		        WHEN sc.freshness_policy->>'max_age_minutes' ~ '^[1-9][0-9]*$'
-		          THEN make_interval(mins => (sc.freshness_policy->>'max_age_minutes')::int)
-		        WHEN sc.freshness_policy->>'max_age_hours' ~ '^[1-9][0-9]*$'
-		          THEN make_interval(hours => (sc.freshness_policy->>'max_age_hours')::int)
-		        WHEN sc.freshness_policy->>'max_age_days' ~ '^[1-9][0-9]*$'
-		          THEN make_interval(days => (sc.freshness_policy->>'max_age_days')::int)
-		        ELSE NULL
-		      END AS freshness_interval,
-		      CASE
-		        WHEN sc.schedule_cron = '@hourly' THEN interval '1 hour'
-		        WHEN sc.schedule_cron = '@daily' THEN interval '24 hours'
-		        WHEN sc.schedule_cron ~ '^@every[[:space:]]+[1-9][0-9]*[smhd]$' THEN
-		          CASE right(sc.schedule_cron, 1)
-		            WHEN 's' THEN make_interval(secs => regexp_replace(sc.schedule_cron, '[^0-9]', '', 'g')::int)
-		            WHEN 'm' THEN make_interval(mins => regexp_replace(sc.schedule_cron, '[^0-9]', '', 'g')::int)
-		            WHEN 'h' THEN make_interval(hours => regexp_replace(sc.schedule_cron, '[^0-9]', '', 'g')::int)
-		            WHEN 'd' THEN make_interval(days => regexp_replace(sc.schedule_cron, '[^0-9]', '', 'g')::int)
-		          END
-		        ELSE NULL
-		      END AS schedule_interval
-		  ) freshness
-		  WHERE ($1 = '' OR sc.scope = $1)
-		)
-		SELECT
-		  COUNT(*)::int,
-		  COUNT(*) FILTER (WHERE status = 'active')::int,
-		  COUNT(*) FILTER (WHERE status = 'paused')::int,
-		  COUNT(*) FILTER (WHERE status = 'disabled')::int,
-		  COUNT(*) FILTER (WHERE status = 'error')::int,
-		  COUNT(*) FILTER (WHERE refresh_due)::int,
-		  COUNT(*) FILTER (
-		    WHERE refresh_due
-		      AND (
-		        (COALESCE(freshness_interval, schedule_interval) IS NOT NULL
-		          AND (
-		            (last_success_at IS NULL AND created_at < now() - COALESCE(freshness_interval, schedule_interval))
-		            OR last_success_at < now() - (COALESCE(freshness_interval, schedule_interval) * 2)
-		          ))
-		        OR (COALESCE(freshness_interval, schedule_interval) IS NULL
-		          AND (
-		            (last_success_at IS NULL AND created_at < now() - interval '24 hours')
-		            OR (last_success_at IS NOT NULL AND updated_at > last_success_at AND updated_at < now() - interval '24 hours')
-		          ))
-		      )
-		  )::int,
-		  COALESCE(MAX(updated_at)::text, '')
-		FROM source_readiness
-	`, scope).Scan(
+	if err := s.pool.QueryRow(ctx, memoryHealthSourceCountsSQL(), scope).Scan(
 		&result.Sources.Total,
 		&result.Sources.Active,
 		&result.Sources.Paused,
@@ -2350,6 +2322,11 @@ func (s *Store) MemoryHealth(ctx context.Context, scope string) (MemoryHealthRes
 	); err != nil {
 		return MemoryHealthResult{}, err
 	}
+	sourceHealth, err := s.memoryHealthSourceDetails(ctx, scope, maxMemoryHealthSourceDetails)
+	if err != nil {
+		return MemoryHealthResult{}, err
+	}
+	result.SourceHealth = sourceHealth
 	if err := s.pool.QueryRow(ctx, `
 		SELECT COUNT(*)::int
 		FROM (
@@ -2470,6 +2447,252 @@ func (s *Store) MemoryHealth(ctx context.Context, scope string) (MemoryHealthRes
 	result.Reasons = assessment.Reasons
 	result.Signals = assessment.Signals
 	return result, nil
+}
+
+func (s *Store) memoryHealthSourceDetails(ctx context.Context, scope string, limit int) ([]MemoryHealthSourceDetail, error) {
+	if limit <= 0 {
+		limit = maxMemoryHealthSourceDetails
+	}
+	rows, err := s.pool.Query(ctx, memoryHealthSourceDetailsSQL(), scope, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []MemoryHealthSourceDetail{}
+	for rows.Next() {
+		var item MemoryHealthSourceDetail
+		var lastSuccessAt, lastErrorAt, latestJobUpdated sql.NullString
+		if err := rows.Scan(
+			&item.ID,
+			&item.Name,
+			&item.Type,
+			&item.Status,
+			&lastSuccessAt,
+			&lastErrorAt,
+			&item.LastError,
+			&item.Due,
+			&item.Overdue,
+			&item.RetryJobs,
+			&item.FailedJobs,
+			&item.RunningJobs,
+			&item.QueuedJobs,
+			&item.StaleRunningJobs,
+			&item.LatestJobID,
+			&item.LatestJobStatus,
+			&latestJobUpdated,
+		); err != nil {
+			return nil, err
+		}
+		item.LastSuccessAt = stringPtrFromNull(lastSuccessAt)
+		item.LastErrorAt = stringPtrFromNull(lastErrorAt)
+		if latestJobUpdated.Valid && latestJobUpdated.String != "" {
+			item.LatestJobUpdated = latestJobUpdated.String
+		}
+		item.RemediationHint = memoryHealthSourceRemediationHint(item)
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func memoryHealthSourceCountsSQL() string {
+	return sourceReadinessCTE() + `
+		SELECT
+		  COUNT(*)::int,
+		  COUNT(*) FILTER (WHERE status = 'active')::int,
+		  COUNT(*) FILTER (WHERE status = 'paused')::int,
+		  COUNT(*) FILTER (WHERE status = 'disabled')::int,
+		  COUNT(*) FILTER (WHERE status = 'error')::int,
+		  COUNT(*) FILTER (WHERE refresh_due)::int,
+		  COUNT(*) FILTER (WHERE refresh_overdue)::int,
+		  COALESCE(MAX(updated_at)::text, '')
+		FROM source_readiness
+	`
+}
+
+func memoryHealthSourceDetailsSQL() string {
+	return sourceReadinessCTE() + `,
+		job_rollup AS (
+		  SELECT
+		    source_config_id,
+		    COUNT(*) FILTER (WHERE status = 'retry')::int AS retry_jobs,
+		    COUNT(*) FILTER (WHERE status = 'failed')::int AS failed_jobs,
+		    COUNT(*) FILTER (WHERE status = 'running')::int AS running_jobs,
+		    COUNT(*) FILTER (WHERE status = 'queued')::int AS queued_jobs,
+		    COUNT(*) FILTER (
+		      WHERE status = 'running'
+		        AND (heartbeat_at IS NULL OR heartbeat_at < now() - interval '10 minutes')
+		    )::int AS stale_running_jobs
+		  FROM ingestion_jobs
+		  WHERE source_config_id IS NOT NULL
+		    AND ($1 = '' OR scope = $1)
+		  GROUP BY source_config_id
+		),
+		latest_job AS (
+		  SELECT DISTINCT ON (source_config_id)
+		    source_config_id,
+		    id,
+		    status,
+		    updated_at::text AS updated_at
+		  FROM ingestion_jobs
+		  WHERE source_config_id IS NOT NULL
+		    AND ($1 = '' OR scope = $1)
+		  ORDER BY source_config_id, updated_at DESC, created_at DESC, id DESC
+		)
+		SELECT
+		  sr.id,
+		  sr.name,
+		  sr.source_type,
+		  sr.status,
+		  sr.last_success_at::text,
+		  sr.last_error_at::text,
+		  COALESCE(sr.last_error, ''),
+		  sr.refresh_due,
+		  sr.refresh_overdue,
+		  COALESCE(j.retry_jobs, 0)::int,
+		  COALESCE(j.failed_jobs, 0)::int,
+		  COALESCE(j.running_jobs, 0)::int,
+		  COALESCE(j.queued_jobs, 0)::int,
+		  COALESCE(j.stale_running_jobs, 0)::int,
+		  COALESCE(lj.id, ''),
+		  COALESCE(lj.status, ''),
+		  lj.updated_at
+		FROM source_readiness sr
+		LEFT JOIN job_rollup j ON j.source_config_id = sr.id
+		LEFT JOIN latest_job lj ON lj.source_config_id = sr.id
+		WHERE sr.status = 'error'
+		   OR sr.refresh_due
+		   OR sr.refresh_overdue
+		   OR COALESCE(j.failed_jobs, 0) > 0
+		   OR COALESCE(j.retry_jobs, 0) > 0
+		   OR COALESCE(j.stale_running_jobs, 0) > 0
+		   OR COALESCE(j.running_jobs, 0) > 0
+		   OR COALESCE(j.queued_jobs, 0) > 0
+		ORDER BY
+		  CASE
+		    WHEN sr.status = 'error' THEN 0
+		    WHEN sr.refresh_overdue THEN 1
+		    WHEN COALESCE(j.failed_jobs, 0) > 0 THEN 2
+		    WHEN COALESCE(j.stale_running_jobs, 0) > 0 THEN 3
+		    WHEN COALESCE(j.retry_jobs, 0) > 0 THEN 4
+		    WHEN sr.refresh_due THEN 5
+		    WHEN COALESCE(j.running_jobs, 0) > 0 THEN 6
+		    WHEN COALESCE(j.queued_jobs, 0) > 0 THEN 7
+		    ELSE 8
+		  END,
+		  sr.updated_at ASC,
+		  sr.id ASC
+		LIMIT $2
+	`
+}
+
+func sourceReadinessCTE() string {
+	return `
+		WITH source_intervals AS (
+		  SELECT
+		    sc.*,
+		    freshness.freshness_interval,
+		    freshness.schedule_interval
+		  FROM source_configs sc
+		  CROSS JOIN LATERAL (
+		    SELECT
+		      CASE
+		        WHEN sc.freshness_policy->>'max_age_seconds' ~ '^[1-9][0-9]*$'
+		          THEN make_interval(secs => (sc.freshness_policy->>'max_age_seconds')::int)
+		        WHEN sc.freshness_policy->>'max_age_minutes' ~ '^[1-9][0-9]*$'
+		          THEN make_interval(mins => (sc.freshness_policy->>'max_age_minutes')::int)
+		        WHEN sc.freshness_policy->>'max_age_hours' ~ '^[1-9][0-9]*$'
+		          THEN make_interval(hours => (sc.freshness_policy->>'max_age_hours')::int)
+		        WHEN sc.freshness_policy->>'max_age_days' ~ '^[1-9][0-9]*$'
+		          THEN make_interval(days => (sc.freshness_policy->>'max_age_days')::int)
+		        ELSE NULL
+		      END AS freshness_interval,
+		      CASE
+		        WHEN sc.schedule_cron = '@hourly' THEN interval '1 hour'
+		        WHEN sc.schedule_cron = '@daily' THEN interval '24 hours'
+		        WHEN sc.schedule_cron ~ '^@every[[:space:]]+[1-9][0-9]*[smhd]$' THEN
+		          CASE right(sc.schedule_cron, 1)
+		            WHEN 's' THEN make_interval(secs => regexp_replace(sc.schedule_cron, '[^0-9]', '', 'g')::int)
+		            WHEN 'm' THEN make_interval(mins => regexp_replace(sc.schedule_cron, '[^0-9]', '', 'g')::int)
+		            WHEN 'h' THEN make_interval(hours => regexp_replace(sc.schedule_cron, '[^0-9]', '', 'g')::int)
+		            WHEN 'd' THEN make_interval(days => regexp_replace(sc.schedule_cron, '[^0-9]', '', 'g')::int)
+		          END
+		        ELSE NULL
+		      END AS schedule_interval
+		  ) freshness
+		  WHERE ($1 = '' OR sc.scope = $1)
+		),
+		source_readiness AS (
+		  SELECT
+		    source_due.*,
+		    (
+		      source_due.refresh_due
+		      AND (
+		        (COALESCE(source_due.freshness_interval, source_due.schedule_interval) IS NOT NULL
+		          AND (
+		            (source_due.last_success_at IS NULL AND source_due.created_at < now() - COALESCE(source_due.freshness_interval, source_due.schedule_interval))
+		            OR source_due.last_success_at < now() - (COALESCE(source_due.freshness_interval, source_due.schedule_interval) * 2)
+		          ))
+		        OR (COALESCE(source_due.freshness_interval, source_due.schedule_interval) IS NULL
+		          AND (
+		            (source_due.last_success_at IS NULL AND source_due.created_at < now() - interval '24 hours')
+		            OR (source_due.last_success_at IS NOT NULL AND source_due.updated_at > source_due.last_success_at AND source_due.updated_at < now() - interval '24 hours')
+		          ))
+		      )
+		    ) AS refresh_overdue
+		  FROM (
+		    SELECT
+		      source_intervals.*,
+		      (
+		        source_intervals.status = 'active'
+		        AND source_intervals.source_type IN ('local_repo', 'markdown', 'git_repo', 'mcp')
+		        AND NOT EXISTS (
+		          SELECT 1
+		          FROM ingestion_jobs ij
+		          WHERE ij.source_config_id = source_intervals.id
+		            AND ij.status IN ('queued', 'retry', 'running')
+		        )
+		        AND (
+		          source_intervals.last_success_at IS NULL
+		          OR source_intervals.updated_at > source_intervals.last_success_at
+		          OR (source_intervals.freshness_interval IS NOT NULL AND source_intervals.last_success_at < now() - source_intervals.freshness_interval)
+		          OR (source_intervals.schedule_interval IS NOT NULL AND source_intervals.last_success_at < now() - source_intervals.schedule_interval)
+		        )
+		      ) AS refresh_due
+		    FROM source_intervals
+		  ) source_due
+		)
+	`
+}
+
+func memoryHealthSourceRemediationHint(source MemoryHealthSourceDetail) string {
+	switch {
+	case source.Status == "error":
+		return "fix source configuration or credentials, then retry ingestion"
+	case source.FailedJobs > 0:
+		return "inspect failed ingestion jobs, fix the source error, then retry"
+	case source.StaleRunningJobs > 0:
+		return "restart or cancel stale running jobs, then retry affected ingestion"
+	case source.RetryJobs > 0:
+		return "monitor retrying jobs or inspect repeated failures"
+	case source.Overdue:
+		return "refresh this source before relying on affected memory"
+	case source.Due:
+		return "enqueue a source refresh or confirm the source is intentionally unchanged"
+	case source.RunningJobs > 0:
+		return "check active ingestion worker progress and heartbeat"
+	case source.QueuedJobs > 0:
+		return "wait for ingestion workers or increase worker capacity if the queue is stuck"
+	default:
+		return "review source configuration and ingestion history"
+	}
+}
+
+func stringPtrFromNull(value sql.NullString) *string {
+	if !value.Valid || value.String == "" {
+		return nil
+	}
+	text := value.String
+	return &text
 }
 
 func (s *Store) memorySummaryLevels(ctx context.Context, scope string) (map[string]int, error) {
@@ -3100,7 +3323,7 @@ func (s *Store) Recall(ctx context.Context, query, scope string, limit int, incl
 	}
 	anyQuery := fullTextAnyQuery(query)
 	statusFilter := activeClaimStatusSQL("c", includeUnverified)
-	lifecycleFilter := claimEffectiveSQL("c")
+	lifecycleFilter := claimEffectiveSQLForRecall("c", includeUnverified)
 
 	claimsRows, err := s.pool.Query(ctx, fmt.Sprintf(`
 		WITH ranked_claims AS (
@@ -3296,7 +3519,7 @@ func (s *Store) RecallHybrid(ctx context.Context, query, scope string, limit int
 	vector := vectorLiteral(queryEmbedding)
 
 	dimensions := len(queryEmbedding)
-	claimsRows, err := s.pool.Query(ctx, hybridRecallClaimsSQL(statusFilter, dimensions), query, scope, limit, anyQuery, vector, dimensions)
+	claimsRows, err := s.pool.Query(ctx, hybridRecallClaimsSQL(statusFilter, dimensions, includeUnverified), query, scope, limit, anyQuery, vector, dimensions)
 	if err != nil {
 		return RecallResult{}, err
 	}
@@ -3415,9 +3638,9 @@ func recallRetrievalReasons(result RecallResult) []RetrievalReason {
 	return reasons
 }
 
-func hybridRecallClaimsSQL(statusFilter string, dimensions int) string {
+func hybridRecallClaimsSQL(statusFilter string, dimensions int, includeUnverified bool) string {
 	embeddingExpr, queryExpr := vectorComparisonExpr("embedding", "$5", dimensions)
-	lifecycleFilter := claimEffectiveSQL("c")
+	lifecycleFilter := claimEffectiveSQLForRecall("c", includeUnverified)
 	return fmt.Sprintf(`
 		WITH text_matches AS (
 		  SELECT
@@ -3981,7 +4204,24 @@ func (s *Store) ListActiveRelationsFromEntity(ctx context.Context, scope, source
 	if limit < 1 || limit > 100 {
 		limit = 50
 	}
-	rows, err := s.queryRunner().Query(ctx, `
+	rows, err := s.queryRunner().Query(ctx, listActiveRelationsFromEntitySQL(), scope, sourceEntityID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	relations := []GraphRelationResult{}
+	for rows.Next() {
+		var relation GraphRelationResult
+		if err := rows.Scan(&relation.ID, &relation.FromID, &relation.FromEntity, &relation.ToID, &relation.ToEntity, &relation.Type, &relation.Status, &relation.Confidence, &relation.SourceURL, &relation.UpdatedAt); err != nil {
+			return nil, err
+		}
+		relations = append(relations, relation)
+	}
+	return relations, rows.Err()
+}
+
+func listActiveRelationsFromEntitySQL() string {
+	return fmt.Sprintf(`
 		SELECT
 		  r.id,
 		  src.id,
@@ -4001,22 +4241,12 @@ func (s *Store) ListActiveRelationsFromEntity(ctx context.Context, scope, source
 		  AND r.status NOT IN ('deprecated', 'expired')
 		  AND src.status NOT IN ('deprecated', 'deleted')
 		  AND dst.status NOT IN ('deprecated', 'deleted')
+		  AND %s
+		  AND %s
+		  AND %s
 		ORDER BY r.confidence DESC, r.updated_at DESC
 		LIMIT $3
-	`, scope, sourceEntityID, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	relations := []GraphRelationResult{}
-	for rows.Next() {
-		var relation GraphRelationResult
-		if err := rows.Scan(&relation.ID, &relation.FromID, &relation.FromEntity, &relation.ToID, &relation.ToEntity, &relation.Type, &relation.Status, &relation.Confidence, &relation.SourceURL, &relation.UpdatedAt); err != nil {
-			return nil, err
-		}
-		relations = append(relations, relation)
-	}
-	return relations, rows.Err()
+	`, recordEffectiveSQL("r"), recordEffectiveSQL("src"), recordEffectiveSQL("dst"))
 }
 
 func (s *Store) RelatedGraph(ctx context.Context, query, scope string, limit int) ([]RelationResult, error) {
@@ -4024,7 +4254,24 @@ func (s *Store) RelatedGraph(ctx context.Context, query, scope string, limit int
 		limit = 8
 	}
 	anyQuery := fullTextAnyQuery(query)
-	rows, err := s.pool.Query(ctx, `
+	rows, err := s.pool.Query(ctx, relatedGraphSQL(), query, scope, limit, anyQuery)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var relations []RelationResult
+	for rows.Next() {
+		var relation RelationResult
+		if err := rows.Scan(&relation.ID, &relation.FromEntity, &relation.ToEntity, &relation.Type, &relation.Confidence, &relation.SourceURL); err != nil {
+			return nil, err
+		}
+		relations = append(relations, relation)
+	}
+	return relations, rows.Err()
+}
+
+func relatedGraphSQL() string {
+	return fmt.Sprintf(`
 		WITH seed_entities AS (
 		  SELECT e.id
 		  FROM entities e
@@ -4034,11 +4281,12 @@ func (s *Store) RelatedGraph(ctx context.Context, query, scope string, limit int
 		   AND ea.status NOT IN ('deprecated', 'deleted')
 		  WHERE e.scope = $2
 		    AND e.status NOT IN ('deprecated', 'deleted')
+		    AND %s
 		    AND (
 		      e.search_vector @@ plainto_tsquery('simple', $1)
 		      OR e.search_vector @@ to_tsquery('simple', $4)
-		      OR e.canonical_name ILIKE '%' || $1 || '%'
-		      OR ea.alias ILIKE '%' || $1 || '%'
+		      OR e.canonical_name ILIKE '%%' || $1 || '%%'
+		      OR ea.alias ILIKE '%%' || $1 || '%%'
 		    )
 		  GROUP BY e.id, e.confidence, e.updated_at
 		  ORDER BY e.confidence DESC, e.updated_at DESC
@@ -4053,6 +4301,9 @@ func (s *Store) RelatedGraph(ctx context.Context, query, scope string, limit int
 		    AND r.status NOT IN ('deprecated', 'expired')
 		    AND src.status NOT IN ('deprecated', 'deleted')
 		    AND dst.status NOT IN ('deprecated', 'deleted')
+		    AND %s
+		    AND %s
+		    AND %s
 		    AND (
 		      r.source_entity_id IN (SELECT id FROM seed_entities)
 		      OR r.target_entity_id IN (SELECT id FROM seed_entities)
@@ -4060,7 +4311,7 @@ func (s *Store) RelatedGraph(ctx context.Context, query, scope string, limit int
 		      OR src.search_vector @@ to_tsquery('simple', $4)
 		      OR dst.search_vector @@ plainto_tsquery('simple', $1)
 		      OR dst.search_vector @@ to_tsquery('simple', $4)
-		      OR r.relation_type ILIKE '%' || $1 || '%'
+		      OR r.relation_type ILIKE '%%' || $1 || '%%'
 		    )
 		  ORDER BY r.confidence DESC, r.updated_at DESC
 		  LIMIT GREATEST($3 * 4, 16)
@@ -4085,6 +4336,9 @@ func (s *Store) RelatedGraph(ctx context.Context, query, scope string, limit int
 		    AND r.status NOT IN ('deprecated', 'expired')
 		    AND src.status NOT IN ('deprecated', 'deleted')
 		    AND dst.status NOT IN ('deprecated', 'deleted')
+		    AND %s
+		    AND %s
+		    AND %s
 		    AND (
 		      r.source_entity_id IN (SELECT id FROM frontier_entities)
 		      OR r.target_entity_id IN (SELECT id FROM frontier_entities)
@@ -4106,25 +4360,26 @@ func (s *Store) RelatedGraph(ctx context.Context, query, scope string, limit int
 		JOIN relations r ON r.id = ranked.id
 		JOIN entities src ON src.id = r.source_entity_id
 		JOIN entities dst ON dst.id = r.target_entity_id
+		WHERE %s
+		  AND %s
+		  AND %s
 		ORDER BY
 		  ranked.distance ASC,
 		  (r.confidence * ranked.seed_score) DESC,
 		  r.updated_at DESC
 		LIMIT $3
-	`, query, scope, limit, anyQuery)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var relations []RelationResult
-	for rows.Next() {
-		var relation RelationResult
-		if err := rows.Scan(&relation.ID, &relation.FromEntity, &relation.ToEntity, &relation.Type, &relation.Confidence, &relation.SourceURL); err != nil {
-			return nil, err
-		}
-		relations = append(relations, relation)
-	}
-	return relations, rows.Err()
+	`,
+		recordEffectiveSQL("e"),
+		recordEffectiveSQL("r"),
+		recordEffectiveSQL("src"),
+		recordEffectiveSQL("dst"),
+		recordEffectiveSQL("r"),
+		recordEffectiveSQL("src"),
+		recordEffectiveSQL("dst"),
+		recordEffectiveSQL("r"),
+		recordEffectiveSQL("src"),
+		recordEffectiveSQL("dst"),
+	)
 }
 
 func decodeJSONMap(raw []byte) map[string]any {

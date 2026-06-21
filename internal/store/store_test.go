@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -158,7 +159,7 @@ func TestConflictSelectIncludesResolutionFields(t *testing.T) {
 func TestClaimLifecycleSQLFiltersTemporalAndSupersededClaims(t *testing.T) {
 	for name, query := range map[string]string{
 		"search":      searchClaimsSQL(),
-		"hybrid":      hybridRecallClaimsSQL(activeClaimStatusSQL("c", false), 3),
+		"hybrid":      hybridRecallClaimsSQL(activeClaimStatusSQL("c", false), 3, false),
 		"active_only": claimEffectiveSQL("c"),
 	} {
 		for _, fragment := range []string{
@@ -167,17 +168,62 @@ func TestClaimLifecycleSQLFiltersTemporalAndSupersededClaims(t *testing.T) {
 			"expires_at IS NULL OR",
 			"expires_at > now()",
 			"supersedes_claim_id",
-			"superseding_claim.status NOT IN ('deprecated', 'expired')",
 		} {
 			if !strings.Contains(query, fragment) {
 				t.Fatalf("%s lifecycle SQL missing %q:\n%s", name, fragment, query)
 			}
 		}
 	}
+	if !strings.Contains(claimEffectiveSQL("c"), "superseding_claim.status NOT IN ('deprecated', 'expired')") {
+		t.Fatalf("general lifecycle SQL should hide claims superseded by any active replacement:\n%s", claimEffectiveSQL("c"))
+	}
+	trustedOnly := trustedClaimEffectiveSQL("c")
+	if !strings.Contains(trustedOnly, "superseding_claim.status IN ('verified', 'inferred')") {
+		t.Fatalf("trusted lifecycle SQL should only hide claims superseded by trusted replacements:\n%s", trustedOnly)
+	}
+	includeUnverified := claimEffectiveSQLForRecall("c", true)
+	if !strings.Contains(includeUnverified, "superseding_claim.status NOT IN ('deprecated', 'expired')") {
+		t.Fatalf("include-unverified lifecycle SQL should hide claims superseded by any active replacement:\n%s", includeUnverified)
+	}
 	if got := activeClaimStatusSQL("c", true); strings.Contains(got, "'deprecated'") && strings.Contains(got, "'expired'") {
 		return
 	}
 	t.Fatalf("include-unverified status filter should still exclude deprecated and expired claims")
+}
+
+func TestGraphLifecycleSQLFiltersTemporalEntitiesAndRelations(t *testing.T) {
+	activeRelations := compactSQL(listActiveRelationsFromEntitySQL())
+	for _, fragment := range []string{
+		"r.valid_from IS NULL OR r.valid_from <= now()",
+		"r.expires_at IS NULL OR r.expires_at > now()",
+		"src.valid_from IS NULL OR src.valid_from <= now()",
+		"dst.valid_from IS NULL OR dst.valid_from <= now()",
+	} {
+		if !strings.Contains(activeRelations, fragment) {
+			t.Fatalf("active relation SQL missing %q:\n%s", fragment, activeRelations)
+		}
+	}
+
+	related := compactSQL(relatedGraphSQL())
+	for _, fragment := range []string{
+		"WITH seed_entities AS",
+		"seed_edges AS",
+		"neighbor_edges AS",
+		"e.valid_from IS NULL OR e.valid_from <= now()",
+		"r.valid_from IS NULL OR r.valid_from <= now()",
+		"src.valid_from IS NULL OR src.valid_from <= now()",
+		"dst.valid_from IS NULL OR dst.valid_from <= now()",
+		"r.expires_at IS NULL OR r.expires_at > now()",
+		"src.expires_at IS NULL OR src.expires_at > now()",
+		"dst.expires_at IS NULL OR dst.expires_at > now()",
+	} {
+		if !strings.Contains(related, fragment) {
+			t.Fatalf("related graph SQL missing %q:\n%s", fragment, related)
+		}
+	}
+	if strings.Count(related, "r.valid_from IS NULL OR r.valid_from <= now()") < 3 {
+		t.Fatalf("related graph SQL should filter relation lifecycle in seed, neighbor, and final select:\n%s", related)
+	}
 }
 
 func TestInsertClaimPersistsTemporalLifecycleFields(t *testing.T) {
@@ -456,7 +502,7 @@ func TestSearchClaimsQueryCanUseClaimSearchVector(t *testing.T) {
 }
 
 func TestHybridRecallQueriesUseVectorAndTextCandidates(t *testing.T) {
-	claims := hybridRecallClaimsSQL("c.status IN ('verified', 'inferred')", 1024)
+	claims := hybridRecallClaimsSQL("c.status IN ('verified', 'inferred')", 1024, false)
 	for _, fragment := range []string{
 		"WITH text_matches AS",
 		"vector_matches AS",
@@ -788,6 +834,129 @@ func TestAssessMemoryHealthSignals(t *testing.T) {
 	}
 	if got.Category != "sources" || got.Severity != "critical" || got.Count != 2 || got.Action == "" {
 		t.Fatalf("source_refresh_overdue signal = %#v, want sources critical count=2 action", got)
+	}
+}
+
+func TestMemoryHealthSourceDetailJSONFriendly(t *testing.T) {
+	lastSuccess := "2026-06-21 10:00:00+00"
+	result := MemoryHealthResult{
+		Status:    "critical",
+		Score:     42,
+		CheckedAt: "2026-06-21T10:05:00Z",
+		SourceHealth: []MemoryHealthSourceDetail{{
+			ID:              "source-1",
+			Name:            "Repo",
+			Type:            "local_repo",
+			Status:          "error",
+			LastSuccessAt:   &lastSuccess,
+			LastError:       "permission denied",
+			Due:             true,
+			Overdue:         true,
+			FailedJobs:      2,
+			RetryJobs:       1,
+			LatestJobStatus: "failed",
+			RemediationHint: "inspect failed ingestion jobs, fix the source error, then retry",
+		}},
+	}
+	raw, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal memory health: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("decode memory health json: %v", err)
+	}
+	sourceHealth, ok := decoded["source_health"].([]any)
+	if !ok || len(sourceHealth) != 1 {
+		t.Fatalf("source_health = %#v, want one detail", decoded["source_health"])
+	}
+	detail, ok := sourceHealth[0].(map[string]any)
+	if !ok {
+		t.Fatalf("source_health detail = %#v, want object", sourceHealth[0])
+	}
+	for _, key := range []string{"id", "name", "type", "status", "last_success_at", "last_error", "due", "overdue", "retry_jobs", "failed_jobs", "running_jobs", "queued_jobs", "latest_job_status", "remediation_hint"} {
+		if _, ok := detail[key]; !ok {
+			t.Fatalf("source_health detail missing %q: %#v", key, detail)
+		}
+	}
+	if _, ok := detail["last_error_at"]; ok {
+		t.Fatalf("empty last_error_at should be omitted: %#v", detail)
+	}
+}
+
+func TestMemoryHealthSourceRemediationHintPrioritizesAction(t *testing.T) {
+	tests := []struct {
+		name   string
+		source MemoryHealthSourceDetail
+		want   string
+	}{
+		{
+			name:   "source error",
+			source: MemoryHealthSourceDetail{Status: "error", FailedJobs: 3},
+			want:   "fix source configuration or credentials, then retry ingestion",
+		},
+		{
+			name:   "failed jobs",
+			source: MemoryHealthSourceDetail{Status: "active", FailedJobs: 1, RetryJobs: 2},
+			want:   "inspect failed ingestion jobs, fix the source error, then retry",
+		},
+		{
+			name:   "overdue",
+			source: MemoryHealthSourceDetail{Status: "active", Overdue: true, Due: true},
+			want:   "refresh this source before relying on affected memory",
+		},
+		{
+			name:   "queued",
+			source: MemoryHealthSourceDetail{Status: "active", QueuedJobs: 4},
+			want:   "wait for ingestion workers or increase worker capacity if the queue is stuck",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := memoryHealthSourceRemediationHint(tt.source); got != tt.want {
+				t.Fatalf("remediation hint = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMemoryHealthSourceDetailsSQLIncludesBoundedDiagnostics(t *testing.T) {
+	query := compactSQL(memoryHealthSourceDetailsSQL())
+	for _, fragment := range []string{
+		"WITH source_intervals AS",
+		"source_readiness AS",
+		"job_rollup AS",
+		"latest_job AS",
+		"sr.last_success_at::text",
+		"sr.last_error_at::text",
+		"COALESCE(sr.last_error, '')",
+		"COALESCE(j.retry_jobs, 0)::int",
+		"COALESCE(j.failed_jobs, 0)::int",
+		"COALESCE(j.running_jobs, 0)::int",
+		"COALESCE(j.queued_jobs, 0)::int",
+		"COALESCE(lj.status, '')",
+		"WHERE sr.status = 'error'",
+		"OR sr.refresh_due",
+		"OR sr.refresh_overdue",
+		"LIMIT $2",
+	} {
+		if !strings.Contains(query, fragment) {
+			t.Fatalf("source health detail SQL missing %q:\n%s", fragment, query)
+		}
+	}
+}
+
+func TestMemoryHealthSourceCountsSQLUsesSharedReadiness(t *testing.T) {
+	query := compactSQL(memoryHealthSourceCountsSQL())
+	for _, fragment := range []string{
+		"WITH source_intervals AS",
+		"source_readiness AS",
+		"COUNT(*) FILTER (WHERE refresh_due)::int",
+		"COUNT(*) FILTER (WHERE refresh_overdue)::int",
+	} {
+		if !strings.Contains(query, fragment) {
+			t.Fatalf("source health count SQL missing %q:\n%s", fragment, query)
+		}
 	}
 }
 

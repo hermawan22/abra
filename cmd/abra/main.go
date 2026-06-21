@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -3570,10 +3571,17 @@ func memoryStatus(ctx context.Context, args cliArgs, doctor bool) error {
 	printMemoryHealthSection("documents", result["documents"], []string{"total", "active", "stale", "deprecated", "deleted"})
 	printMemoryHealthSection("claims", result["claims"], []string{"total", "verified", "inferred", "unverified", "challenged", "deprecated", "expired", "stale", "with_evidence", "trusted_from_code_documents"})
 	printMemoryHealthSection("graph", result["graph"], []string{"entities", "active_entities", "relations", "active_relations", "challenged_relations", "stale_relations"})
-	printMemoryHealthSection("sources", result["sources"], []string{"total", "active", "due", "overdue", "error"})
+	printMemorySourceSection(result["sources"])
 	printMemoryHealthSection("ingestion", result["ingestion"], []string{"queued_jobs", "running_jobs", "retry_jobs", "failed_jobs", "stale_running_jobs"})
 	printMemoryHealthSection("conflicts", result["conflicts"], []string{"total", "open", "reviewing", "blocking", "high"})
 	printMemoryHealthSection("learning", result["learning"], []string{"total", "pending", "accepted", "applied", "rejected", "duplicate_pending_groups"})
+	sourceDiagnostics := memorySourceDiagnosticItems(result)
+	sourceHints := memorySourceHints(result)
+	if doctor {
+		printMemorySourceDiagnostics(sourceDiagnostics, sourceHints, scope)
+	} else if len(sourceDiagnostics) > 0 || len(sourceHints) > 0 {
+		fmt.Println("Run `abra memory doctor --scope " + scope + "` for source diagnostics.")
+	}
 	signals, _ := result["signals"].([]any)
 	if len(signals) == 0 {
 		fmt.Println("signals: none")
@@ -3598,25 +3606,221 @@ func printMemoryHealthSection(name string, raw any, keys []string) {
 	}
 	parts := []string{}
 	for _, key := range keys {
-		value, ok := section[key]
-		if !ok {
-			continue
-		}
-		switch typed := value.(type) {
-		case float64:
-			parts = append(parts, fmt.Sprintf("%s=%d", key, int(typed)))
-		case int:
-			parts = append(parts, fmt.Sprintf("%s=%d", key, typed))
-		case string:
-			if strings.TrimSpace(typed) != "" {
-				parts = append(parts, key+"="+typed)
-			}
-		case bool:
-			parts = append(parts, fmt.Sprintf("%s=%t", key, typed))
+		if part, ok := memoryHealthSectionPart(key, section[key]); ok {
+			parts = append(parts, part)
 		}
 	}
 	if len(parts) > 0 {
 		fmt.Println(name + ": " + strings.Join(parts, " "))
+	}
+}
+
+func printMemorySourceSection(raw any) {
+	section, _ := raw.(map[string]any)
+	if len(section) == 0 {
+		return
+	}
+	keys := []string{"total", "active", "healthy", "unhealthy", "paused", "disabled", "due", "overdue", "refresh_due", "refresh_overdue", "error", "errors", "failed"}
+	skip := map[string]bool{
+		"diagnostics":        true,
+		"details":            true,
+		"hints":              true,
+		"items":              true,
+		"remediation_hints":  true,
+		"source_diagnostics": true,
+		"sources":            true,
+		"unhealthy_sources":  true,
+	}
+	seen := map[string]bool{}
+	parts := []string{}
+	for _, key := range keys {
+		seen[key] = true
+		if part, ok := memoryHealthSectionPart(key, section[key]); ok {
+			parts = append(parts, part)
+		}
+	}
+	extraKeys := make([]string, 0, len(section))
+	for key := range section {
+		if seen[key] || skip[key] {
+			continue
+		}
+		extraKeys = append(extraKeys, key)
+	}
+	sort.Strings(extraKeys)
+	for _, key := range extraKeys {
+		if part, ok := memoryHealthSectionPart(key, section[key]); ok {
+			parts = append(parts, part)
+		}
+	}
+	if len(parts) > 0 {
+		fmt.Println("sources: " + strings.Join(parts, " "))
+	}
+}
+
+func memoryHealthSectionPart(key string, value any) (string, bool) {
+	switch typed := value.(type) {
+	case float64:
+		return fmt.Sprintf("%s=%d", key, int(typed)), true
+	case int:
+		return fmt.Sprintf("%s=%d", key, typed), true
+	case json.Number:
+		return fmt.Sprintf("%s=%d", key, intValue(typed)), true
+	case string:
+		if strings.TrimSpace(typed) != "" {
+			return key + "=" + typed, true
+		}
+	case bool:
+		return fmt.Sprintf("%s=%t", key, typed), true
+	}
+	return "", false
+}
+
+func memorySourceDiagnosticItems(result map[string]any) []any {
+	items := []any{}
+	for _, key := range []string{"source_diagnostics", "source_health", "unhealthy_sources", "source_details"} {
+		items = append(items, memorySourceDiagnosticItemsFromRaw(result[key])...)
+	}
+	if sources, _ := result["sources"].(map[string]any); len(sources) > 0 {
+		for _, key := range []string{"diagnostics", "details", "items", "source_diagnostics", "unhealthy_sources", "unhealthy"} {
+			items = append(items, memorySourceDiagnosticItemsFromRaw(sources[key])...)
+		}
+	}
+	return items
+}
+
+func memorySourceDiagnosticItemsFromRaw(raw any) []any {
+	switch typed := raw.(type) {
+	case []any:
+		return typed
+	case map[string]any:
+		if looksLikeSourceDiagnostic(typed) {
+			return []any{typed}
+		}
+		items := []any{}
+		for _, key := range []string{"diagnostics", "details", "items", "sources", "source_diagnostics", "unhealthy_sources", "unhealthy"} {
+			items = append(items, memorySourceDiagnosticItemsFromRaw(typed[key])...)
+		}
+		return items
+	case string:
+		if strings.TrimSpace(typed) != "" {
+			return []any{typed}
+		}
+	}
+	return nil
+}
+
+func looksLikeSourceDiagnostic(item map[string]any) bool {
+	for _, key := range []string{"id", "source_config_id", "source_id", "source_url", "name", "title"} {
+		if strings.TrimSpace(stringValue(item[key], "")) != "" {
+			return true
+		}
+	}
+	for _, key := range []string{"last_error", "error", "message", "reason", "detail", "remediation", "hint", "action"} {
+		if strings.TrimSpace(stringValue(item[key], "")) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func memorySourceHints(result map[string]any) []any {
+	hints := []any{}
+	for _, key := range []string{"source_remediation_hints", "remediation_hints", "source_hints"} {
+		hints = appendStringItems(hints, result[key])
+	}
+	if sources, _ := result["sources"].(map[string]any); len(sources) > 0 {
+		for _, key := range []string{"remediation_hints", "hints"} {
+			hints = appendStringItems(hints, sources[key])
+		}
+	}
+	return hints
+}
+
+func appendStringItems(items []any, raw any) []any {
+	switch typed := raw.(type) {
+	case []any:
+		return append(items, typed...)
+	case string:
+		if strings.TrimSpace(typed) != "" {
+			return append(items, typed)
+		}
+	}
+	return items
+}
+
+func printMemorySourceDiagnostics(items []any, hints []any, scope string) {
+	if len(items) == 0 && len(hints) == 0 {
+		return
+	}
+	fmt.Println("source diagnostics:")
+	for _, raw := range items {
+		item, _ := raw.(map[string]any)
+		if len(item) == 0 {
+			if text := strings.TrimSpace(stringValue(raw, "")); text != "" {
+				fmt.Println("- " + text)
+			}
+			continue
+		}
+		sourceIDForCommand := firstNonEmpty(
+			stringValue(item["id"], ""),
+			stringValue(item["source_config_id"], ""),
+			stringValue(item["source_id"], ""),
+		)
+		sourceLabel := firstNonEmpty(
+			sourceIDForCommand,
+			stringValue(item["name"], ""),
+			stringValue(item["source_url"], ""),
+			"unknown",
+		)
+		labels := []string{}
+		if sourceType := firstNonEmpty(stringValue(item["type"], ""), stringValue(item["source_type"], ""), stringValue(item["connector_kind"], "")); sourceType != "" {
+			labels = append(labels, sourceType)
+		}
+		if status := firstNonEmpty(stringValue(item["status"], ""), stringValue(item["health"], ""), stringValue(item["severity"], "")); status != "" {
+			labels = append(labels, status)
+		}
+		line := "- " + sourceLabel
+		if len(labels) > 0 {
+			line += " (" + strings.Join(labels, ", ") + ")"
+		}
+		if message := firstNonEmpty(stringValue(item["message"], ""), stringValue(item["reason"], ""), stringValue(item["detail"], ""), stringValue(item["last_error"], ""), stringValue(item["error"], "")); message != "" {
+			line += ": " + message
+		}
+		fmt.Println(line)
+		for _, key := range []string{"source_url", "last_success_at", "last_error_at", "next_due_at"} {
+			if value := strings.TrimSpace(stringValue(item[key], "")); value != "" && value != sourceLabel {
+				fmt.Println("  " + key + ": " + value)
+			}
+		}
+		for _, key := range []string{"remediation_hint", "remediation", "hint", "action"} {
+			if value := strings.TrimSpace(stringValue(item[key], "")); value != "" {
+				fmt.Println("  " + key + ": " + value)
+			}
+		}
+		for _, key := range []string{"remediation_hints", "next_steps", "commands", "actions"} {
+			printIndentedStringList(key, item[key])
+		}
+		if sourceIDForCommand != "" {
+			fmt.Println("  inspect: abra sources status " + shellQuote(sourceIDForCommand))
+			fmt.Println("  logs: abra sources logs " + shellQuote(sourceIDForCommand) + " --scope " + shellQuote(scope))
+		}
+	}
+	if len(hints) > 0 {
+		fmt.Println("source remediation:")
+		printComposeStringList(hints, len(hints))
+	}
+}
+
+func printIndentedStringList(name string, raw any) {
+	items, ok := raw.([]any)
+	if !ok || len(items) == 0 {
+		return
+	}
+	fmt.Println("  " + name + ":")
+	for _, rawItem := range items {
+		if text := strings.TrimSpace(stringValue(rawItem, "")); text != "" {
+			fmt.Println("  - " + text)
+		}
 	}
 }
 
