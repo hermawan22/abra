@@ -76,7 +76,7 @@ func run(ctx context.Context, argv []string) error {
 	case "", "help", "-h", "--help":
 		fmt.Print(usage())
 		return nil
-	case "version":
+	case "version", "--version", "-v":
 		return printVersion(args)
 	case "install", "setup":
 		return setup(ctx, args)
@@ -662,7 +662,7 @@ func up(ctx context.Context, args cliArgs) error {
 		return err
 	}
 	fmt.Println("Using env: " + env)
-	if !hasLocalCompose(".") {
+	if !isAbraSourceCheckout(".") {
 		fmt.Println("Using runtime: " + projectDir)
 	}
 	if shouldStartLocalModelsForUp(args) {
@@ -2029,7 +2029,7 @@ func composeMemory(ctx context.Context, args cliArgs) error {
 			fmt.Println("- " + stringValue(action, ""))
 		}
 	}
-	if len(stats) > 0 && intValue(stats["facts"])+intValue(stats["supporting_documents"])+intValue(stats["summaries"])+intValue(stats["graph_relations"])+intValue(stats["context_blocks"]) == 0 {
+	if len(stats) > 0 && intValue(stats["facts"])+intValue(stats["supporting_documents"])+intValue(stats["summaries"])+intValue(stats["graph_relations"]) == 0 {
 		fmt.Println("No source-backed context found for this scope.")
 		fmt.Println("Confirm the project scope: abra scope")
 		fmt.Println("Then ingest the project with that exact scope: abra ingest . --code --scope " + scope)
@@ -2354,7 +2354,7 @@ func agentReadyPrompt(scope string, agents ...string) string {
 	if len(agents) > 0 && strings.TrimSpace(agents[0]) != "" {
 		agent = strings.ToLower(strings.TrimSpace(agents[0]))
 	}
-	return `Use Abra MCP first. Exact scope: ` + scope + `. Call discover_scopes with expected_scope="` + scope + `", then call working_memory_compose with task=<current task>, scope="` + scope + `", and agent="` + agent + `" before answering or changing code. If discover_scopes does not show ` + scope + ` or working_memory_compose returns no source-backed context, run abra scope, ingest the project with that exact scope, rerun abra agents verify . --scope ` + scope + ` --agent ` + agent + `, then retry with this exact scope.`
+	return `Use Abra MCP first. Exact scope: ` + scope + `. Call discover_scopes with expected_scope="` + scope + `", then call working_memory_compose with task=<current task>, scope="` + scope + `", and agent="` + agent + `" before answering or changing code. If Abra MCP tools are unavailable, run abra doctor, fix the MCP/token warning, fully restart the AI client, and retry before re-ingesting. If discover_scopes does not show ` + scope + ` or working_memory_compose returns no source-backed context, run abra scope, ingest the project with that exact scope, rerun abra agents verify . --scope ` + scope + ` --agent ` + agent + `, then retry with this exact scope.`
 }
 
 func normalizedAgentFlag(args cliArgs) string {
@@ -3007,10 +3007,17 @@ func envPath(args cliArgs) string {
 }
 
 func defaultEnvPath() string {
-	if hasLocalCompose(".") {
+	if isAbraSourceCheckout(".") {
 		return checkoutEnvPath
 	}
 	return filepath.Join(userConfigDir(), "quickstart.env")
+}
+
+func isAbraSourceCheckout(dir string) bool {
+	return hasLocalCompose(dir) &&
+		fileExists(filepath.Join(dir, "go.mod")) &&
+		fileExists(filepath.Join(dir, "cmd", "abra", "main.go")) &&
+		fileExists(filepath.Join(dir, "migrations", "001_init.sql"))
 }
 
 func hasLocalCompose(dir string) bool {
@@ -3039,7 +3046,7 @@ func projectDir(args cliArgs) (string, error) {
 	if explicit := flag(args, "project-dir", ""); explicit != "" {
 		return filepath.Abs(explicit)
 	}
-	if hasLocalCompose(".") {
+	if isAbraSourceCheckout(".") {
 		return filepath.Abs(".")
 	}
 	return filepath.Join(userConfigDir(), "runtime", runtimeVersion(), "source"), nil
@@ -3532,6 +3539,7 @@ func usage() string {
 	return `Abra CLI
 
 Usage:
+  abra --version
   abra version
   abra setup
   abra up
@@ -3745,10 +3753,10 @@ is missing, ingest the project with the printed command and retry.
 `
 	case "agents", "agent":
 		return `Usage:
-  abra agents bootstrap [path] [--agent codex] [--force] [--no-mcp]
-  abra agents init [path] [--agent codex] [--force] [--dry-run] [--json]
-  abra agents verify [path] [--files-only] [--strict] [--json]
-  abra agents ready [path] [--files-only] [--strict] [--json]
+  abra agents bootstrap [path] [--agent codex] [--scope repo:project] [--force] [--no-mcp]
+  abra agents init [path] [--agent codex] [--scope repo:project] [--force] [--dry-run] [--json]
+  abra agents verify [path] --scope repo:project [--agent codex] [--files-only] [--strict] [--json]
+  abra agents ready [path] --scope repo:project [--agent codex] [--files-only] [--strict] [--json]
 
 Writes repo-local AI agent instruction files that point every client at the
 same Abra scope. It creates AGENTS.md for agent-neutral instructions and

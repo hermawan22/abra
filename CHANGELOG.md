@@ -15,6 +15,8 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Add direct local `abra ingest` per-file progress in human output, with `--quiet` and `--json` keeping automation output clean.
 - Add explicit `server_ready`, `client_ready`, and `client_warnings` fields to `abra agents verify --json` so client MCP/token issues do not look like missing memory context.
 - Add fail-fast MCP `ingest_documents` batching that validates every document first, embeds chunks and extracted claims across the whole request, then persists only after the embedding provider succeeds.
+- Add top-level `abra --version` and `abra -v` aliases for standard CLI install and troubleshooting checks.
+- Apply the configured request body limit to stateless MCP requests so MCP batch ingestion cannot bypass the HTTP ingest/webhook body guardrail.
 
 ### Changed
 
@@ -22,6 +24,9 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Make batched embedding ingestion preserve batch range and token estimates on provider failures for easier local model and custom provider troubleshooting.
 - Keep `ingest_documents(continue_on_error=true)` on per-document ingestion so partial connector overlays still receive stable success/error entries while the default fail-fast path gets cross-document embedding efficiency.
 - Keep Codex MCP installation automatic only for Codex while guiding other agents to the generic MCP config.
+- Treat a working directory as an Abra source checkout only when it matches the Abra repo fingerprint, so user projects with their own Compose files still use the global CLI runtime and env paths.
+- Make agent ready prompts distinguish unavailable MCP/token setup from missing source-backed memory, and make `abra compose` ignore generic gate blocks when deciding whether source-backed context exists.
+- Report fail-fast batch persistence errors with the failing document index, committed document count, and idempotent retry guidance.
 - Bound reranker rank boosts instead of adding raw provider scores directly to recall ranking.
 - Omit raw rerank query text from retrieval warnings, keep rerank metadata JSON stable, and only mark recall as reranked when a returned candidate index was actually applied.
 - Default `base_rank_score` to `rank_score` for non-reranked recall results so public ranking metadata remains internally consistent.

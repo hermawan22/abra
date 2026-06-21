@@ -42,6 +42,21 @@ func TestVersionJSONIncludesExecutablePath(t *testing.T) {
 	}
 }
 
+func TestTopLevelVersionFlags(t *testing.T) {
+	for _, flag := range []string{"--version", "-v"} {
+		t.Run(flag, func(t *testing.T) {
+			output := captureStdout(t, func() {
+				if err := run(context.Background(), []string{flag}); err != nil {
+					t.Fatalf("run(%s) error = %v", flag, err)
+				}
+			})
+			if !strings.Contains(output, "abra ") || !strings.Contains(output, "target: ") {
+				t.Fatalf("version output for %s = %s", flag, output)
+			}
+		})
+	}
+}
+
 func TestObservePostsObservation(t *testing.T) {
 	var got map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -814,7 +829,7 @@ func TestAgentsVerifyJSONIncludesReadyPromptAndNextSteps(t *testing.T) {
 		t.Fatalf("payload = %#v", payload)
 	}
 	readyPrompt := stringValue(payload["ready_prompt"], "")
-	for _, want := range []string{wantScope, "discover_scopes", "working_memory_compose", "task=<current task>", `agent="codex"`, "source-backed context", "abra agents verify . --scope " + wantScope + " --agent codex"} {
+	for _, want := range []string{wantScope, "discover_scopes", "working_memory_compose", "task=<current task>", `agent="codex"`, "Abra MCP tools are unavailable", "abra doctor", "source-backed context", "abra agents verify . --scope " + wantScope + " --agent codex"} {
 		if !strings.Contains(readyPrompt, want) {
 			t.Fatalf("ready_prompt missing %q:\n%s", want, readyPrompt)
 		}
@@ -1075,6 +1090,42 @@ func TestAgentsVerifyFailsWhenWorkingMemoryIsEmpty(t *testing.T) {
 	for _, want := range []string{"ok  scope_discovery", "fail  working_memory", "facts=0 documents=0 summaries=0 graph=0", "Next:", "abra ingest . --code --scope " + wantScope} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("verify output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestComposeReportsNoSourceBackedContextWhenOnlyGateBlocksExist(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/memory/compose" {
+			t.Fatalf("request = %s %s, want POST /memory/compose", r.Method, r.URL.Path)
+		}
+		writeTestJSON(t, w, map[string]any{
+			"scope": "repo:demo",
+			"verification": map[string]any{
+				"verdict": "weak",
+			},
+			"agent_decision": map[string]any{
+				"decision": "needs_context",
+			},
+			"stats": map[string]any{
+				"facts":                0,
+				"supporting_documents": 0,
+				"summaries":            0,
+				"graph_relations":      0,
+				"context_blocks":       1,
+			},
+		})
+	}))
+	defer server.Close()
+
+	output := captureStdout(t, func() {
+		if err := run(context.Background(), []string{"compose", "ship a change", "--scope", "repo:demo", "--base-url", server.URL, "--token", "test-token"}); err != nil {
+			t.Fatalf("compose error = %v", err)
+		}
+	})
+	for _, want := range []string{"context: facts=0 documents=0 summaries=0 graph=0 blocks=1", "No source-backed context found for this scope.", "abra ingest . --code --scope repo:demo"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("compose output missing %q:\n%s", want, output)
 		}
 	}
 }
@@ -3105,6 +3156,52 @@ func TestDefaultEnvPathOutsideCheckoutUsesAbraHome(t *testing.T) {
 	want := filepath.Join(home, "quickstart.env")
 	if got != want {
 		t.Fatalf("envPath = %q, want %q", got, want)
+	}
+}
+
+func TestDefaultEnvPathIgnoresNonAbraComposeProjects(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+	mustWrite(t, filepath.Join(root, "docker-compose.yml"), "services:\n  app:\n    image: example/app\n")
+
+	got := envPath(cliArgs{Flags: map[string]string{}, Bools: map[string]bool{}})
+	want := filepath.Join(home, "quickstart.env")
+	if got != want {
+		t.Fatalf("envPath = %q, want global env path %q for non-Abra compose project", got, want)
+	}
+	dir, err := projectDir(cliArgs{Flags: map[string]string{}, Bools: map[string]bool{}})
+	if err != nil {
+		t.Fatalf("projectDir error = %v", err)
+	}
+	wantDir := filepath.Join(home, "runtime", runtimeVersion(), "source")
+	if dir != wantDir {
+		t.Fatalf("projectDir = %q, want runtime source %q for non-Abra compose project", dir, wantDir)
+	}
+}
+
+func TestDefaultEnvPathUsesCheckoutOnlyForAbraSourceCheckout(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+	mustWrite(t, filepath.Join(root, "docker-compose.yml"), "services:\n  api:\n    build: .\n")
+	mustWrite(t, filepath.Join(root, "go.mod"), "module github.com/hermawan22/abra\n")
+	mustWrite(t, filepath.Join(root, "cmd", "abra", "main.go"), "package main\n")
+	mustWrite(t, filepath.Join(root, "migrations", "001_init.sql"), "-- init\n")
+
+	got := envPath(cliArgs{Flags: map[string]string{}, Bools: map[string]bool{}})
+	if got != checkoutEnvPath {
+		t.Fatalf("envPath = %q, want checkout env path %q", got, checkoutEnvPath)
+	}
+	dir, err := projectDir(cliArgs{Flags: map[string]string{}, Bools: map[string]bool{}})
+	if err != nil {
+		t.Fatalf("projectDir error = %v", err)
+	}
+	absRoot, _ := filepath.Abs(root)
+	if dir != absRoot {
+		t.Fatalf("projectDir = %q, want checkout dir %q", dir, absRoot)
 	}
 }
 

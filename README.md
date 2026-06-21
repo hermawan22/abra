@@ -41,11 +41,21 @@ Source systems are ingested through the API, signed webhooks, or `source_configs
 
 ## 3-Minute CLI Install
 
-Run the installer script from this checkout to install the latest or pinned
-published release binary. This does not install untagged local source changes:
+Abra is not distributed through npm. The npm package metadata in this repo is
+private maintainer tooling only; install Abra from GitHub release binaries or
+deploy the published container images.
+
+Run the installer script from this checkout to install the latest published
+release binary. This does not install untagged local source changes:
 
 ```sh
 ./scripts/install.sh
+```
+
+Pin a specific published release from a checkout:
+
+```sh
+ABRA_VERSION=vX.Y.Z ./scripts/install.sh
 ```
 
 Install from GitHub releases:
@@ -117,9 +127,9 @@ verifies source-backed `working_memory_compose` for that scope, and installs
 the Abra MCP endpoint into Codex without writing the token literally to disk.
 Use `abra agents init` and `abra agents verify` separately when you want the
 manual steps. `abra agents verify` and `abra agents ready` print the exact
-ready prompt plus next steps. Use `abra agents ready --json` when an editor, CI
-job, or agent launcher needs `ready_prompt` and recovery `next_steps` without
-scraping terminal output.
+ready prompt plus next steps. Use `abra agents ready . --scope <scope-from-abra-scope> --json`
+when an editor, CI job, or agent launcher needs `ready_prompt` and recovery
+`next_steps` without scraping terminal output.
 
 For Claude Code or another MCP-capable agent, keep the same source-backed
 workflow but select the agent profile explicitly and wire the generic MCP config
@@ -574,7 +584,7 @@ MCP tools:
 - `decide_learning_proposal(proposal_id, status, reviewed_by?, review_reason?, approval_id?, metadata?)`
 - `request_approval(action, scope, reason, target_type?, target_id?, requested_by?, payload?, metadata?, expires_at?)`
 
-`ingest_documents` defaults to fail-fast semantics: Abra validates every document, batches chunk and claim embeddings across the request, and only then persists results. Set `continue_on_error=true` when a connector needs per-document success/error entries; that mode keeps documents isolated instead of batching across the whole request.
+`ingest_documents` defaults to fail-fast semantics: Abra validates every document, batches chunk and claim embeddings across the request, and only then persists results. Persistence is sequential and idempotent by `source_type`, `source_url`, and `scope`, not an all-or-nothing transaction; if a persistence error happens after earlier documents landed, the error reports the failing document index and the committed count. Set `continue_on_error=true` when a connector needs per-document success/error entries; that mode keeps documents isolated instead of batching across the whole request.
 
 ## HTTP API
 

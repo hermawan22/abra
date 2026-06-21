@@ -266,6 +266,7 @@ From a source checkout, run the CLI as `go run ./cmd/abra <command>`. In a relea
 | --- | --- |
 | install CLI from checkout | `./scripts/install.sh` |
 | install CLI from published release | `curl -fsSL https://github.com/hermawan22/abra/releases/latest/download/install.sh \| sh` |
+| check installed CLI version | `abra --version` |
 | guided first-run setup | `abra setup` |
 | make Codex ready for the current repo | `abra agents bootstrap --agent codex` |
 | generate agent instruction files | `abra agents init --agent codex` |

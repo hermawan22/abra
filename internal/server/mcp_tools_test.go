@@ -1,11 +1,17 @@
 package server
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/hermawan22/abra/internal/ai"
 	"github.com/hermawan22/abra/internal/brain"
+	"github.com/hermawan22/abra/internal/config"
 	"github.com/hermawan22/abra/internal/store"
 )
 
@@ -37,6 +43,26 @@ func TestUpsertSourceConfigMCPAllowsOverlaySourceTypes(t *testing.T) {
 	}
 	if sourceType["type"] != "string" {
 		t.Fatalf("source_type type = %#v, want string", sourceType["type"])
+	}
+}
+
+func TestMCPAppliesRequestBodyLimit(t *testing.T) {
+	h := handler{cfg: config.Config{MaxRequestBodyBytes: 32}}
+	request := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewBufferString(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"padding":"`+strings.Repeat("x", 80)+`"}}`))
+	response := httptest.NewRecorder()
+
+	h.mcp(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusBadRequest, response.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v; body=%s", err, response.Body.String())
+	}
+	errPayload, _ := payload["error"].(map[string]any)
+	if errPayload["code"] != float64(-32700) {
+		t.Fatalf("payload = %#v, want JSON-RPC parse error", payload)
 	}
 }
 

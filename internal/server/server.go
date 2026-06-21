@@ -1053,6 +1053,7 @@ func (h *handler) policyPlan(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) mcp(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, h.cfg.MaxRequestBodyBytes)
 	var rpc struct {
 		JSONRPC string         `json:"jsonrpc"`
 		ID      any            `json:"id"`

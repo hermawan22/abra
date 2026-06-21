@@ -604,6 +604,9 @@ func (s *Service) IngestDocuments(ctx context.Context, inputs []IngestDocumentIn
 	for index, doc := range prepared {
 		result, err := s.persistPreparedIngestDocument(ctx, doc)
 		if err != nil {
+			if len(results) > 0 {
+				return nil, fmt.Errorf("document %d persistence failed after %d document(s) were persisted; retry is idempotent for the same source_type/source_url/scope: %w", index, len(results), err)
+			}
 			return nil, fmt.Errorf("document %d: %w", index, err)
 		}
 		results = append(results, result)
