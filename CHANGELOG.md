@@ -12,6 +12,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Add structured HTTP, MCP, CLI, metrics, and ingestion-job diagnostics for AI provider failures so agent setup problems surface as `auth_failed`, `provider_unreachable`, `provider_timeout`, `rate_limited`, or `invalid_response` instead of opaque no-context errors.
 - Add agent-aware `abra agents verify` / `ready` / `bootstrap` flows so Claude and other MCP clients can verify source-backed context with their own agent profile instead of being forced through Codex defaults.
 - Add first-class rerank warnings and per-result rerank metadata so working-memory packets expose reranker failures, bounded rerank scores, and base-vs-final ranking.
+- Add direct local `abra ingest` per-file progress in human output, with `--quiet` and `--json` keeping automation output clean.
 
 ### Changed
 
@@ -19,6 +20,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Make batched embedding ingestion preserve batch range and token estimates on provider failures for easier local model and custom provider troubleshooting.
 - Keep Codex MCP installation automatic only for Codex while guiding other agents to the generic MCP config.
 - Bound reranker rank boosts instead of adding raw provider scores directly to recall ranking.
+- Omit raw rerank query text from retrieval warnings, keep rerank metadata JSON stable, and only mark recall as reranked when a returned candidate index was actually applied.
 
 ## 0.3.8 - 2026-06-21
 

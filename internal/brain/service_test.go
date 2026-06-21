@@ -2,6 +2,7 @@ package brain
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -297,8 +298,14 @@ func TestRerankRecallSurfacesRerankerFailure(t *testing.T) {
 	if result.RetrievalWarnings[0].Stage != "retrieval" || result.RetrievalWarnings[0].Operation != "rerank_claims" || !strings.Contains(result.RetrievalWarnings[0].Message, "rate limited") {
 		t.Fatalf("unexpected claim warning: %#v", result.RetrievalWarnings[0])
 	}
+	if result.RetrievalWarnings[0].Query != "" {
+		t.Fatalf("rerank warning leaked query: %#v", result.RetrievalWarnings[0])
+	}
 	if result.RetrievalWarnings[1].Stage != "retrieval" || result.RetrievalWarnings[1].Operation != "rerank_documents" || !strings.Contains(result.RetrievalWarnings[1].Message, "rate limited") {
 		t.Fatalf("unexpected document warning: %#v", result.RetrievalWarnings[1])
+	}
+	if result.RetrievalWarnings[1].Query != "" {
+		t.Fatalf("rerank warning leaked query: %#v", result.RetrievalWarnings[1])
 	}
 	if result.RetrievalMode != "hybrid" || len(result.RetrievalReasons) != 0 {
 		t.Fatalf("failed rerank should not mark mode/reasons as reranked: mode=%q reasons=%#v", result.RetrievalMode, result.RetrievalReasons)
@@ -351,6 +358,49 @@ func TestRerankRecallBoundsBoostAndStoresScores(t *testing.T) {
 	}
 	if result.SupportingDocuments[1].BaseRank != 0.2 || result.SupportingDocuments[1].RerankScore != 0.99 || !result.SupportingDocuments[1].RerankApplied {
 		t.Fatalf("reranked document metadata wrong: %#v", result.SupportingDocuments[1])
+	}
+}
+
+func TestRerankRecallIgnoresInvalidRerankIndexes(t *testing.T) {
+	service := Service{
+		cfg: config.Config{Reranker: config.AIProviderConfig{Provider: "local", Model: "rerank-model"}},
+		reranker: &fakeRerankerProvider{
+			responses: []ai.RerankResponse{
+				{Results: []ai.RerankResult{{Index: 7, Score: 1}}},
+			},
+		},
+	}
+	result := service.rerankRecall(context.Background(), "base query", store.RecallResult{
+		RetrievalMode: "hybrid",
+		Claims: []store.ClaimResult{
+			{ID: "claim-1", Claim: "base result", Rank: 0.8, TextScore: 0.4, VectorScore: 0.2},
+		},
+	})
+
+	if result.RetrievalMode != "hybrid" || len(result.RetrievalReasons) != 0 {
+		t.Fatalf("invalid rerank indexes should not mark result reranked: mode=%q reasons=%#v", result.RetrievalMode, result.RetrievalReasons)
+	}
+	if result.Claims[0].RerankApplied || result.Claims[0].RerankScore != 0 || result.Claims[0].Rank != 0.8 {
+		t.Fatalf("invalid rerank indexes should not alter claim: %#v", result.Claims[0])
+	}
+}
+
+func TestRerankMetadataJSONIncludesZeroScore(t *testing.T) {
+	raw, err := json.Marshal(store.ClaimResult{
+		ID:            "claim-1",
+		Claim:         "base result",
+		Rank:          0.9,
+		BaseRank:      0.9,
+		RerankApplied: true,
+		RerankScore:   0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"base_rank_score":0.9`, `"rerank_score":0`, `"rerank_applied":true`} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("json missing %s: %s", want, raw)
+		}
 	}
 }
 

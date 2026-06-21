@@ -430,16 +430,16 @@ func (s *Service) rerankRecall(ctx context.Context, query string, result store.R
 	}
 	if len(claimTexts) > 0 {
 		if response, err := s.rerank(ctx, ai.RerankRequest{Query: query, Documents: claimTexts, Model: s.cfg.Reranker.Model, TopN: len(claimTexts)}); err == nil {
-			applyClaimRerank(result.Claims, response.Results)
-			reranked = true
-			if !strings.Contains(result.RetrievalMode, "reranked") {
-				result.RetrievalMode += "_reranked"
+			if applied := applyClaimRerank(result.Claims, response.Results); applied > 0 {
+				reranked = true
+				if !strings.Contains(result.RetrievalMode, "reranked") {
+					result.RetrievalMode += "_reranked"
+				}
 			}
 		} else {
 			result.RetrievalWarnings = append(result.RetrievalWarnings, store.RetrievalWarning{
 				Stage:     "retrieval",
 				Operation: "rerank_claims",
-				Query:     query,
 				Message:   compactBrainError(err),
 			})
 		}
@@ -450,16 +450,16 @@ func (s *Service) rerankRecall(ctx context.Context, query string, result store.R
 	}
 	if len(docTexts) > 0 {
 		if response, err := s.rerank(ctx, ai.RerankRequest{Query: query, Documents: docTexts, Model: s.cfg.Reranker.Model, TopN: len(docTexts)}); err == nil {
-			applyDocumentRerank(result.SupportingDocuments, response.Results)
-			reranked = true
-			if !strings.Contains(result.RetrievalMode, "reranked") {
-				result.RetrievalMode += "_reranked"
+			if applied := applyDocumentRerank(result.SupportingDocuments, response.Results); applied > 0 {
+				reranked = true
+				if !strings.Contains(result.RetrievalMode, "reranked") {
+					result.RetrievalMode += "_reranked"
+				}
 			}
 		} else {
 			result.RetrievalWarnings = append(result.RetrievalWarnings, store.RetrievalWarning{
 				Stage:     "retrieval",
 				Operation: "rerank_documents",
-				Query:     query,
 				Message:   compactBrainError(err),
 			})
 		}
@@ -475,7 +475,8 @@ func (s *Service) rerankRecall(ctx context.Context, query string, result store.R
 	return result
 }
 
-func applyClaimRerank(claims []store.ClaimResult, results []ai.RerankResult) {
+func applyClaimRerank(claims []store.ClaimResult, results []ai.RerankResult) int {
+	applied := 0
 	for _, reranked := range results {
 		if reranked.Index < 0 || reranked.Index >= len(claims) {
 			continue
@@ -487,13 +488,16 @@ func applyClaimRerank(claims []store.ClaimResult, results []ai.RerankResult) {
 		claims[reranked.Index].RerankScore = score
 		claims[reranked.Index].RerankApplied = true
 		claims[reranked.Index].Rank += score * rerankRankBoostWeight
+		applied++
 	}
 	sort.SliceStable(claims, func(i, j int) bool {
 		return claims[i].Rank > claims[j].Rank
 	})
+	return applied
 }
 
-func applyDocumentRerank(documents []store.DocumentResult, results []ai.RerankResult) {
+func applyDocumentRerank(documents []store.DocumentResult, results []ai.RerankResult) int {
+	applied := 0
 	for _, reranked := range results {
 		if reranked.Index < 0 || reranked.Index >= len(documents) {
 			continue
@@ -505,10 +509,12 @@ func applyDocumentRerank(documents []store.DocumentResult, results []ai.RerankRe
 		documents[reranked.Index].RerankScore = score
 		documents[reranked.Index].RerankApplied = true
 		documents[reranked.Index].Rank += score * rerankRankBoostWeight
+		applied++
 	}
 	sort.SliceStable(documents, func(i, j int) bool {
 		return documents[i].Rank > documents[j].Rank
 	})
+	return applied
 }
 
 func normalizedRerankScore(score float64) float64 {

@@ -1423,9 +1423,18 @@ func localPathIngest(ctx context.Context, args cliArgs) error {
 	failures := make([]map[string]any, 0)
 	skippedEmpty := 0
 	continueOnError := boolFlag(args, "continue-on-error") || boolFlag(args, "continue")
-	for _, doc := range documents {
+	progress := !boolFlag(args, "json") && !boolFlag(args, "quiet")
+	if progress {
+		fmt.Printf("Ingesting files: %d\n", len(documents))
+		fmt.Println("scope: " + scope)
+		fmt.Println("model work can take a while on the first local embedding call; current file is printed before each request.")
+	}
+	for index, doc := range documents {
 		if strings.TrimSpace(doc.Content) == "" {
 			skippedEmpty++
+			if progress {
+				fmt.Printf("[%d/%d] skip empty %s\n", index+1, len(documents), doc.Path)
+			}
 			continue
 		}
 		metadata := stringMapToAny(doc.Metadata)
@@ -1433,6 +1442,9 @@ func localPathIngest(ctx context.Context, args cliArgs) error {
 		metadata["ingest_checksum"] = doc.Checksum
 		metadata["ingest_fingerprint"] = doc.Fingerprint
 		sourceURL := localFileURL(abs, doc.Path)
+		if progress {
+			fmt.Printf("[%d/%d] ingest %s\n", index+1, len(documents), doc.Path)
+		}
 		result, err := postJSONWithTimeout(ctx, args, "/ingest/documents", map[string]any{
 			"source_type": string(doc.SourceType),
 			"source_url":  sourceURL,
@@ -1452,6 +1464,9 @@ func localPathIngest(ctx context.Context, args cliArgs) error {
 				"source_url": sourceURL,
 				"error":      friendly.Error(),
 			})
+			if progress {
+				fmt.Printf("[%d/%d] failed %s\n", index+1, len(documents), doc.Path)
+			}
 			continue
 		}
 		results = append(results, map[string]any{
@@ -1462,6 +1477,9 @@ func localPathIngest(ctx context.Context, args cliArgs) error {
 			"claims":      result["claims"],
 			"relations":   result["relations"],
 		})
+		if progress {
+			fmt.Printf("[%d/%d] ok %s\n", index+1, len(documents), doc.Path)
+		}
 	}
 	if len(results) == 0 && len(failures) == 0 {
 		return fmt.Errorf("no non-empty matching files found; skipped %d empty file(s)", skippedEmpty)
@@ -3502,7 +3520,7 @@ Usage:
   abra status
   abra doctor
   abra seed [--scope repo:demo]
-  abra ingest . [--code] [--continue-on-error]
+  abra ingest . [--code] [--continue-on-error] [--quiet]
   abra ingest ./notes.md
   abra ingest --scope repo:demo --text "Agents should use Abra" [--title Intro]
   abra ingest --git https://github.com/owner/repo.git [--ref main] [--scope repo:demo]
@@ -3538,7 +3556,7 @@ func commandUsage(command string) string {
 	switch command {
 	case "ingest":
 		return `Usage:
-  abra ingest . [--code] [--continue-on-error]
+  abra ingest . [--code] [--continue-on-error] [--quiet]
   abra ingest ./notes.md
   abra ingest --text "source-backed content" [--title Intro]
   abra ingest --git https://github.com/owner/repo.git [--ref main] [--wait]
@@ -3570,6 +3588,7 @@ Source ingestion flags:
   --direct         force direct local ingestion through /ingest/documents
   --continue-on-error
                   keep direct local ingestion running after per-file failures; exits nonzero if any fail
+  --quiet         suppress direct local per-file progress in human output
   --timeout        HTTP timeout for direct local/file/text ingest, default 10m
 `
 	case "config":

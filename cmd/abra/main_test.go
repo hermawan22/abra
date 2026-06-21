@@ -2924,6 +2924,80 @@ func TestLocalPathIngestContinueOnErrorReportsFailures(t *testing.T) {
 	}
 }
 
+func TestLocalPathIngestPrintsHumanProgress(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "a.md"), "# Alpha\n\nAgents should use Abra.")
+	mustWrite(t, filepath.Join(root, "b.md"), "# Bravo\n\nRelease checks should pass.")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ingest/documents" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"document_id": "doc"})
+	}))
+	defer server.Close()
+
+	output := captureStdout(t, func() {
+		if err := run(context.Background(), []string{
+			"ingest",
+			root,
+			"--include", "**/*.md",
+			"--base-url", server.URL,
+			"--token", "test-token",
+		}); err != nil {
+			t.Fatalf("ingest error = %v", err)
+		}
+	})
+	for _, want := range []string{
+		"Ingesting files: 2",
+		"model work can take a while",
+		"[1/2] ingest a.md",
+		"[1/2] ok a.md",
+		"[2/2] ingest b.md",
+		"Ingested files: 2",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestLocalPathIngestJSONSuppressesProgress(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "a.md"), "# Alpha\n\nAgents should use Abra.")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ingest/documents" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"document_id": "doc"})
+	}))
+	defer server.Close()
+
+	output := captureStdout(t, func() {
+		if err := run(context.Background(), []string{
+			"ingest",
+			root,
+			"--include", "**/*.md",
+			"--json",
+			"--base-url", server.URL,
+			"--token", "test-token",
+		}); err != nil {
+			t.Fatalf("ingest error = %v", err)
+		}
+	})
+	if strings.Contains(output, "Ingesting files") || strings.Contains(output, "[1/1]") {
+		t.Fatalf("json output included progress:\n%s", output)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
+		t.Fatalf("json output is not parseable: %v\n%s", err, output)
+	}
+	if len(payload["documents"].([]any)) != 1 {
+		t.Fatalf("documents payload = %#v", payload["documents"])
+	}
+}
+
 func TestDefaultEnvPathOutsideCheckoutUsesAbraHome(t *testing.T) {
 	root := t.TempDir()
 	home := t.TempDir()

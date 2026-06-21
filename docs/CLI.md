@@ -96,6 +96,11 @@ the API and worker run in Docker and cannot see your local path. Use `--tracked`
 only when the worker can read the same path and you want a durable source config
 plus ingestion job.
 
+In human output, direct local ingestion prints the total file count and current
+file before each embedding request so slow local model calls are visible. Use
+`--quiet` to suppress per-file progress, or `--json` for clean machine-readable
+output without progress lines.
+
 Queue a remote Git repo through the worker:
 
 ```sh
@@ -277,6 +282,7 @@ From a source checkout, run the CLI as `go run ./cmd/abra <command>`. In a relea
 | ingest one document | `abra ingest --text "source-backed content"` |
 | ingest local repo directly from the CLI | `abra ingest . --code --scope <scope-from-abra-scope>` |
 | ingest local repo and keep going after per-file failures | `abra ingest . --code --continue-on-error --scope <scope-from-abra-scope>` |
+| suppress direct local ingest progress | `abra ingest . --code --quiet --scope <scope-from-abra-scope>` |
 | ingest remote git | `abra ingest --git https://github.com/owner/repo.git --ref main --code --scope repo:owner-repo --wait --wait-timeout 10m` |
 | list sources | `abra sources` |
 | list jobs | `abra jobs` |

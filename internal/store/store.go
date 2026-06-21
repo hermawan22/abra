@@ -2812,11 +2812,11 @@ type ClaimResult struct {
 	Status        string  `json:"status"`
 	Source        *string `json:"source_url,omitempty"`
 	Rank          float64 `json:"rank_score"`
-	BaseRank      float64 `json:"base_rank_score,omitempty"`
+	BaseRank      float64 `json:"base_rank_score"`
 	TextScore     float64 `json:"text_score"`
 	VectorScore   float64 `json:"vector_score"`
-	RerankScore   float64 `json:"rerank_score,omitempty"`
-	RerankApplied bool    `json:"rerank_applied,omitempty"`
+	RerankScore   float64 `json:"rerank_score"`
+	RerankApplied bool    `json:"rerank_applied"`
 	Freshness     string  `json:"freshness"`
 }
 
@@ -2826,11 +2826,11 @@ type DocumentResult struct {
 	Source        string  `json:"source_url"`
 	Content       string  `json:"content"`
 	Rank          float64 `json:"rank_score"`
-	BaseRank      float64 `json:"base_rank_score,omitempty"`
+	BaseRank      float64 `json:"base_rank_score"`
 	TextScore     float64 `json:"text_score"`
 	VectorScore   float64 `json:"vector_score"`
-	RerankScore   float64 `json:"rerank_score,omitempty"`
-	RerankApplied bool    `json:"rerank_applied,omitempty"`
+	RerankScore   float64 `json:"rerank_score"`
+	RerankApplied bool    `json:"rerank_applied"`
 }
 
 type RelationResult struct {
