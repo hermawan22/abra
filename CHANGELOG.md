@@ -32,6 +32,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Take transaction-scoped advisory locks per source during document persistence so concurrent ingestion of the same source cannot interleave refresh and write phases.
 - Make setup and ready next steps present `abra agents bootstrap` as the primary path and label `agents init` / `ingest` / `verify` / `mcp install-codex` as the manual alternative.
 - Make `abra agents bootstrap` install Codex MCP before the final readiness check, make restart requirements explicit, and require explicit Compose database credentials through env files instead of a fixed production-looking password.
+- Add `abra sources sync` for refreshing existing source configs from the CLI, including job-specific wait behavior and clean JSON output for automation.
 - Bound reranker rank boosts instead of adding raw provider scores directly to recall ranking.
 - Omit raw rerank query text from retrieval warnings, keep rerank metadata JSON stable, and only mark recall as reranked when a returned candidate index was actually applied.
 - Default `base_rank_score` to `rank_score` for non-reranked recall results so public ranking metadata remains internally consistent.

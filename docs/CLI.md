@@ -312,6 +312,7 @@ From a source checkout, run the CLI as `go run ./cmd/abra <command>`. In a relea
 | suppress direct local ingest progress | `abra ingest . --code --quiet --scope <scope-from-abra-scope>` |
 | ingest remote git | `abra ingest --git https://github.com/owner/repo.git --ref main --code --scope repo:owner-repo --wait --wait-timeout 10m` |
 | list sources | `abra sources` |
+| refresh an existing source config | `abra sources sync <source-config-id> --scope <scope> --wait --wait-timeout 10m` |
 | list jobs | `abra jobs` |
 | capture raw observation | `abra observe "Agents should rerun release checks" --scope repo:demo` |
 | capture and propose observation | `abra observe "Agents should rerun release checks" --scope repo:demo --propose --source-url file://release-runbook.md` |
@@ -415,6 +416,12 @@ abra source mcp \
 The configured MCP tool must return normalized Abra documents as JSON, either as
 `structuredContent.documents` or as a JSON text content item containing
 `{"documents":[...]}`.
+To run an existing source again without changing its config:
+
+```sh
+abra sources sync <source-config-id> --scope team:platform --wait --wait-timeout 10m
+```
+
 Tracked local sources require the worker process to see the same filesystem path;
 use direct `abra ingest . --code` for ordinary Docker-backed local setup.
 Use `WORKER_CONCURRENCY` to run multiple queued ingestion jobs in one worker process; keep the default `1` for local Qwen and raise it only after `abra doctor`, provider latency, and database usage show headroom.

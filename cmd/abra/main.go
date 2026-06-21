@@ -1699,7 +1699,12 @@ func sourceIngest(ctx context.Context, args cliArgs) error {
 	}
 	fmt.Println("Check jobs: abra jobs --scope " + scope)
 	if boolFlag(args, "wait") {
-		return waitForSourceJob(ctx, args, scope, sourceID)
+		jobID := ""
+		if ingestionJob, _ := job["ingestion_job"].(map[string]any); ingestionJob != nil {
+			jobID = stringValue(ingestionJob["id"], "")
+		}
+		_, err := waitForSourceJob(ctx, args, scope, sourceID, jobID)
+		return err
 	}
 	if sourceType == "local_repo" {
 		fmt.Println("Tip: local tracked sources require the worker to see the same path. Use `abra ingest . --code` for direct local ingestion.")
@@ -1708,6 +1713,16 @@ func sourceIngest(ctx context.Context, args cliArgs) error {
 }
 
 func listSources(ctx context.Context, args cliArgs) error {
+	if len(args.Rest) > 0 {
+		action := strings.ToLower(strings.TrimSpace(args.Rest[0]))
+		args.Rest = args.Rest[1:]
+		switch action {
+		case "sync", "enqueue", "run":
+			return syncSource(ctx, args)
+		default:
+			return fmt.Errorf("unknown sources action %q\n\n%s", action, commandUsage("sources"))
+		}
+	}
 	path := "/sources/configs?limit=" + strconv.Itoa(intFlag(args, "limit", 50))
 	if scope := flag(args, "scope", os.Getenv("ABRA_SCOPE")); scope != "" {
 		path += "&scope=" + urlQueryEscape(scope)
@@ -1724,6 +1739,60 @@ func listSources(ctx context.Context, args cliArgs) error {
 	for _, raw := range items {
 		item, _ := raw.(map[string]any)
 		fmt.Printf("- %s  %s  %s  %s\n", stringValue(item["id"], ""), stringValue(item["status"], ""), stringValue(item["source_type"], ""), stringValue(item["name"], ""))
+	}
+	return nil
+}
+
+func syncSource(ctx context.Context, args cliArgs) error {
+	sourceID := firstNonEmpty(flag(args, "source-config-id", ""), flag(args, "source-id", ""), flag(args, "id", ""))
+	if sourceID == "" && len(args.Rest) > 0 {
+		sourceID = strings.TrimSpace(args.Rest[0])
+		args.Rest = args.Rest[1:]
+	}
+	if sourceID == "" {
+		return errors.New("sources sync requires a source config id, for example: abra sources sync source-123")
+	}
+	result, err := postJSON(ctx, args, "/ingestion/jobs", map[string]any{
+		"source_config_id": sourceID,
+		"trigger_type":     flag(args, "trigger", "manual"),
+		"created_by":       flag(args, "created-by", "abra-cli"),
+		"max_attempts":     intFlag(args, "max-attempts", 3),
+		"metadata":         map[string]any{"channel": "cli", "command": "sources sync"},
+	})
+	if err != nil {
+		return err
+	}
+	job, _ := result["ingestion_job"].(map[string]any)
+	jobID := stringValue(job["id"], "")
+	scope := firstNonEmpty(stringValue(job["scope"], ""), flag(args, "scope", ""), os.Getenv("ABRA_SCOPE"))
+	if boolFlag(args, "wait") {
+		if scope == "" {
+			return errors.New("--wait requires --scope when the enqueue response does not include scope")
+		}
+		if boolFlag(args, "json") {
+			waitedJob, err := waitForSourceJob(ctx, args, scope, sourceID, jobID)
+			if err != nil {
+				return err
+			}
+			return printJSON(map[string]any{"enqueue": result, "job": waitedJob})
+		}
+		fmt.Println("Source queued: " + sourceID)
+		if jobID != "" {
+			fmt.Println("Job queued: " + jobID)
+		}
+		fmt.Println("Check jobs: abra jobs --scope " + scope + " --source-config-id " + sourceID)
+		_, err := waitForSourceJob(ctx, args, scope, sourceID, jobID)
+		return err
+	}
+	if boolFlag(args, "json") {
+		return printJSON(result)
+	}
+	fmt.Println("Source queued: " + sourceID)
+	if jobID != "" {
+		fmt.Println("Job queued: " + jobID)
+	}
+	if scope != "" {
+		fmt.Println("Check jobs: abra jobs --scope " + scope + " --source-config-id " + sourceID)
 	}
 	return nil
 }
@@ -3460,25 +3529,33 @@ func localFileURL(root, relPath string) string {
 	return u.String()
 }
 
-func waitForSourceJob(ctx context.Context, args cliArgs, scope, sourceID string) error {
+func waitForSourceJob(ctx context.Context, args cliArgs, scope, sourceID, jobID string) (map[string]any, error) {
 	timeout := waitTimeout(args)
 	deadline := time.Now().Add(timeout)
+	quiet := boolFlag(args, "json")
 	for {
-		path := "/ingestion/jobs?scope=" + urlQueryEscape(scope) + "&source_config_id=" + urlQueryEscape(sourceID) + "&limit=1"
+		limit := "1"
+		if jobID != "" {
+			limit = "20"
+		}
+		path := "/ingestion/jobs?scope=" + urlQueryEscape(scope) + "&source_config_id=" + urlQueryEscape(sourceID) + "&limit=" + limit
 		result, _, err := getJSON(ctx, args, path)
 		if err == nil {
 			jobs, _ := result["ingestion_jobs"].([]any)
-			if len(jobs) > 0 {
-				job, _ := jobs[0].(map[string]any)
+			if job := matchingIngestionJob(jobs, jobID); job != nil {
 				status := stringValue(job["status"], "")
 				switch status {
 				case "succeeded":
-					fmt.Printf("Job succeeded: seen=%v changed=%v chunks=%v claims=%v\n", job["documents_seen"], job["documents_changed"], job["chunks_written"], job["claims_written"])
-					return nil
+					if !quiet {
+						fmt.Printf("Job succeeded: %s seen=%v changed=%v chunks=%v claims=%v\n", stringValue(job["id"], jobID), job["documents_seen"], job["documents_changed"], job["chunks_written"], job["claims_written"])
+					}
+					return job, nil
 				case "failed", "canceled":
-					return fmt.Errorf("job %s: %s", status, stringValue(job["last_error"], ""))
+					return job, fmt.Errorf("job %s %s: %s", stringValue(job["id"], jobID), status, stringValue(job["last_error"], ""))
 				}
-				fmt.Println("Job " + status + "...")
+				if !quiet {
+					fmt.Println("Job " + stringValue(job["id"], jobID) + " " + status + "...")
+				}
 			}
 		}
 		if time.Now().After(deadline) {
@@ -3486,7 +3563,20 @@ func waitForSourceJob(ctx context.Context, args cliArgs, scope, sourceID string)
 		}
 		time.Sleep(time.Second)
 	}
-	return errors.New("job did not finish within " + timeout.String() + "; run `abra jobs --scope " + scope + "`")
+	return nil, errors.New("job did not finish within " + timeout.String() + "; run `abra jobs --scope " + scope + "`")
+}
+
+func matchingIngestionJob(jobs []any, jobID string) map[string]any {
+	for _, raw := range jobs {
+		job, _ := raw.(map[string]any)
+		if job == nil {
+			continue
+		}
+		if jobID == "" || stringValue(job["id"], "") == jobID {
+			return job
+		}
+	}
+	return nil
 }
 
 func waitTimeout(args cliArgs) time.Duration {
@@ -3745,8 +3835,9 @@ Use --wait-timeout or ABRA_CLI_WAIT_TIMEOUT for slow local model or large repo r
 	case "sources":
 		return `Usage:
   abra sources [--scope repo:demo] [--limit 50] [--json]
+  abra sources sync <source-config-id> [--scope repo:demo] [--wait] [--wait-timeout 10m] [--json]
 
-Lists configured ingestion sources.
+Lists configured ingestion sources or queues a manual sync for an existing source.
 `
 	case "jobs":
 		return `Usage:

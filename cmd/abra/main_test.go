@@ -3089,6 +3089,164 @@ func TestSourceMCPQueuesSourceConfig(t *testing.T) {
 	}
 }
 
+func TestSourcesSyncQueuesExistingSource(t *testing.T) {
+	var jobRequest map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ingestion/jobs" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&jobRequest); err != nil {
+			t.Fatalf("decode job body: %v", err)
+		}
+		writeTestJSON(t, w, map[string]any{
+			"ingestion_job": map[string]any{
+				"id":               "job-sync",
+				"scope":            "team:platform",
+				"status":           "queued",
+				"source_config_id": "source-mcp",
+			},
+		})
+	}))
+	defer server.Close()
+
+	output := captureStdout(t, func() {
+		err := run(context.Background(), []string{
+			"sources", "sync", "source-mcp",
+			"--base-url", server.URL,
+			"--token", "test-token",
+		})
+		if err != nil {
+			t.Fatalf("sources sync error = %v", err)
+		}
+	})
+	if jobRequest["source_config_id"] != "source-mcp" || jobRequest["trigger_type"] != "manual" {
+		t.Fatalf("job request = %#v", jobRequest)
+	}
+	metadata, _ := jobRequest["metadata"].(map[string]any)
+	if metadata["command"] != "sources sync" {
+		t.Fatalf("metadata = %#v", metadata)
+	}
+	if !strings.Contains(output, "Source queued: source-mcp") || !strings.Contains(output, "Job queued: job-sync") {
+		t.Fatalf("output = %s", output)
+	}
+}
+
+func TestSourcesSyncWaitsForQueuedJobID(t *testing.T) {
+	var jobRequest map[string]any
+	getRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ingestion/jobs" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		switch r.Method {
+		case http.MethodPost:
+			if err := json.NewDecoder(r.Body).Decode(&jobRequest); err != nil {
+				t.Fatalf("decode job body: %v", err)
+			}
+			writeTestJSON(t, w, map[string]any{
+				"ingestion_job": map[string]any{
+					"id":               "job-sync",
+					"scope":            "team:platform",
+					"status":           "queued",
+					"source_config_id": "source-mcp",
+				},
+			})
+		case http.MethodGet:
+			getRequests++
+			if r.URL.Query().Get("scope") != "team:platform" {
+				t.Fatalf("wait should use response scope, query=%s", r.URL.RawQuery)
+			}
+			if r.URL.Query().Get("limit") != "20" {
+				t.Fatalf("wait should request enough jobs to find the queued job id, query=%s", r.URL.RawQuery)
+			}
+			writeTestJSON(t, w, map[string]any{
+				"ingestion_jobs": []map[string]any{
+					{"id": "job-newer", "status": "succeeded", "source_config_id": "source-mcp"},
+					{"id": "job-sync", "status": "succeeded", "source_config_id": "source-mcp", "documents_seen": 2, "documents_changed": 1, "chunks_written": 3, "claims_written": 4},
+				},
+			})
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	}))
+	defer server.Close()
+
+	output := captureStdout(t, func() {
+		err := run(context.Background(), []string{
+			"sources", "sync", "source-mcp",
+			"--scope", "stale:scope",
+			"--wait",
+			"--wait-timeout", "2s",
+			"--base-url", server.URL,
+			"--token", "test-token",
+		})
+		if err != nil {
+			t.Fatalf("sources sync --wait error = %v", err)
+		}
+	})
+	if jobRequest["source_config_id"] != "source-mcp" || getRequests == 0 {
+		t.Fatalf("job request = %#v getRequests=%d", jobRequest, getRequests)
+	}
+	if !strings.Contains(output, "Job succeeded: job-sync") || strings.Contains(output, "Job succeeded: job-newer") {
+		t.Fatalf("output = %s", output)
+	}
+}
+
+func TestSourcesSyncJSONWaitReturnsFinalJob(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ingestion/jobs" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		switch r.Method {
+		case http.MethodPost:
+			writeTestJSON(t, w, map[string]any{
+				"ingestion_job": map[string]any{
+					"id":               "job-sync",
+					"scope":            "team:platform",
+					"status":           "queued",
+					"source_config_id": "source-mcp",
+				},
+			})
+		case http.MethodGet:
+			writeTestJSON(t, w, map[string]any{
+				"ingestion_jobs": []map[string]any{{
+					"id":                "job-sync",
+					"scope":             "team:platform",
+					"status":            "succeeded",
+					"source_config_id":  "source-mcp",
+					"documents_seen":    2,
+					"documents_changed": 1,
+				}},
+			})
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	}))
+	defer server.Close()
+
+	output := captureStdout(t, func() {
+		err := run(context.Background(), []string{
+			"sources", "sync", "source-mcp",
+			"--wait",
+			"--json",
+			"--wait-timeout", "2s",
+			"--base-url", server.URL,
+			"--token", "test-token",
+		})
+		if err != nil {
+			t.Fatalf("sources sync --wait --json error = %v", err)
+		}
+	})
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
+		t.Fatalf("expected clean JSON output, got error %v and output:\n%s", err, output)
+	}
+	job, _ := payload["job"].(map[string]any)
+	if job["id"] != "job-sync" || job["status"] != "succeeded" {
+		t.Fatalf("payload = %#v", payload)
+	}
+}
+
 func TestLocalPathIngestReportsPreReadSkippedFilesJSON(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "README.md"), "# Local Brain\n\nAgents should use Abra.")
