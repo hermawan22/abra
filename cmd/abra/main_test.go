@@ -2720,6 +2720,32 @@ func TestStatusPrintsReadyFailureDetail(t *testing.T) {
 	}
 }
 
+func TestStatusJSONReturnsFailurePayloadAndError(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	mustWrite(t, filepath.Join(home, "quickstart.env"), "EMBEDDING_PROVIDER=local\n")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		writeTestJSON(t, w, map[string]any{"embedding_error": "model cold"})
+	}))
+	defer server.Close()
+
+	var runErr error
+	output := captureStdout(t, func() {
+		runErr = run(context.Background(), []string{"status", "--json", "--base-url", server.URL})
+	})
+	if runErr == nil {
+		t.Fatal("status --json should fail when Abra is not ready")
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
+		t.Fatalf("decode status json: %v\n%s", err, output)
+	}
+	if payload["ready"] != false || payload["status"] != float64(http.StatusServiceUnavailable) || payload["embedding_error"] != "model cold" {
+		t.Fatalf("status payload = %#v", payload)
+	}
+}
+
 func TestQueryCommandsReturnFriendlyMissingInputErrors(t *testing.T) {
 	cases := []struct {
 		name string
@@ -3944,6 +3970,68 @@ func TestLocalPathShortcutQueuesTrackedJobWithTrackedFlag(t *testing.T) {
 		if unexpected == "/ingest/documents" {
 			t.Fatalf("tracked shortcut should not direct-ingest documents: paths=%v", paths)
 		}
+	}
+}
+
+func TestLocalPathTrackedWaitJSONWaitsForJob(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "README.md"), "# Local Brain\n\nAgents should use Abra.")
+
+	getRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/sources/configs":
+			_ = json.NewEncoder(w).Encode(map[string]any{"source_config_id": "source-local"})
+		case "/ingestion/jobs":
+			switch r.Method {
+			case http.MethodPost:
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"ingestion_job": map[string]any{"id": "job-local", "status": "queued"},
+				})
+			case http.MethodGet:
+				getRequests++
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"ingestion_jobs": []map[string]any{{
+						"id":               "job-local",
+						"status":           "succeeded",
+						"source_config_id": "source-local",
+						"documents_seen":   1,
+					}},
+				})
+			default:
+				t.Fatalf("unexpected method %s", r.Method)
+			}
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	var runErr error
+	output := captureStdout(t, func() {
+		runErr = run(context.Background(), []string{
+			"ingest", root,
+			"--tracked",
+			"--wait",
+			"--json",
+			"--wait-timeout", "2s",
+			"--base-url", server.URL,
+			"--token", "test-token",
+		})
+	})
+	if runErr != nil {
+		t.Fatalf("tracked wait json ingest error = %v", runErr)
+	}
+	if getRequests == 0 {
+		t.Fatal("ingest --tracked --wait --json did not poll job status")
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
+		t.Fatalf("decode output: %v\n%s", err, output)
+	}
+	waited, _ := payload["waited_job"].(map[string]any)
+	if waited["id"] != "job-local" || waited["status"] != "succeeded" {
+		t.Fatalf("payload = %#v", payload)
 	}
 }
 
@@ -5214,14 +5302,22 @@ func captureStdout(t *testing.T, fn func()) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	closed := false
+	defer func() {
+		os.Stdout = original
+		if !closed {
+			_ = writer.Close()
+		}
+		_ = reader.Close()
+	}()
 	os.Stdout = writer
 	fn()
+	closed = true
 	_ = writer.Close()
 	os.Stdout = original
 	var buf bytes.Buffer
 	if _, err := io.Copy(&buf, reader); err != nil {
 		t.Fatal(err)
 	}
-	_ = reader.Close()
 	return buf.String()
 }

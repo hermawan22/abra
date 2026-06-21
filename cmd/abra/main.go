@@ -854,6 +854,21 @@ func shouldStopLocalModelsForDown(args cliArgs) bool {
 func status(ctx context.Context, args cliArgs) error {
 	result, code, err := getJSON(ctx, args, readyzPath(args))
 	if err != nil || code < 200 || code >= 300 {
+		if boolFlag(args, "json") {
+			payload := map[string]any{}
+			for key, value := range result {
+				payload[key] = value
+			}
+			payload["ready"] = false
+			payload["status"] = code
+			if err != nil {
+				payload["error"] = err.Error()
+			}
+			if printErr := printJSON(payload); printErr != nil {
+				return printErr
+			}
+			return fmt.Errorf("abra not ready (%d)", code)
+		}
 		fmt.Printf("Abra: not ready (%d)\n", code)
 		fmt.Print(readyFailureMessage(args, result, code, err, ""))
 		return nil
@@ -2012,20 +2027,31 @@ func sourceIngest(ctx context.Context, args cliArgs) error {
 	if err != nil {
 		return err
 	}
+	jobID := ""
+	if ingestionJob, _ := job["ingestion_job"].(map[string]any); ingestionJob != nil {
+		jobID = stringValue(ingestionJob["id"], "")
+	}
+	var waitedJob map[string]any
 	if boolFlag(args, "json") {
-		return printJSON(map[string]any{"source": source, "job": job})
+		if boolFlag(args, "wait") {
+			waitedJob, err = waitForSourceJob(ctx, args, scope, sourceID, jobID)
+			if err != nil {
+				return err
+			}
+		}
+		payload := map[string]any{"source": source, "job": job}
+		if waitedJob != nil {
+			payload["waited_job"] = waitedJob
+		}
+		return printJSON(payload)
 	}
 	fmt.Println("Source configured: " + sourceID)
 	fmt.Println("scope: " + scope)
-	if ingestionJob, _ := job["ingestion_job"].(map[string]any); ingestionJob != nil {
-		fmt.Println("Job queued: " + stringValue(ingestionJob["id"], ""))
+	if jobID != "" {
+		fmt.Println("Job queued: " + jobID)
 	}
 	fmt.Println("Check jobs: abra jobs --scope " + scope)
 	if boolFlag(args, "wait") {
-		jobID := ""
-		if ingestionJob, _ := job["ingestion_job"].(map[string]any); ingestionJob != nil {
-			jobID = stringValue(ingestionJob["id"], "")
-		}
 		_, err := waitForSourceJob(ctx, args, scope, sourceID, jobID)
 		return err
 	}

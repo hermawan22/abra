@@ -42,7 +42,7 @@ func newFakeDocker(t *testing.T) *fakeDocker {
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	mustWrite(t, filepath.Join(bin, "docker"), "#!/bin/sh\nABRA_FAKE_DOCKER=1 exec \"$ABRA_TEST_BINARY\" -test.run '^TestFakeDockerProcess$' -- \"$@\"\n")
+	mustWrite(t, filepath.Join(bin, "docker"), "#!/bin/sh\nABRA_FAKE_DOCKER=1 exec \"$ABRA_TEST_BINARY\" -test.run '^TestFakeDockerProcess$' -test.paniconexit0=false -- \"$@\"\n")
 	if err := os.Chmod(filepath.Join(bin, "docker"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -337,15 +337,17 @@ func TestModelsUpCreatesContainerAndSyncsEnv(t *testing.T) {
 	home, server, docker := setupModelsLifecycleTest(t)
 	cacheDir := filepath.Join(t.TempDir(), "cache")
 
+	var runErr error
 	output := captureStdout(t, func() {
-		if err := run(context.Background(), []string{
+		runErr = run(context.Background(), []string{
 			"models", "up",
 			"--base-url", server.URL + "/v1",
 			"--cache-dir", cacheDir,
-		}); err != nil {
-			t.Fatalf("models up error = %v", err)
-		}
+		})
 	})
+	if runErr != nil {
+		t.Fatalf("models up error = %v", runErr)
+	}
 	if !strings.Contains(output, "Local embeddings ready") {
 		t.Fatalf("models up output missing readiness:\n%s", output)
 	}
@@ -419,11 +421,13 @@ func TestModelsStatusJSONIncludesDockerConfigMatch(t *testing.T) {
 	cfg := embeddingRunner(args)
 	docker.seedContainer(cfg.Image, map[string]string{localRunnerHashLabel: localRunnerConfigHash(cfg)})
 
+	var statusErr error
 	output := captureStdout(t, func() {
-		if err := modelsStatus(context.Background(), args); err != nil {
-			t.Fatalf("models status error = %v", err)
-		}
+		statusErr = modelsStatus(context.Background(), args)
 	})
+	if statusErr != nil {
+		t.Fatalf("models status error = %v", statusErr)
+	}
 	var status map[string]any
 	if err := json.Unmarshal([]byte(output), &status); err != nil {
 		t.Fatalf("decode status json: %v\n%s", err, output)
@@ -444,11 +448,13 @@ func TestModelsLogsUsesTailAndStreamsOutput(t *testing.T) {
 	docker.seedContainer(defaultTEIImage(), map[string]string{})
 	docker.writeLogs("model ready\n")
 
+	var logsErr error
 	output := captureStdout(t, func() {
-		if err := run(context.Background(), []string{"models", "logs", "--tail", "7"}); err != nil {
-			t.Fatalf("models logs error = %v", err)
-		}
+		logsErr = run(context.Background(), []string{"models", "logs", "--tail", "7"})
 	})
+	if logsErr != nil {
+		t.Fatalf("models logs error = %v", logsErr)
+	}
 	if !strings.Contains(output, "model ready") {
 		t.Fatalf("logs output = %q", output)
 	}
@@ -461,11 +467,13 @@ func TestModelsLogsUsesTailAndStreamsOutput(t *testing.T) {
 func TestModelsDownRemovesPresentContainerAndNoopsWhenAbsent(t *testing.T) {
 	_, _, docker := setupModelsLifecycleTest(t)
 	docker.seedContainer(defaultTEIImage(), map[string]string{})
+	var downErr error
 	output := captureStdout(t, func() {
-		if err := run(context.Background(), []string{"models", "down"}); err != nil {
-			t.Fatalf("models down error = %v", err)
-		}
+		downErr = run(context.Background(), []string{"models", "down"})
 	})
+	if downErr != nil {
+		t.Fatalf("models down error = %v", downErr)
+	}
 	if !strings.Contains(output, "Stopped local embedding container") {
 		t.Fatalf("down output = %q", output)
 	}
@@ -473,11 +481,13 @@ func TestModelsDownRemovesPresentContainerAndNoopsWhenAbsent(t *testing.T) {
 		t.Fatalf("rm call = %v", call.Args)
 	}
 
+	downErr = nil
 	output = captureStdout(t, func() {
-		if err := run(context.Background(), []string{"models", "down"}); err != nil {
-			t.Fatalf("models down absent error = %v", err)
-		}
+		downErr = run(context.Background(), []string{"models", "down"})
 	})
+	if downErr != nil {
+		t.Fatalf("models down absent error = %v", downErr)
+	}
 	if !strings.Contains(output, "Local embedding container is not present") {
 		t.Fatalf("down absent output = %q", output)
 	}
