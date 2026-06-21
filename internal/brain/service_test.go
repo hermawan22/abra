@@ -2,6 +2,7 @@ package brain
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -275,6 +276,84 @@ func TestRecallQueryEmbeddingCacheReusesAndCopiesVectors(t *testing.T) {
 	}
 }
 
+func TestRerankRecallSurfacesRerankerFailure(t *testing.T) {
+	service := Service{
+		cfg:      config.Config{Reranker: config.AIProviderConfig{Provider: "local", Model: "rerank-model"}},
+		reranker: &fakeRerankerProvider{err: errors.New("rate limited")},
+	}
+	result := service.rerankRecall(context.Background(), "base query", store.RecallResult{
+		RetrievalMode: "hybrid",
+		Claims: []store.ClaimResult{
+			{ID: "claim-1", Claim: "base result", Rank: 0.8, TextScore: 0.4, VectorScore: 0.2},
+		},
+		SupportingDocuments: []store.DocumentResult{
+			{ID: "doc-1", Title: "doc", Content: "supporting result", Rank: 0.7, TextScore: 0.3, VectorScore: 0.2},
+		},
+	})
+
+	if len(result.RetrievalWarnings) != 2 {
+		t.Fatalf("warnings = %#v, want claim and document rerank warnings", result.RetrievalWarnings)
+	}
+	if result.RetrievalWarnings[0].Stage != "retrieval" || result.RetrievalWarnings[0].Operation != "rerank_claims" || !strings.Contains(result.RetrievalWarnings[0].Message, "rate limited") {
+		t.Fatalf("unexpected claim warning: %#v", result.RetrievalWarnings[0])
+	}
+	if result.RetrievalWarnings[1].Stage != "retrieval" || result.RetrievalWarnings[1].Operation != "rerank_documents" || !strings.Contains(result.RetrievalWarnings[1].Message, "rate limited") {
+		t.Fatalf("unexpected document warning: %#v", result.RetrievalWarnings[1])
+	}
+	if result.RetrievalMode != "hybrid" || len(result.RetrievalReasons) != 0 {
+		t.Fatalf("failed rerank should not mark mode/reasons as reranked: mode=%q reasons=%#v", result.RetrievalMode, result.RetrievalReasons)
+	}
+	if result.Claims[0].Rank != 0.8 || result.Claims[0].RerankApplied {
+		t.Fatalf("base claim should be preserved without rerank metadata: %#v", result.Claims[0])
+	}
+}
+
+func TestRerankRecallBoundsBoostAndStoresScores(t *testing.T) {
+	service := Service{
+		cfg: config.Config{Reranker: config.AIProviderConfig{Provider: "local", Model: "rerank-model"}},
+		reranker: &fakeRerankerProvider{
+			responses: []ai.RerankResponse{
+				{Results: []ai.RerankResult{{Index: 1, Score: 99}, {Index: 0, Score: -3}}},
+				{Results: []ai.RerankResult{{Index: 1, Score: 0.99}, {Index: 0, Score: 0.01}}},
+			},
+		},
+	}
+
+	result := service.rerankRecall(context.Background(), "base query", store.RecallResult{
+		RetrievalMode: "hybrid",
+		Claims: []store.ClaimResult{
+			{ID: "base-best", Claim: "strong base", Rank: 0.9, TextScore: 0.5, VectorScore: 0.4},
+			{ID: "rerank-favorite", Claim: "weak base", Rank: 0.2, TextScore: 0.1, VectorScore: 0.1},
+		},
+		SupportingDocuments: []store.DocumentResult{
+			{ID: "doc-base-best", Title: "strong", Content: "strong doc", Rank: 0.9, TextScore: 0.5, VectorScore: 0.4},
+			{ID: "doc-rerank-favorite", Title: "weak", Content: "weak doc", Rank: 0.2, TextScore: 0.1, VectorScore: 0.1},
+		},
+	})
+
+	if result.RetrievalMode != "hybrid_reranked" {
+		t.Fatalf("retrieval mode = %q, want hybrid_reranked", result.RetrievalMode)
+	}
+	if len(result.RetrievalWarnings) != 0 {
+		t.Fatalf("unexpected warnings: %#v", result.RetrievalWarnings)
+	}
+	if result.Claims[0].ID != "base-best" || result.Claims[1].ID != "rerank-favorite" {
+		t.Fatalf("bounded rerank should not swamp base claim rank: %#v", result.Claims)
+	}
+	if result.Claims[0].BaseRank != 0.9 || result.Claims[0].RerankScore != 0 || !result.Claims[0].RerankApplied {
+		t.Fatalf("base claim rerank metadata wrong: %#v", result.Claims[0])
+	}
+	if result.Claims[1].BaseRank != 0.2 || result.Claims[1].RerankScore != 1 || !result.Claims[1].RerankApplied || result.Claims[1].Rank != 0.4 {
+		t.Fatalf("reranked claim metadata wrong: %#v", result.Claims[1])
+	}
+	if result.SupportingDocuments[0].ID != "doc-base-best" || result.SupportingDocuments[1].ID != "doc-rerank-favorite" {
+		t.Fatalf("bounded rerank should not swamp base document rank: %#v", result.SupportingDocuments)
+	}
+	if result.SupportingDocuments[1].BaseRank != 0.2 || result.SupportingDocuments[1].RerankScore != 0.99 || !result.SupportingDocuments[1].RerankApplied {
+		t.Fatalf("reranked document metadata wrong: %#v", result.SupportingDocuments[1])
+	}
+}
+
 func aiProviderMetricValue(metrics []observability.AIProviderMetric, operation, provider, status, field string) int64 {
 	var total int64
 	for _, metric := range metrics {
@@ -291,6 +370,44 @@ func aiProviderMetricValue(metrics []observability.AIProviderMetric, operation, 
 		}
 	}
 	return total
+}
+
+type fakeRerankerProvider struct {
+	err       error
+	responses []ai.RerankResponse
+	calls     int
+}
+
+func (p *fakeRerankerProvider) Name() string {
+	return "fake-reranker"
+}
+
+func (p *fakeRerankerProvider) Kind() ai.ProviderKind {
+	return ai.ProviderOpenAICompatible
+}
+
+func (p *fakeRerankerProvider) Validate() error {
+	return nil
+}
+
+func (p *fakeRerankerProvider) Rerank(_ context.Context, request ai.RerankRequest) (ai.RerankResponse, error) {
+	p.calls++
+	if p.err != nil {
+		return ai.RerankResponse{}, p.err
+	}
+	if len(p.responses) >= p.calls {
+		response := p.responses[p.calls-1]
+		response.Provider = p.Name()
+		if response.Model == "" {
+			response.Model = request.Model
+		}
+		return response, nil
+	}
+	results := make([]ai.RerankResult, 0, len(request.Documents))
+	for i := range request.Documents {
+		results = append(results, ai.RerankResult{Index: i, Score: 0.5})
+	}
+	return ai.RerankResponse{Provider: p.Name(), Model: request.Model, Results: results}, nil
 }
 
 type recordingEmbeddingProvider struct {

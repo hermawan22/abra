@@ -35,6 +35,7 @@ type fakeStore struct {
 	maxActiveGraphs   int
 	graphDelay        time.Duration
 	auditEvents       int
+	recallWarnings    []store.RetrievalWarning
 }
 
 func (f *fakeStore) Recall(ctx context.Context, query, scope string, limit int, includeUnverified bool) (store.RecallResult, error) {
@@ -88,6 +89,7 @@ func (f *fakeStore) Recall(ctx context.Context, query, scope string, limit int, 
 			{Mode: "hybrid", Signal: "vector", Message: "Semantic vector similarity contributed to recalled claims or documents.", Count: 2},
 			{Mode: "entity_local", Signal: "graph", Message: "Entity-neighborhood graph relations expanded the packet beyond lexical matches.", Count: 1},
 		},
+		RetrievalWarnings: f.recallWarnings,
 	}, nil
 }
 
@@ -213,6 +215,33 @@ func TestComposeReturnsDegradedPacketWhenRetrievalBranchFails(t *testing.T) {
 	}
 	if !containsRisk(result.Risks, "Some retrieval branches failed") {
 		t.Fatalf("degraded retrieval risk missing: %#v", result.Risks)
+	}
+}
+
+func TestComposeSurfacesStoreRecallWarnings(t *testing.T) {
+	db := &fakeStore{
+		recallWarnings: []store.RetrievalWarning{
+			{Stage: "retrieval", Operation: "rerank_claims", Query: "upgrade", Message: "reranker unavailable"},
+		},
+	}
+	result, err := NewComposer(db).Compose(context.Background(), ComposeInput{
+		Task:  "upgrade Next.js safely",
+		Scope: "repo:test/app",
+		Agent: "frontend",
+		Files: []string{"package.json"},
+		Limit: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsWarning(result.RetrievalWarnings, "retrieval", "rerank_claims") {
+		t.Fatalf("missing rerank warning from recall result: %#v", result.RetrievalWarnings)
+	}
+	if result.Verification.Verdict != "partial" || !result.Verification.ActionRequired {
+		t.Fatalf("recall warning should degrade verification: %#v", result.Verification)
+	}
+	if !contains(result.AgentDecision.RequiredActions, "rerun_degraded_retrieval") {
+		t.Fatalf("agent decision missing rerun action for recall warning: %#v", result.AgentDecision)
 	}
 }
 

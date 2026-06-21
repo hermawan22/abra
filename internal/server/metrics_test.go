@@ -22,7 +22,7 @@ func TestSmartPathMetricsPrometheus(t *testing.T) {
 		Claims:              []store.ClaimResult{{ID: "claim-1"}},
 		SupportingDocuments: []store.DocumentResult{{ID: "doc-1"}},
 		GraphContext:        []store.RelationResult{{FromEntity: "A", ToEntity: "B", Type: "depends_on"}},
-		RetrievalMode:       "hybrid",
+		RetrievalMode:       "hybrid_reranked",
 	})
 	collector.observeRecall("error", 2*time.Millisecond, store.RecallResult{})
 	collector.observeMemory("ok", 34*time.Millisecond, memory.ComposeResult{
@@ -110,7 +110,7 @@ func TestSmartPathMetricsPrometheus(t *testing.T) {
 		`abra_ai_provider_max_in_flight{operation="embedding",provider="local"} 1`,
 		`abra_ai_provider_max_waiting{operation="embedding",provider="local"} 1`,
 		`abra_smart_path_requests_total{operation="recall",status="error",verdict="",decision=""} 1`,
-		`abra_recall_retrieval_mode_total{mode="hybrid",status="ok"} 1`,
+		`abra_recall_retrieval_mode_total{mode="hybrid_reranked",status="ok"} 1`,
 		`abra_recall_retrieval_mode_total{mode="unknown",status="error"} 1`,
 		`abra_smart_path_requests_total{operation="working_memory",status="ok",verdict="strong",decision="proceed"} 1`,
 		`abra_smart_path_requests_total{operation="working_memory",status="error",verdict="",decision=""} 1`,

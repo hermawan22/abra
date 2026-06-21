@@ -2783,11 +2783,12 @@ func vectorLiteral(values []float64) string {
 }
 
 type RecallResult struct {
-	Claims              []ClaimResult     `json:"claims"`
-	SupportingDocuments []DocumentResult  `json:"supporting_documents"`
-	GraphContext        []RelationResult  `json:"graph_context,omitempty"`
-	RetrievalMode       string            `json:"retrieval_mode,omitempty"`
-	RetrievalReasons    []RetrievalReason `json:"retrieval_reasons,omitempty"`
+	Claims              []ClaimResult      `json:"claims"`
+	SupportingDocuments []DocumentResult   `json:"supporting_documents"`
+	GraphContext        []RelationResult   `json:"graph_context,omitempty"`
+	RetrievalMode       string             `json:"retrieval_mode,omitempty"`
+	RetrievalReasons    []RetrievalReason  `json:"retrieval_reasons,omitempty"`
+	RetrievalWarnings   []RetrievalWarning `json:"retrieval_warnings,omitempty"`
 }
 
 type RetrievalReason struct {
@@ -2797,26 +2798,39 @@ type RetrievalReason struct {
 	Count   int    `json:"count,omitempty"`
 }
 
+type RetrievalWarning struct {
+	Stage     string `json:"stage"`
+	Operation string `json:"operation"`
+	Query     string `json:"query,omitempty"`
+	Message   string `json:"message"`
+}
+
 type ClaimResult struct {
-	ID          string  `json:"id"`
-	Claim       string  `json:"claim_text"`
-	Scope       string  `json:"scope"`
-	Status      string  `json:"status"`
-	Source      *string `json:"source_url,omitempty"`
-	Rank        float64 `json:"rank_score"`
-	TextScore   float64 `json:"text_score"`
-	VectorScore float64 `json:"vector_score"`
-	Freshness   string  `json:"freshness"`
+	ID            string  `json:"id"`
+	Claim         string  `json:"claim_text"`
+	Scope         string  `json:"scope"`
+	Status        string  `json:"status"`
+	Source        *string `json:"source_url,omitempty"`
+	Rank          float64 `json:"rank_score"`
+	BaseRank      float64 `json:"base_rank_score,omitempty"`
+	TextScore     float64 `json:"text_score"`
+	VectorScore   float64 `json:"vector_score"`
+	RerankScore   float64 `json:"rerank_score,omitempty"`
+	RerankApplied bool    `json:"rerank_applied,omitempty"`
+	Freshness     string  `json:"freshness"`
 }
 
 type DocumentResult struct {
-	ID          string  `json:"id"`
-	Title       string  `json:"title"`
-	Source      string  `json:"source_url"`
-	Content     string  `json:"content"`
-	Rank        float64 `json:"rank_score"`
-	TextScore   float64 `json:"text_score"`
-	VectorScore float64 `json:"vector_score"`
+	ID            string  `json:"id"`
+	Title         string  `json:"title"`
+	Source        string  `json:"source_url"`
+	Content       string  `json:"content"`
+	Rank          float64 `json:"rank_score"`
+	BaseRank      float64 `json:"base_rank_score,omitempty"`
+	TextScore     float64 `json:"text_score"`
+	VectorScore   float64 `json:"vector_score"`
+	RerankScore   float64 `json:"rerank_score,omitempty"`
+	RerankApplied bool    `json:"rerank_applied,omitempty"`
 }
 
 type RelationResult struct {

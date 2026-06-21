@@ -55,6 +55,33 @@ func TestVerifyPacketStrongWhenSourceBackedAndFresh(t *testing.T) {
 	}
 }
 
+func TestVerifyPacketReportsRerankQuality(t *testing.T) {
+	source := "file://source.md"
+	report := verifyPacket(
+		testSummaries(source),
+		[]store.ClaimResult{
+			{ID: "claim-1", Claim: "Frontend uses Playwright.", Status: "verified", Source: &source, Rank: 1.1, BaseRank: 0.9, TextScore: 0.3, VectorScore: 0.2, RerankApplied: true, RerankScore: 1, Freshness: "fresh"},
+		},
+		[]store.DocumentResult{
+			{ID: "doc-1", Title: "Frontend", Source: source, Content: "Frontend uses Playwright.", Rank: 1, BaseRank: 0.9, TextScore: 0.4, VectorScore: 0.1, RerankApplied: true, RerankScore: 0.8},
+		},
+		[]store.RelationResult{
+			{FromEntity: "Frontend", ToEntity: "Playwright", Type: "uses", Confidence: 0.8, SourceURL: &source},
+		},
+		[]EvidenceItem{{SourceURL: source, Count: 2}},
+		testRetrievalPlan(1),
+		nil,
+		nil,
+		nil,
+	)
+	if report.RetrievalQuality.RerankedResults != 2 || report.RetrievalQuality.TopRerankScore != 1 || report.RetrievalQuality.AverageRerankScore != 0.9 {
+		t.Fatalf("rerank quality not reported: %#v", report.RetrievalQuality)
+	}
+	if report.RetrievalQuality.LowConfidence {
+		t.Fatalf("rerank metadata should not create low confidence: %#v", report.RetrievalQuality)
+	}
+}
+
 func TestVerifyPacketUnsafeWhenMemoryHealthIsCritical(t *testing.T) {
 	source := "file://source.md"
 	report := verifyPacket(

@@ -331,7 +331,7 @@ func (m *metricsCollector) observeRequiredActions(operation, status, verdict, de
 
 func normalizeRecallMode(value string) string {
 	switch strings.TrimSpace(value) {
-	case "hybrid", "full_text", "full_text_embedding_error", "full_text_empty_embedding", "empty":
+	case "hybrid", "hybrid_reranked", "full_text", "full_text_reranked", "full_text_embedding_error", "full_text_empty_embedding", "empty":
 		return strings.TrimSpace(value)
 	case "":
 		return "unknown"

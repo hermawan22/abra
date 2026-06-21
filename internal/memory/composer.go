@@ -542,6 +542,7 @@ func (c *Composer) retrieveQueries(ctx context.Context, queries []policy.RecallQ
 				})
 				return
 			}
+			warningsByQuery[i] = append(warningsByQuery[i], recallWarnings(recall.RetrievalWarnings)...)
 			results[i] = retrievalResult{summaries: querySummaries, recall: recall}
 		}()
 	}
@@ -557,6 +558,22 @@ func (c *Composer) retrieveQueries(ctx context.Context, queries []policy.RecallQ
 		warnings = append(warnings, queryWarnings...)
 	}
 	return results, warnings, nil
+}
+
+func recallWarnings(values []store.RetrievalWarning) []RetrievalWarning {
+	if len(values) == 0 {
+		return nil
+	}
+	warnings := make([]RetrievalWarning, 0, len(values))
+	for _, value := range values {
+		warnings = append(warnings, RetrievalWarning{
+			Stage:     strings.TrimSpace(value.Stage),
+			Operation: strings.TrimSpace(value.Operation),
+			Query:     strings.TrimSpace(value.Query),
+			Message:   strings.TrimSpace(value.Message),
+		})
+	}
+	return warnings
 }
 
 func acquireStageSlot(ctx context.Context, sem chan struct{}) error {

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -31,6 +32,7 @@ type Service struct {
 }
 
 const defaultQueryEmbeddingCacheEntries = 1024
+const rerankRankBoostWeight = 0.2
 
 type embeddingCache struct {
 	mu      sync.Mutex
@@ -433,6 +435,13 @@ func (s *Service) rerankRecall(ctx context.Context, query string, result store.R
 			if !strings.Contains(result.RetrievalMode, "reranked") {
 				result.RetrievalMode += "_reranked"
 			}
+		} else {
+			result.RetrievalWarnings = append(result.RetrievalWarnings, store.RetrievalWarning{
+				Stage:     "retrieval",
+				Operation: "rerank_claims",
+				Query:     query,
+				Message:   compactBrainError(err),
+			})
 		}
 	}
 	docTexts := make([]string, 0, len(result.SupportingDocuments))
@@ -446,6 +455,13 @@ func (s *Service) rerankRecall(ctx context.Context, query string, result store.R
 			if !strings.Contains(result.RetrievalMode, "reranked") {
 				result.RetrievalMode += "_reranked"
 			}
+		} else {
+			result.RetrievalWarnings = append(result.RetrievalWarnings, store.RetrievalWarning{
+				Stage:     "retrieval",
+				Operation: "rerank_documents",
+				Query:     query,
+				Message:   compactBrainError(err),
+			})
 		}
 	}
 	if reranked {
@@ -464,7 +480,13 @@ func applyClaimRerank(claims []store.ClaimResult, results []ai.RerankResult) {
 		if reranked.Index < 0 || reranked.Index >= len(claims) {
 			continue
 		}
-		claims[reranked.Index].Rank += reranked.Score
+		score := normalizedRerankScore(reranked.Score)
+		if claims[reranked.Index].BaseRank == 0 && claims[reranked.Index].Rank != 0 {
+			claims[reranked.Index].BaseRank = claims[reranked.Index].Rank
+		}
+		claims[reranked.Index].RerankScore = score
+		claims[reranked.Index].RerankApplied = true
+		claims[reranked.Index].Rank += score * rerankRankBoostWeight
 	}
 	sort.SliceStable(claims, func(i, j int) bool {
 		return claims[i].Rank > claims[j].Rank
@@ -476,11 +498,38 @@ func applyDocumentRerank(documents []store.DocumentResult, results []ai.RerankRe
 		if reranked.Index < 0 || reranked.Index >= len(documents) {
 			continue
 		}
-		documents[reranked.Index].Rank += reranked.Score
+		score := normalizedRerankScore(reranked.Score)
+		if documents[reranked.Index].BaseRank == 0 && documents[reranked.Index].Rank != 0 {
+			documents[reranked.Index].BaseRank = documents[reranked.Index].Rank
+		}
+		documents[reranked.Index].RerankScore = score
+		documents[reranked.Index].RerankApplied = true
+		documents[reranked.Index].Rank += score * rerankRankBoostWeight
 	}
 	sort.SliceStable(documents, func(i, j int) bool {
 		return documents[i].Rank > documents[j].Rank
 	})
+}
+
+func normalizedRerankScore(score float64) float64 {
+	if math.IsNaN(score) || math.IsInf(score, 0) || score < 0 {
+		return 0
+	}
+	if score > 1 {
+		return 1
+	}
+	return score
+}
+
+func compactBrainError(err error) string {
+	if err == nil {
+		return ""
+	}
+	message := strings.TrimSpace(err.Error())
+	if len(message) <= 240 {
+		return message
+	}
+	return message[:240] + "...<truncated>"
 }
 
 func (s *Service) IngestDocument(ctx context.Context, input IngestDocumentInput) (IngestDocumentResult, error) {

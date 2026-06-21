@@ -102,7 +102,7 @@ func contextCandidates(input ComposeInput, result ComposeResult) []contextCandid
 		Title:    "Task and Memory Gate",
 		Priority: 1,
 		Content: fmt.Sprintf(
-			"Task: %s\nScope: %s\nIntent: %s\nMemory health: %s (score %d; signals: %s)\nVerification: %s (score %.2f)\nRetrieval quality: results=%d sources=%d dominant_source_share=%.2f low_confidence=%t low_source_diversity=%t\nRequired actions: %s\nAgent decision: %s; autonomous_allowed=%t",
+			"Task: %s\nScope: %s\nIntent: %s\nMemory health: %s (score %d; signals: %s)\nVerification: %s (score %.2f)\nRetrieval quality: results=%d sources=%d dominant_source_share=%.2f reranked_results=%d top_rerank_score=%.2f low_confidence=%t low_source_diversity=%t\nRequired actions: %s\nAgent decision: %s; autonomous_allowed=%t",
 			result.Task,
 			result.Scope,
 			result.Intent,
@@ -114,6 +114,8 @@ func contextCandidates(input ComposeInput, result ComposeResult) []contextCandid
 			result.Verification.RetrievalQuality.ResultCount,
 			result.Verification.RetrievalQuality.UniqueSources,
 			result.Verification.RetrievalQuality.DominantSourceShare,
+			result.Verification.RetrievalQuality.RerankedResults,
+			result.Verification.RetrievalQuality.TopRerankScore,
 			result.Verification.RetrievalQuality.LowConfidence,
 			result.Verification.RetrievalQuality.LowSourceDiversity,
 			actionListOrDefault(result.Verification.RequiredActions),
@@ -372,6 +374,9 @@ func factContext(fact store.ClaimResult) string {
 	if source := pointerString(fact.Source); source != "" {
 		parts = append(parts, "source="+source)
 	}
+	if fact.RerankApplied {
+		parts = append(parts, fmt.Sprintf("rank=%.2f base_rank=%.2f rerank_score=%.2f", fact.Rank, fact.BaseRank, fact.RerankScore))
+	}
 	return strings.Join(parts, "\n")
 }
 
@@ -404,7 +409,12 @@ func sourceContext(doc store.DocumentResult) string {
 	if estimateTokens(content) > 120 {
 		content = truncateForTokens(content, 120)
 	}
-	return "source=" + doc.Source + "\n" + content
+	parts := []string{"source=" + doc.Source}
+	if doc.RerankApplied {
+		parts = append(parts, fmt.Sprintf("rank=%.2f base_rank=%.2f rerank_score=%.2f", doc.Rank, doc.BaseRank, doc.RerankScore))
+	}
+	parts = append(parts, content)
+	return strings.Join(parts, "\n")
 }
 
 func retrievalReasonsContext(reasons []store.RetrievalReason) string {

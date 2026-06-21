@@ -45,6 +45,9 @@ type RetrievalQuality struct {
 	AverageRankScore    float64 `json:"average_rank_score"`
 	TopTextScore        float64 `json:"top_text_score"`
 	TopVectorScore      float64 `json:"top_vector_score"`
+	RerankedResults     int     `json:"reranked_results,omitempty"`
+	TopRerankScore      float64 `json:"top_rerank_score,omitempty"`
+	AverageRerankScore  float64 `json:"average_rerank_score,omitempty"`
 	LexicalHits         int     `json:"lexical_hits"`
 	VectorHits          int     `json:"vector_hits"`
 	ZeroScoreResults    int     `json:"zero_score_results"`
@@ -184,12 +187,18 @@ func retrievalCoverage(summaries []store.MemorySummaryResult, facts []store.Clai
 func retrievalQuality(facts []store.ClaimResult, docs []store.DocumentResult) RetrievalQuality {
 	quality := RetrievalQuality{ResultCount: len(facts) + len(docs)}
 	totalRank := 0.0
+	totalRerank := 0.0
 	sourceCounts := map[string]int{}
-	observe := func(rank, text, vector float64, source string) {
+	observe := func(rank, text, vector, rerank float64, rerankApplied bool, source string) {
 		totalRank += rank
 		quality.TopRankScore = maxFloat(quality.TopRankScore, rank)
 		quality.TopTextScore = maxFloat(quality.TopTextScore, text)
 		quality.TopVectorScore = maxFloat(quality.TopVectorScore, vector)
+		if rerankApplied {
+			quality.RerankedResults++
+			totalRerank += rerank
+			quality.TopRerankScore = maxFloat(quality.TopRerankScore, rerank)
+		}
 		if text > 0.01 {
 			quality.LexicalHits++
 		}
@@ -205,13 +214,16 @@ func retrievalQuality(facts []store.ClaimResult, docs []store.DocumentResult) Re
 		}
 	}
 	for _, fact := range facts {
-		observe(fact.Rank, fact.TextScore, fact.VectorScore, pointerString(fact.Source))
+		observe(fact.Rank, fact.TextScore, fact.VectorScore, fact.RerankScore, fact.RerankApplied, pointerString(fact.Source))
 	}
 	for _, doc := range docs {
-		observe(doc.Rank, doc.TextScore, doc.VectorScore, doc.Source)
+		observe(doc.Rank, doc.TextScore, doc.VectorScore, doc.RerankScore, doc.RerankApplied, doc.Source)
 	}
 	if quality.ResultCount > 0 {
 		quality.AverageRankScore = round2(totalRank / float64(quality.ResultCount))
+	}
+	if quality.RerankedResults > 0 {
+		quality.AverageRerankScore = round2(totalRerank / float64(quality.RerankedResults))
 	}
 	maxSourceCount := 0
 	for _, count := range sourceCounts {
@@ -224,6 +236,7 @@ func retrievalQuality(facts []store.ClaimResult, docs []store.DocumentResult) Re
 	quality.TopRankScore = round2(quality.TopRankScore)
 	quality.TopTextScore = round2(quality.TopTextScore)
 	quality.TopVectorScore = round2(quality.TopVectorScore)
+	quality.TopRerankScore = round2(quality.TopRerankScore)
 	noLexicalSemanticSignal := quality.TopTextScore < 0.1 && quality.TopVectorScore < 0.1
 	weakRankSignal := quality.TopRankScore < 0.35
 	boostedWithoutRawSignal := quality.TopTextScore == 0 && quality.TopVectorScore == 0 && quality.TopRankScore >= 1
