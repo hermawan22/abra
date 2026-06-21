@@ -22,6 +22,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Add richer `abra compose` human output and `--prompt` so CLI-only users can hand prompt-ready working memory to any AI client.
 - Add explicit `persist_learning` / `--persist-learning` opt-in for working-memory learning proposal writes so compose is read-only by default.
 - Preserve the working-memory safety gate in prompt-ready context windows even when tasks are long and token budgets are tight.
+- Add canonical source-diversity and unsourced-result retrieval quality metrics so verifier gates cannot be bypassed by URL variants or source-less hits.
 
 ### Changed
 

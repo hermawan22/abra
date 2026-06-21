@@ -2,6 +2,8 @@ package memory
 
 import (
 	"math"
+	"net/url"
+	"path"
 	"sort"
 	"strings"
 
@@ -40,21 +42,23 @@ type VerificationCheck struct {
 }
 
 type RetrievalQuality struct {
-	ResultCount         int     `json:"result_count"`
-	TopRankScore        float64 `json:"top_rank_score"`
-	AverageRankScore    float64 `json:"average_rank_score"`
-	TopTextScore        float64 `json:"top_text_score"`
-	TopVectorScore      float64 `json:"top_vector_score"`
-	RerankedResults     int     `json:"reranked_results,omitempty"`
-	TopRerankScore      float64 `json:"top_rerank_score,omitempty"`
-	AverageRerankScore  float64 `json:"average_rerank_score,omitempty"`
-	LexicalHits         int     `json:"lexical_hits"`
-	VectorHits          int     `json:"vector_hits"`
-	ZeroScoreResults    int     `json:"zero_score_results"`
-	UniqueSources       int     `json:"unique_sources"`
-	DominantSourceShare float64 `json:"dominant_source_share"`
-	LowConfidence       bool    `json:"low_confidence"`
-	LowSourceDiversity  bool    `json:"low_source_diversity"`
+	ResultCount          int     `json:"result_count"`
+	TopRankScore         float64 `json:"top_rank_score"`
+	AverageRankScore     float64 `json:"average_rank_score"`
+	TopTextScore         float64 `json:"top_text_score"`
+	TopVectorScore       float64 `json:"top_vector_score"`
+	RerankedResults      int     `json:"reranked_results,omitempty"`
+	TopRerankScore       float64 `json:"top_rerank_score,omitempty"`
+	AverageRerankScore   float64 `json:"average_rerank_score,omitempty"`
+	LexicalHits          int     `json:"lexical_hits"`
+	VectorHits           int     `json:"vector_hits"`
+	ZeroScoreResults     int     `json:"zero_score_results"`
+	UniqueSources        int     `json:"unique_sources"`
+	UnsourcedResults     int     `json:"unsourced_results"`
+	DominantSourceShare  float64 `json:"dominant_source_share"`
+	UnsourcedResultShare float64 `json:"unsourced_result_share"`
+	LowConfidence        bool    `json:"low_confidence"`
+	LowSourceDiversity   bool    `json:"low_source_diversity"`
 }
 
 type RetrievalCoverage struct {
@@ -66,11 +70,12 @@ type RetrievalCoverage struct {
 
 func verifyPacket(summaries []store.MemorySummaryResult, facts []store.ClaimResult, docs []store.DocumentResult, graph []store.RelationResult, evidence []EvidenceItem, plan RetrievalPlan, conflicts []store.ConflictResult, retrievalWarnings []RetrievalWarning, graphWarnings []GraphWarning, healthInput ...store.MemoryHealthResult) VerificationReport {
 	health := verificationMemoryHealth(healthInput)
+	evidenceSources := canonicalEvidenceSourceCount(docs, evidence)
 	report := VerificationReport{
 		Checks:              []VerificationCheck{},
-		RetrievalCoverage:   retrievalCoverage(summaries, facts, docs, graph, evidence, plan.CoverageTargets),
+		RetrievalCoverage:   retrievalCoverage(summaries, facts, docs, graph, evidenceSources, plan.CoverageTargets),
 		RetrievalQuality:    retrievalQuality(facts, docs),
-		EvidenceSources:     len(evidence),
+		EvidenceSources:     evidenceSources,
 		Recommendations:     []string{},
 		ActiveConflicts:     conflicts,
 		RetrievalWarnings:   retrievalWarnings,
@@ -78,18 +83,6 @@ func verifyPacket(summaries []store.MemorySummaryResult, facts []store.ClaimResu
 		MemoryHealthStatus:  strings.TrimSpace(health.Status),
 		MemoryHealthSignals: append([]store.MemoryHealthSignal(nil), health.Signals...),
 	}
-	sourceSet := map[string]struct{}{}
-	for _, item := range evidence {
-		if strings.TrimSpace(item.SourceURL) != "" {
-			sourceSet[item.SourceURL] = struct{}{}
-		}
-	}
-	for _, doc := range docs {
-		if strings.TrimSpace(doc.Source) != "" {
-			sourceSet[doc.Source] = struct{}{}
-		}
-	}
-	report.EvidenceSources = len(sourceSet)
 
 	sourced := 0
 	for _, fact := range facts {
@@ -134,6 +127,7 @@ func verifyPacket(summaries []store.MemorySummaryResult, facts []store.ClaimResu
 	report.Checks = append(report.Checks, retrievalCompletenessCheck(len(report.RetrievalWarnings)))
 	report.Checks = append(report.Checks, graphConsistencyCheck(len(report.GraphWarnings)))
 	report.Checks = append(report.Checks, unsafeSignalCheck("missing_evidence", len(report.MissingEvidenceClaims), "claims without source URLs are present"))
+	report.Checks = append(report.Checks, unsafeSignalCheck("unsourced_retrieval_results", report.RetrievalQuality.UnsourcedResults, "retrieval results without source URLs are present"))
 
 	score := 0.0
 	for _, check := range report.Checks {
@@ -143,7 +137,7 @@ func verifyPacket(summaries []store.MemorySummaryResult, facts []store.ClaimResu
 		score = score / float64(len(report.Checks))
 	}
 	report.Score = round2(score)
-	report.ActionRequired = len(report.ActiveConflicts) > 0 || len(report.ChallengedClaims) > 0 || len(report.StaleClaims) > 0 || len(report.RetrievalWarnings) > 0 || len(report.GraphWarnings) > 0 || len(report.MissingEvidenceClaims) > 0 || report.RetrievalQuality.LowConfidence || report.RetrievalQuality.LowSourceDiversity || !report.RetrievalCoverage.Complete || memoryHealthActionRequired(report.MemoryHealthStatus)
+	report.ActionRequired = len(report.ActiveConflicts) > 0 || len(report.ChallengedClaims) > 0 || len(report.StaleClaims) > 0 || len(report.RetrievalWarnings) > 0 || len(report.GraphWarnings) > 0 || len(report.MissingEvidenceClaims) > 0 || report.RetrievalQuality.UnsourcedResults > 0 || report.RetrievalQuality.LowConfidence || report.RetrievalQuality.LowSourceDiversity || !report.RetrievalCoverage.Complete || memoryHealthActionRequired(report.MemoryHealthStatus)
 	report.Verdict = verificationVerdict(report)
 	report.RequiredActions = verificationRequiredActions(report, len(facts), len(graph))
 	report.Recommendations = verificationRecommendations(report, len(facts), len(graph))
@@ -156,7 +150,7 @@ func verifyPacket(summaries []store.MemorySummaryResult, facts []store.ClaimResu
 	return report
 }
 
-func retrievalCoverage(summaries []store.MemorySummaryResult, facts []store.ClaimResult, docs []store.DocumentResult, graph []store.RelationResult, evidence []EvidenceItem, targets RetrievalCoverageTarget) RetrievalCoverage {
+func retrievalCoverage(summaries []store.MemorySummaryResult, facts []store.ClaimResult, docs []store.DocumentResult, graph []store.RelationResult, evidenceSources int, targets RetrievalCoverageTarget) RetrievalCoverage {
 	coverage := RetrievalCoverage{
 		Targets: targets,
 		Actual: RetrievalCoverageTarget{
@@ -164,7 +158,7 @@ func retrievalCoverage(summaries []store.MemorySummaryResult, facts []store.Clai
 			Facts:               len(facts),
 			SupportingDocuments: len(docs),
 			GraphRelations:      len(graph),
-			EvidenceSources:     len(evidence),
+			EvidenceSources:     evidenceSources,
 		},
 		Complete: true,
 	}
@@ -182,6 +176,21 @@ func retrievalCoverage(summaries []store.MemorySummaryResult, facts []store.Clai
 	check("evidence_sources", coverage.Actual.EvidenceSources, targets.EvidenceSources)
 	sort.Strings(coverage.Missing)
 	return coverage
+}
+
+func canonicalEvidenceSourceCount(docs []store.DocumentResult, evidence []EvidenceItem) int {
+	sourceSet := map[string]struct{}{}
+	for _, item := range evidence {
+		if source := canonicalSourceID(item.SourceURL); source != "" {
+			sourceSet[source] = struct{}{}
+		}
+	}
+	for _, doc := range docs {
+		if source := canonicalSourceID(doc.Source); source != "" {
+			sourceSet[source] = struct{}{}
+		}
+	}
+	return len(sourceSet)
 }
 
 func retrievalQuality(facts []store.ClaimResult, docs []store.DocumentResult) RetrievalQuality {
@@ -208,9 +217,11 @@ func retrievalQuality(facts []store.ClaimResult, docs []store.DocumentResult) Re
 		if rank <= 0 && text <= 0 && vector <= 0 {
 			quality.ZeroScoreResults++
 		}
-		source = strings.TrimSpace(source)
+		source = canonicalSourceID(source)
 		if source != "" {
 			sourceCounts[source]++
+		} else {
+			quality.UnsourcedResults++
 		}
 	}
 	for _, fact := range facts {
@@ -230,8 +241,12 @@ func retrievalQuality(facts []store.ClaimResult, docs []store.DocumentResult) Re
 		maxSourceCount = maxInt(maxSourceCount, count)
 	}
 	quality.UniqueSources = len(sourceCounts)
-	if quality.ResultCount > 0 && maxSourceCount > 0 {
-		quality.DominantSourceShare = round2(float64(maxSourceCount) / float64(quality.ResultCount))
+	sourcedResults := quality.ResultCount - quality.UnsourcedResults
+	if sourcedResults > 0 && maxSourceCount > 0 {
+		quality.DominantSourceShare = round2(float64(maxSourceCount) / float64(sourcedResults))
+	}
+	if quality.ResultCount > 0 && quality.UnsourcedResults > 0 {
+		quality.UnsourcedResultShare = round2(float64(quality.UnsourcedResults) / float64(quality.ResultCount))
 	}
 	quality.TopRankScore = round2(quality.TopRankScore)
 	quality.TopTextScore = round2(quality.TopTextScore)
@@ -241,8 +256,38 @@ func retrievalQuality(facts []store.ClaimResult, docs []store.DocumentResult) Re
 	weakRankSignal := quality.TopRankScore < 0.35
 	boostedWithoutRawSignal := quality.TopTextScore == 0 && quality.TopVectorScore == 0 && quality.TopRankScore >= 1
 	quality.LowConfidence = quality.ResultCount > 0 && noLexicalSemanticSignal && (weakRankSignal || boostedWithoutRawSignal)
-	quality.LowSourceDiversity = quality.ResultCount >= 4 && quality.UniqueSources <= 1
+	quality.LowSourceDiversity = quality.ResultCount >= 4 && (quality.UniqueSources <= 1 || quality.UnsourcedResultShare >= 0.5)
 	return quality
+}
+
+func canonicalSourceID(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme == "" {
+		return strings.TrimRight(value, "/")
+	}
+	parsed.Fragment = ""
+	parsed.RawQuery = ""
+	parsed.Scheme = strings.ToLower(parsed.Scheme)
+	parsed.Host = strings.ToLower(parsed.Host)
+	if parsed.Path != "" {
+		cleanPath := path.Clean(parsed.Path)
+		if cleanPath == "." {
+			cleanPath = ""
+		}
+		if strings.HasPrefix(parsed.Path, "/") && cleanPath != "" && !strings.HasPrefix(cleanPath, "/") {
+			cleanPath = "/" + cleanPath
+		}
+		parsed.Path = cleanPath
+	}
+	out := strings.TrimRight(parsed.String(), "/")
+	if out == "" {
+		return value
+	}
+	return out
 }
 
 func retrievalCoverageCheck(coverage RetrievalCoverage) VerificationCheck {
@@ -287,11 +332,14 @@ func retrievalSourceDiversityCheck(quality RetrievalQuality) VerificationCheck {
 	if quality.ResultCount == 0 {
 		return VerificationCheck{Name: "retrieval_source_diversity", Status: "missing", Score: 0.35, Message: "no retrieval results were available for source diversity"}
 	}
+	if quality.LowSourceDiversity {
+		if quality.UnsourcedResults > 0 {
+			return VerificationCheck{Name: "retrieval_source_diversity", Status: "review", Score: 0.45, Message: "retrieval has too many results without source URLs"}
+		}
+		return VerificationCheck{Name: "retrieval_source_diversity", Status: "review", Score: 0.45, Message: "retrieval is concentrated in one source despite several results"}
+	}
 	if quality.UniqueSources >= 2 {
 		return VerificationCheck{Name: "retrieval_source_diversity", Status: "pass", Score: 1, Message: "retrieval includes corroborating source diversity"}
-	}
-	if quality.LowSourceDiversity {
-		return VerificationCheck{Name: "retrieval_source_diversity", Status: "review", Score: 0.45, Message: "retrieval is concentrated in one source despite several results"}
 	}
 	return VerificationCheck{Name: "retrieval_source_diversity", Status: "partial", Score: 0.75, Message: "retrieval has one source; acceptable for narrow packets but not corroborated"}
 }
@@ -419,6 +467,8 @@ func verificationVerdict(report VerificationReport) string {
 		return "partial"
 	case len(report.GraphWarnings) > 0:
 		return "partial"
+	case report.RetrievalQuality.UnsourcedResults > 0:
+		return "partial"
 	case !report.RetrievalCoverage.Complete:
 		return "weak"
 	case report.RetrievalQuality.LowConfidence:
@@ -453,6 +503,9 @@ func verificationRequiredActions(report VerificationReport, facts, graph int) []
 	}
 	if len(report.MissingEvidenceClaims) > 0 {
 		actions = appendUnique(actions, "attach_missing_evidence")
+	}
+	if report.RetrievalQuality.UnsourcedResults > 0 {
+		actions = appendUnique(actions, "attach_missing_source_urls", "discard_unsourced_retrieval_results")
 	}
 	if len(report.ChallengedClaims) > 0 {
 		actions = appendUnique(actions, "resolve_challenged_claims")
@@ -525,6 +578,9 @@ func verificationRecommendations(report VerificationReport, facts, graph int) []
 	}
 	if len(report.MissingEvidenceClaims) > 0 {
 		out = append(out, "Resolve claims without source URLs before treating them as trusted memory.")
+	}
+	if report.RetrievalQuality.UnsourcedResults > 0 {
+		out = append(out, "Attach source URLs to unsourced retrieval results or discard them before using the packet autonomously.")
 	}
 	if len(report.ChallengedClaims) > 0 {
 		out = append(out, "Review challenged claims and their source evidence before acting.")

@@ -422,6 +422,144 @@ func TestVerifyPacketPartialWhenManyResultsComeFromOneSource(t *testing.T) {
 	}
 }
 
+func TestVerifyPacketCanonicalizesSourceURLsForDiversity(t *testing.T) {
+	claimSourceA := "https://Example.test/docs/runbook.md?utm=one#section-a"
+	claimSourceB := "https://example.test/docs/./runbook.md#section-b"
+	docSourceA := "https://example.test/docs/runbook.md?utm=two"
+	docSourceB := "https://EXAMPLE.test/docs/runbook.md/"
+	report := verifyPacket(
+		testSummaries(claimSourceA),
+		[]store.ClaimResult{
+			{ID: "claim-1", Claim: "First claim.", Status: "verified", Source: &claimSourceA, Rank: 1.2, TextScore: 0.3, VectorScore: 0.2, Freshness: "fresh"},
+			{ID: "claim-2", Claim: "Second claim.", Status: "verified", Source: &claimSourceB, Rank: 1.1, TextScore: 0.2, VectorScore: 0.2, Freshness: "fresh"},
+		},
+		[]store.DocumentResult{
+			{ID: "doc-1", Title: "Runbook", Source: docSourceA, Content: "First source chunk.", Rank: 1, TextScore: 0.4, VectorScore: 0.1},
+			{ID: "doc-2", Title: "Runbook", Source: docSourceB, Content: "Second source chunk.", Rank: 0.9, TextScore: 0.3, VectorScore: 0.1},
+		},
+		[]store.RelationResult{{FromEntity: "A", ToEntity: "B", Type: "supports", Confidence: 0.8, SourceURL: &claimSourceA}},
+		[]EvidenceItem{{SourceURL: claimSourceA, Count: 4}},
+		testRetrievalPlan(1),
+		nil,
+		nil,
+		nil,
+	)
+	if !report.RetrievalQuality.LowSourceDiversity || report.RetrievalQuality.UniqueSources != 1 || report.RetrievalQuality.DominantSourceShare != 1 {
+		t.Fatalf("canonical source variants should count as one dominant source: %#v", report.RetrievalQuality)
+	}
+	if report.EvidenceSources != 1 {
+		t.Fatalf("evidence source variants should canonicalize to one source, got %d", report.EvidenceSources)
+	}
+}
+
+func TestCanonicalSourceIDNormalizesEquivalentURLs(t *testing.T) {
+	left := canonicalSourceID("https://EXAMPLE.test/docs/./guide.md/?utm_source=x#L20")
+	right := canonicalSourceID("https://example.test/docs/guide.md")
+	if left != right {
+		t.Fatalf("canonical source IDs differ: %q != %q", left, right)
+	}
+}
+
+func TestCanonicalSourceIDNormalizesFileURLs(t *testing.T) {
+	got := canonicalSourceID("file:///repo//src/../src/app.tsx#L10")
+	want := "file:///repo/src/app.tsx"
+	if got != want {
+		t.Fatalf("canonical file URL = %q, want %q", got, want)
+	}
+}
+
+func TestVerifyPacketCanonicalEvidenceSourcesDriveCoverage(t *testing.T) {
+	sourceA := "https://EXAMPLE.test/docs/./guide.md/?utm_source=x#L20"
+	sourceB := "https://example.test/docs/guide.md"
+	report := verifyPacket(
+		nil,
+		nil,
+		[]store.DocumentResult{
+			{ID: "doc-1", Title: "Guide", Source: sourceA, Content: "Guide chunk.", Rank: 1, TextScore: 0.2, VectorScore: 0.1},
+			{ID: "doc-2", Title: "Guide", Source: sourceB, Content: "Guide chunk two.", Rank: 0.9, TextScore: 0.2, VectorScore: 0.1},
+		},
+		nil,
+		[]EvidenceItem{{SourceURL: sourceA, Count: 1}, {SourceURL: sourceB, Count: 1}},
+		RetrievalPlan{CoverageTargets: RetrievalCoverageTarget{SupportingDocuments: 1, EvidenceSources: 2}},
+		nil,
+		nil,
+		nil,
+	)
+	if report.EvidenceSources != 1 || report.RetrievalCoverage.Actual.EvidenceSources != report.EvidenceSources {
+		t.Fatalf("canonical source count should drive coverage: report=%d coverage=%d", report.EvidenceSources, report.RetrievalCoverage.Actual.EvidenceSources)
+	}
+	if report.RetrievalCoverage.Complete || !contains(report.RetrievalCoverage.Missing, "evidence_sources") {
+		t.Fatalf("canonical duplicate sources should miss the evidence source target: %#v", report.RetrievalCoverage)
+	}
+}
+
+func TestVerifyPacketFlagsUnsourcedResultDominance(t *testing.T) {
+	sourceA := "file://source-a.md"
+	sourceB := "file://source-b.md"
+	report := verifyPacket(
+		testSummaries(sourceA),
+		[]store.ClaimResult{
+			{ID: "claim-1", Claim: "First claim.", Status: "verified", Source: &sourceA, Rank: 1.2, TextScore: 0.3, VectorScore: 0.2, Freshness: "fresh"},
+			{ID: "claim-2", Claim: "Second claim.", Status: "verified", Source: &sourceB, Rank: 1.1, TextScore: 0.2, VectorScore: 0.2, Freshness: "fresh"},
+			{ID: "claim-3", Claim: "Unsourced claim.", Status: "verified", Rank: 1.0, TextScore: 0.2, VectorScore: 0.2, Freshness: "fresh"},
+		},
+		[]store.DocumentResult{
+			{ID: "doc-1", Title: "Unsourced", Content: "Unsourced source chunk.", Rank: 1, TextScore: 0.4, VectorScore: 0.1},
+			{ID: "doc-2", Title: "Unsourced", Content: "Another unsourced source chunk.", Rank: 0.9, TextScore: 0.3, VectorScore: 0.1},
+		},
+		[]store.RelationResult{{FromEntity: "A", ToEntity: "B", Type: "supports", Confidence: 0.8, SourceURL: &sourceA}},
+		[]EvidenceItem{{SourceURL: sourceA, Count: 1}, {SourceURL: sourceB, Count: 1}},
+		testRetrievalPlan(1),
+		nil,
+		nil,
+		nil,
+	)
+	if !report.RetrievalQuality.LowSourceDiversity || report.RetrievalQuality.UniqueSources != 2 {
+		t.Fatalf("unsourced dominance should require source diversity repair: %#v", report.RetrievalQuality)
+	}
+	if report.RetrievalQuality.UnsourcedResults != 3 || report.RetrievalQuality.UnsourcedResultShare != 0.6 {
+		t.Fatalf("unsourced metrics wrong: %#v", report.RetrievalQuality)
+	}
+	if !contains(report.RequiredActions, "corroborate_with_additional_source") {
+		t.Fatalf("unsourced dominance should require corroboration: %#v", report.RequiredActions)
+	}
+	if !contains(report.RequiredActions, "attach_missing_source_urls") || !contains(report.RequiredActions, "discard_unsourced_retrieval_results") {
+		t.Fatalf("unsourced results should require source repair or discard: %#v", report.RequiredActions)
+	}
+	if check, ok := findCheck(report.Checks, "retrieval_source_diversity"); !ok || !strings.Contains(check.Message, "without source URLs") {
+		t.Fatalf("unsourced diversity check should mention source URLs: %#v ok=%v", check, ok)
+	}
+}
+
+func TestVerifyPacketActionRequiredForUnsourcedDocuments(t *testing.T) {
+	report := verifyPacket(
+		nil,
+		nil,
+		[]store.DocumentResult{
+			{ID: "doc-1", Title: "Unsourced", Content: "Unsourced chunk.", Rank: 1, TextScore: 0.4, VectorScore: 0.1},
+			{ID: "doc-2", Title: "Unsourced", Content: "Another unsourced chunk.", Rank: 0.9, TextScore: 0.3, VectorScore: 0.1},
+		},
+		nil,
+		nil,
+		RetrievalPlan{CoverageTargets: RetrievalCoverageTarget{SupportingDocuments: 2}},
+		nil,
+		nil,
+		nil,
+	)
+	if report.Verdict != "partial" || !report.ActionRequired {
+		t.Fatalf("unsourced documents should require action but remain partial: %#v", report)
+	}
+	if report.RetrievalQuality.UnsourcedResults != 2 || report.RetrievalQuality.UnsourcedResultShare != 1 {
+		t.Fatalf("unsourced document metrics wrong: %#v", report.RetrievalQuality)
+	}
+	if !contains(report.RequiredActions, "attach_missing_source_urls") || !contains(report.RequiredActions, "discard_unsourced_retrieval_results") {
+		t.Fatalf("unsourced document actions missing: %#v", report.RequiredActions)
+	}
+	if !containsRecommendation(report.Recommendations, "Attach source URLs") {
+		t.Fatalf("unsourced document recommendation missing: %#v", report.Recommendations)
+	}
+}
+
 func testRetrievalPlan(facts int) RetrievalPlan {
 	return RetrievalPlan{
 		CoverageTargets: RetrievalCoverageTarget{

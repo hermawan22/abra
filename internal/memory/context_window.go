@@ -105,7 +105,7 @@ func contextCandidates(input ComposeInput, result ComposeResult) []contextCandid
 		Title:    "Memory Gate",
 		Priority: 1,
 		Content: fmt.Sprintf(
-			"Scope: %s\nIntent: %s\nMemory health: %s (score %d; signals: %s)\nVerification: %s (score %.2f)\nRetrieval quality: results=%d sources=%d dominant_source_share=%.2f reranked_results=%d top_rerank_score=%.2f low_confidence=%t low_source_diversity=%t\nRequired actions: %s\nAgent decision: %s; autonomous_allowed=%t",
+			"Scope: %s\nIntent: %s\nMemory health: %s (score %d; signals: %s)\nVerification: %s (score %.2f)\nRetrieval quality: results=%d sources=%d unsourced=%d dominant_source_share=%.2f unsourced_share=%.2f reranked_results=%d top_rerank_score=%.2f low_confidence=%t low_source_diversity=%t\nRequired actions: %s\nAgent decision: %s; autonomous_allowed=%t",
 			result.Scope,
 			result.Intent,
 			textOrDefault(result.MemoryHealth.Status, "unknown"),
@@ -115,7 +115,9 @@ func contextCandidates(input ComposeInput, result ComposeResult) []contextCandid
 			result.Verification.Score,
 			result.Verification.RetrievalQuality.ResultCount,
 			result.Verification.RetrievalQuality.UniqueSources,
+			result.Verification.RetrievalQuality.UnsourcedResults,
 			result.Verification.RetrievalQuality.DominantSourceShare,
+			result.Verification.RetrievalQuality.UnsourcedResultShare,
 			result.Verification.RetrievalQuality.RerankedResults,
 			result.Verification.RetrievalQuality.TopRerankScore,
 			result.Verification.RetrievalQuality.LowConfidence,
