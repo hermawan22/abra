@@ -3622,12 +3622,49 @@ func TestDefaultEnvPathUsesCheckoutOnlyForAbraSourceCheckout(t *testing.T) {
 	}
 }
 
-func TestComposeCommandArgsUsesDevOverrideWhenPresent(t *testing.T) {
+func TestDemoEnvUsesPublishedRuntimeImageOutsideCheckout(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+
+	content := demoEnv()
+	if !strings.Contains(content, "COMPOSE_FILE=docker-compose.yml\n") {
+		t.Fatalf("runtime demo env should use base compose only:\n%s", content)
+	}
+	if !strings.Contains(content, "ABRA_IMAGE=ghcr.io/hermawan22/abra:"+runtimeVersion()+"\n") {
+		t.Fatalf("runtime demo env should use published image:\n%s", content)
+	}
+	if strings.Contains(content, "ABRA_IMAGE=abra:local") {
+		t.Fatalf("runtime demo env must not use local image:\n%s", content)
+	}
+}
+
+func TestDemoEnvUsesLocalImageInsideSourceCheckout(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+	mustWrite(t, filepath.Join(root, "docker-compose.yml"), "services:\n  api:\n    build: .\n")
+	mustWrite(t, filepath.Join(root, "go.mod"), "module github.com/hermawan22/abra\n")
+	mustWrite(t, filepath.Join(root, "cmd", "abra", "main.go"), "package main\n")
+	mustWrite(t, filepath.Join(root, "migrations", "001_init.sql"), "-- init\n")
+
+	content := demoEnv()
+	if !strings.Contains(content, "COMPOSE_FILE=docker-compose.yml:docker-compose.dev.yml\n") {
+		t.Fatalf("checkout demo env should use dev override:\n%s", content)
+	}
+	if !strings.Contains(content, "ABRA_IMAGE=abra:local\n") {
+		t.Fatalf("checkout demo env should use local image:\n%s", content)
+	}
+}
+
+func TestComposeCommandArgsUsesDevOverrideWhenEnabled(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "docker-compose.yml"), "services: {}\n")
 	mustWrite(t, filepath.Join(root, "docker-compose.dev.yml"), "services: {}\n")
 
-	got := composeCommandArgs(root, "/tmp/abra.env", "up", "-d", "api")
+	got := composeCommandArgs(root, "/tmp/abra.env", true, "up", "-d", "api")
 	want := []string{
 		"compose",
 		"--project-name",
@@ -3647,14 +3684,42 @@ func TestComposeCommandArgsUsesDevOverrideWhenPresent(t *testing.T) {
 	}
 }
 
-func TestComposeCommandArgsUsesBaseComposeWhenDevOverrideMissing(t *testing.T) {
+func TestComposeCommandArgsUsesBaseComposeWhenDevOverrideDisabled(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "docker-compose.yml"), "services: {}\n")
+	mustWrite(t, filepath.Join(root, "docker-compose.dev.yml"), "services: {}\n")
 
-	got := composeCommandArgs(root, "/tmp/abra.env", "down")
+	got := composeCommandArgs(root, "/tmp/abra.env", false, "down")
 	want := []string{"compose", "--project-name", "abra", "--env-file", "/tmp/abra.env", "down"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("composeCommandArgs = %#v, want %#v", got, want)
+	}
+}
+
+func TestComposeUpStepsBuildOnlyForSourceCheckout(t *testing.T) {
+	checkout := t.TempDir()
+	mustWrite(t, filepath.Join(checkout, "docker-compose.yml"), "services: {}\n")
+	mustWrite(t, filepath.Join(checkout, "docker-compose.dev.yml"), "services: {}\n")
+	mustWrite(t, filepath.Join(checkout, "go.mod"), "module github.com/hermawan22/abra\n")
+	mustWrite(t, filepath.Join(checkout, "cmd", "abra", "main.go"), "package main\n")
+	mustWrite(t, filepath.Join(checkout, "migrations", "001_init.sql"), "-- init\n")
+
+	devSteps := composeUpSteps(checkout, "/tmp/abra.env")
+	if len(devSteps) == 0 || !containsString(devSteps[0], "build") || !containsString(devSteps[0], "docker-compose.dev.yml") {
+		t.Fatalf("dev compose steps should build with dev override: %#v", devSteps)
+	}
+
+	runtimeDir := t.TempDir()
+	mustWrite(t, filepath.Join(runtimeDir, "docker-compose.yml"), "services: {}\n")
+	mustWrite(t, filepath.Join(runtimeDir, "docker-compose.dev.yml"), "services: {}\n")
+	runtimeSteps := composeUpSteps(runtimeDir, "/tmp/abra.env")
+	if len(runtimeSteps) == 0 || !containsString(runtimeSteps[0], "pull") || containsString(runtimeSteps[0], "build") {
+		t.Fatalf("runtime compose steps should pull, not build: %#v", runtimeSteps)
+	}
+	for _, step := range runtimeSteps {
+		if containsString(step, "docker-compose.dev.yml") {
+			t.Fatalf("runtime compose step used dev override: %#v", runtimeSteps)
+		}
 	}
 }
 
@@ -3678,6 +3743,21 @@ func TestEnsureProjectDirDownloadsRuntimeOutsideCheckout(t *testing.T) {
 	if !fileExists(filepath.Join(dir, "docker-compose.yml")) {
 		t.Fatalf("runtime docker-compose.yml was not extracted into %s", dir)
 	}
+	if fileExists(filepath.Join(dir, "docker-compose.dev.yml")) {
+		t.Fatalf("runtime docker-compose.dev.yml should be pruned from managed runtime %s", dir)
+	}
+	for _, path := range []string{"go.mod", filepath.Join("cmd", "abra", "main.go"), filepath.Join("migrations", "001_init.sql")} {
+		if !fileExists(filepath.Join(dir, path)) {
+			t.Fatalf("runtime fixture source fingerprint file %s was not extracted into %s", path, dir)
+		}
+	}
+	if composeUsesDevOverride(dir) {
+		t.Fatalf("downloaded runtime archive must not use dev override")
+	}
+	steps := composeUpSteps(dir, filepath.Join(home, "quickstart.env"))
+	if len(steps) == 0 || !containsString(steps[0], "pull") || containsString(steps[0], "build") {
+		t.Fatalf("runtime up steps should pull published images, got %#v", steps)
+	}
 }
 
 func runtimeArchive(t *testing.T) []byte {
@@ -3685,16 +3765,25 @@ func runtimeArchive(t *testing.T) []byte {
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
-	content := []byte("services: {}\n")
-	if err := tw.WriteHeader(&tar.Header{
-		Name: "abra-test/docker-compose.yml",
-		Mode: 0o644,
-		Size: int64(len(content)),
-	}); err != nil {
-		t.Fatal(err)
+	files := map[string]string{
+		"docker-compose.yml":      "services: {}\n",
+		"docker-compose.dev.yml":  "services:\n  api:\n    build: .\n",
+		"go.mod":                  "module github.com/hermawan22/abra\n",
+		"cmd/abra/main.go":        "package main\n",
+		"migrations/001_init.sql": "-- init\n",
 	}
-	if _, err := tw.Write(content); err != nil {
-		t.Fatal(err)
+	for name, body := range files {
+		content := []byte(body)
+		if err := tw.WriteHeader(&tar.Header{
+			Name: "abra-test/" + name,
+			Mode: 0o644,
+			Size: int64(len(content)),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(content); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := tw.Close(); err != nil {
 		t.Fatal(err)
@@ -3703,6 +3792,15 @@ func runtimeArchive(t *testing.T) []byte {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func mustWrite(t *testing.T, path, content string) {

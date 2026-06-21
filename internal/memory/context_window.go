@@ -72,8 +72,11 @@ func buildContextWindow(input ComposeInput, result ComposeResult) ContextWindow 
 		}
 		if block.Tokens > remaining {
 			if isCriticalContextBlock(block) && remaining >= 40 {
-				block.Content = truncateForTokens(block.Content, remaining)
-				block.Tokens = estimateTokens(block.Content)
+				block = truncateContextBlock(block, remaining)
+				if block.Tokens > remaining {
+					window.DroppedBlocks = append(window.DroppedBlocks, droppedContextBlock(block, "does not fit remaining token budget"))
+					continue
+				}
 			} else {
 				window.DroppedBlocks = append(window.DroppedBlocks, droppedContextBlock(block, "does not fit remaining token budget"))
 				continue
@@ -98,12 +101,11 @@ func contextCandidates(input ComposeInput, result ComposeResult) []contextCandid
 	}
 
 	add(ContextBlock{
-		Type:     "task",
-		Title:    "Task and Memory Gate",
+		Type:     "gate",
+		Title:    "Memory Gate",
 		Priority: 1,
 		Content: fmt.Sprintf(
-			"Task: %s\nScope: %s\nIntent: %s\nMemory health: %s (score %d; signals: %s)\nVerification: %s (score %.2f)\nRetrieval quality: results=%d sources=%d dominant_source_share=%.2f reranked_results=%d top_rerank_score=%.2f low_confidence=%t low_source_diversity=%t\nRequired actions: %s\nAgent decision: %s; autonomous_allowed=%t",
-			result.Task,
+			"Scope: %s\nIntent: %s\nMemory health: %s (score %d; signals: %s)\nVerification: %s (score %.2f)\nRetrieval quality: results=%d sources=%d dominant_source_share=%.2f reranked_results=%d top_rerank_score=%.2f low_confidence=%t low_source_diversity=%t\nRequired actions: %s\nAgent decision: %s; autonomous_allowed=%t",
 			result.Scope,
 			result.Intent,
 			textOrDefault(result.MemoryHealth.Status, "unknown"),
@@ -122,6 +124,12 @@ func contextCandidates(input ComposeInput, result ComposeResult) []contextCandid
 			result.AgentDecision.Decision,
 			result.AgentDecision.AutonomousAllowed,
 		),
+	})
+	add(ContextBlock{
+		Type:     "task",
+		Title:    "Task",
+		Priority: 0.995,
+		Content:  "Task: " + result.Task,
 	})
 	if len(result.Risks) > 0 {
 		add(ContextBlock{
@@ -266,6 +274,25 @@ func normalizeContextBlock(block ContextBlock) ContextBlock {
 	return block
 }
 
+func truncateContextBlock(block ContextBlock, maxTokens int) ContextBlock {
+	titleTokens := estimateTokens(block.Title + "\n")
+	contentTokens := maxTokens - titleTokens
+	if contentTokens < 1 {
+		contentTokens = 1
+	}
+	for contentTokens > 0 {
+		block.Content = truncateForTokens(block.Content, contentTokens)
+		block.Tokens = estimateTokens(block.Title + "\n" + block.Content)
+		if block.Tokens <= maxTokens {
+			return block
+		}
+		contentTokens--
+	}
+	block.Content = ""
+	block.Tokens = estimateTokens(block.Title)
+	return block
+}
+
 func citationRefMap(citations []Citation) map[string]string {
 	out := map[string]string{}
 	for _, citation := range citations {
@@ -290,7 +317,7 @@ func contextCitationRefs(sourceURLs []string, citationRefs map[string]string) []
 
 func isCriticalContextBlock(block ContextBlock) bool {
 	switch block.Type {
-	case "task", "risk", "validation":
+	case "gate", "task", "risk", "validation":
 		return true
 	default:
 		return false

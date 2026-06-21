@@ -21,6 +21,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Add source freshness health signals (`source_refresh_due`, `source_refresh_overdue`) so agents can distinguish stale memory from missing context.
 - Add richer `abra compose` human output and `--prompt` so CLI-only users can hand prompt-ready working memory to any AI client.
 - Add explicit `persist_learning` / `--persist-learning` opt-in for working-memory learning proposal writes so compose is read-only by default.
+- Preserve the working-memory safety gate in prompt-ready context windows even when tasks are long and token budgets are tight.
 
 ### Changed
 
@@ -40,6 +41,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Make `abra agents bootstrap` install Codex MCP before the final readiness check, make restart requirements explicit, and require explicit Compose database credentials through env files instead of a fixed production-looking password.
 - Add `abra sources sync` for refreshing existing source configs from the CLI, including job-specific wait behavior and clean JSON output for automation.
 - Gate scheduled worker refreshes on source freshness and schedule due checks while keeping manual sync available for forced operator refreshes.
+- Make release-installed `abra up` pull published runtime images instead of building `abra:local`; source checkouts still use the dev Compose override and local build path.
 - Bound reranker rank boosts instead of adding raw provider scores directly to recall ranking.
 - Omit raw rerank query text from retrieval warnings, keep rerank metadata JSON stable, and only mark recall as reranked when a returned candidate index was actually applied.
 - Default `base_rank_score` to `rank_score` for non-reranked recall results so public ranking metadata remains internally consistent.

@@ -765,6 +765,44 @@ func TestComposeBuildsBudgetedContextWindow(t *testing.T) {
 	}
 }
 
+func TestComposeContextWindowPreservesSafetyGateForLongTaskAtMinimumBudget(t *testing.T) {
+	db := &fakeStore{
+		health: store.MemoryHealthResult{
+			Scope:  "repo:test/app",
+			Status: "critical",
+			Score:  35,
+			Signals: []store.MemoryHealthSignal{
+				{Code: "source_refresh_overdue", Category: "sources", Severity: "critical", Count: 1, Action: "refresh_stale_sources"},
+			},
+		},
+	}
+	longTask := strings.Repeat("upgrade the architecture without losing safety gates ", 80)
+	result, err := NewComposer(db).Compose(context.Background(), ComposeInput{
+		Task:        longTask,
+		Scope:       "repo:test/app",
+		Agent:       "frontend-agent",
+		TokenBudget: 300,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ContextWindow.EstimatedTokens <= 0 || result.ContextWindow.EstimatedTokens > result.ContextWindow.MaxTokens {
+		t.Fatalf("context token estimate not bounded: %#v", result.ContextWindow)
+	}
+	prompt := result.ContextWindow.Prompt
+	for _, want := range []string{
+		"[GATE] Memory Gate",
+		"Memory health: critical",
+		"Verification: unsafe",
+		"Required actions:",
+		"Agent decision: blocked; autonomous_allowed=false",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("context prompt lost safety gate field %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestComposeSuggestsLearningForLowConfidenceRetrieval(t *testing.T) {
 	db := &fakeStore{lowSignalRecall: true}
 	result, err := NewComposer(db).Compose(context.Background(), ComposeInput{

@@ -473,9 +473,11 @@ docker compose --env-file .env.production run --rm migrate
 docker compose --env-file .env.production up -d api worker
 ```
 
-For local source-checkout development, prefer `abra up`; it applies
-`docker-compose.dev.yml` and builds `abra:local` without making production
-Compose depend on a local checkout.
+For curl-installed CLI users, `abra up` uses the downloaded runtime Compose file
+and pulls the published `ghcr.io/hermawan22/abra:<version>` image instead of
+building locally. For local source-checkout development, prefer `abra up`; it
+applies `docker-compose.dev.yml` and builds `abra:local` without making
+production Compose depend on a local checkout.
 
 Check readiness:
 

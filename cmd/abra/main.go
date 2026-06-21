@@ -325,7 +325,7 @@ func initEnv(args cliArgs) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	content := demoEnv
+	content := demoEnv()
 	if boolFlag(args, "production") {
 		content = productionEnvExample
 	}
@@ -671,13 +671,7 @@ func up(ctx context.Context, args cliArgs) error {
 			return err
 		}
 	}
-	steps := [][]string{
-		composeCommandArgs(projectDir, env, "build", "api", "worker", "migrate"),
-		composeCommandArgs(projectDir, env, "up", "-d", "postgres"),
-		composeCommandArgs(projectDir, env, "run", "--rm", "migrate"),
-		composeCommandArgs(projectDir, env, "up", "-d", "api", "worker"),
-	}
-	for _, step := range steps {
+	for _, step := range composeUpSteps(projectDir, env) {
 		if err := runCommandIn(projectDir, "docker", step...); err != nil {
 			return err
 		}
@@ -720,7 +714,7 @@ func down(args cliArgs) error {
 	if err != nil {
 		return err
 	}
-	step := composeCommandArgs(projectDir, env, "down")
+	step := composeCommandArgs(projectDir, env, composeUsesDevOverride(projectDir), "down")
 	if boolFlag(args, "reset") {
 		step = append(step, "--volumes")
 	}
@@ -737,9 +731,31 @@ func down(args cliArgs) error {
 	return nil
 }
 
-func composeCommandArgs(projectDir, env string, command ...string) []string {
+func composeUpSteps(projectDir, env string) [][]string {
+	useDevOverride := composeUsesDevOverride(projectDir)
+	steps := [][]string{}
+	if useDevOverride {
+		steps = append(steps, composeCommandArgs(projectDir, env, useDevOverride, "build", "api", "worker", "migrate"))
+	} else {
+		steps = append(steps, composeCommandArgs(projectDir, env, useDevOverride, "pull", "postgres", "api", "worker", "migrate"))
+	}
+	steps = append(steps,
+		composeCommandArgs(projectDir, env, useDevOverride, "up", "-d", "postgres"),
+		composeCommandArgs(projectDir, env, useDevOverride, "run", "--rm", "migrate"),
+		composeCommandArgs(projectDir, env, useDevOverride, "up", "-d", "api", "worker"),
+	)
+	return steps
+}
+
+func composeUsesDevOverride(projectDir string) bool {
+	return !isManagedRuntimeDir(projectDir) &&
+		isAbraSourceCheckout(projectDir) &&
+		fileExists(filepath.Join(projectDir, "docker-compose.dev.yml"))
+}
+
+func composeCommandArgs(projectDir, env string, useDevOverride bool, command ...string) []string {
 	args := []string{"compose", "--project-name", "abra", "--env-file", env}
-	if fileExists(filepath.Join(projectDir, "docker-compose.dev.yml")) {
+	if useDevOverride {
 		args = append(args, "-f", "docker-compose.yml", "-f", "docker-compose.dev.yml")
 	}
 	return append(args, command...)
@@ -3258,7 +3274,7 @@ func projectDir(args cliArgs) (string, error) {
 	if isAbraSourceCheckout(".") {
 		return filepath.Abs(".")
 	}
-	return filepath.Join(userConfigDir(), "runtime", runtimeVersion(), "source"), nil
+	return managedRuntimeDir(), nil
 }
 
 func ensureProjectDir(ctx context.Context, args cliArgs) (string, error) {
@@ -3267,6 +3283,9 @@ func ensureProjectDir(ctx context.Context, args cliArgs) (string, error) {
 		return "", err
 	}
 	if hasLocalCompose(dir) {
+		if err := prepareRuntimeProjectDir(dir); err != nil {
+			return "", err
+		}
 		return dir, nil
 	}
 	if err := downloadRuntimeSource(ctx, dir); err != nil {
@@ -3275,7 +3294,37 @@ func ensureProjectDir(ctx context.Context, args cliArgs) (string, error) {
 	if !hasLocalCompose(dir) {
 		return "", fmt.Errorf("runtime bundle did not include docker-compose.yml: %s", dir)
 	}
+	if err := prepareRuntimeProjectDir(dir); err != nil {
+		return "", err
+	}
 	return dir, nil
+}
+
+func managedRuntimeDir() string {
+	return filepath.Join(userConfigDir(), "runtime", runtimeVersion(), "source")
+}
+
+func isManagedRuntimeDir(dir string) bool {
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return false
+	}
+	absRuntime, err := filepath.Abs(managedRuntimeDir())
+	if err != nil {
+		return false
+	}
+	return filepath.Clean(absDir) == filepath.Clean(absRuntime)
+}
+
+func prepareRuntimeProjectDir(dir string) error {
+	if !isManagedRuntimeDir(dir) {
+		return nil
+	}
+	err := os.Remove(filepath.Join(dir, "docker-compose.dev.yml"))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 func runtimeVersion() string {
@@ -4135,13 +4184,34 @@ volumes, env files, runtime bundles, or memory data.
 	}
 }
 
-const demoEnv = `COMPOSE_FILE=docker-compose.yml:docker-compose.dev.yml
+func demoEnv() string {
+	composeFile := "docker-compose.yml"
+	abraImage := defaultRuntimeImageRef()
+	if isAbraSourceCheckout(".") {
+		composeFile = "docker-compose.yml:docker-compose.dev.yml"
+		abraImage = "abra:local"
+	}
+	return strings.NewReplacer(
+		"{{COMPOSE_FILE}}", composeFile,
+		"{{ABRA_IMAGE}}", abraImage,
+	).Replace(demoEnvTemplate)
+}
+
+func defaultRuntimeImageRef() string {
+	version := runtimeVersion()
+	if version == "main" {
+		return "ghcr.io/hermawan22/abra:main"
+	}
+	return "ghcr.io/hermawan22/abra:" + version
+}
+
+const demoEnvTemplate = `COMPOSE_FILE={{COMPOSE_FILE}}
 ABRA_API_KEYS=demo-only-dev-token
 ABRA_API_TOKEN=demo-only-dev-token
 NODE_ENV=development
 ABRA_APPROVAL_MODE=advisory
 ABRA_PORT=18080
-ABRA_IMAGE=abra:local
+ABRA_IMAGE={{ABRA_IMAGE}}
 POSTGRES_IMAGE=pgvector/pgvector:pg16
 POSTGRES_USER=abra
 POSTGRES_PASSWORD=dev-only-postgres-password
