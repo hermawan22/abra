@@ -240,6 +240,7 @@ main() {
   resolved_abra="$(command -v abra 2>/dev/null || true)"
   next_command="abra setup"
   if [ -z "$resolved_abra" ]; then
+    next_command="$dst_dir/abra setup"
     log "Add this to PATH if needed: export PATH=\"$dst_dir:\$PATH\""
   elif [ "$resolved_abra" != "$dst_dir/abra" ]; then
     next_command="$dst_dir/abra setup"

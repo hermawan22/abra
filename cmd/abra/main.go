@@ -672,10 +672,10 @@ func up(ctx context.Context, args cliArgs) error {
 		}
 	}
 	steps := [][]string{
-		{"compose", "--project-name", "abra", "--env-file", env, "build", "api", "worker", "migrate"},
-		{"compose", "--project-name", "abra", "--env-file", env, "up", "-d", "postgres"},
-		{"compose", "--project-name", "abra", "--env-file", env, "run", "--rm", "migrate"},
-		{"compose", "--project-name", "abra", "--env-file", env, "up", "-d", "api", "worker"},
+		composeCommandArgs(projectDir, env, "build", "api", "worker", "migrate"),
+		composeCommandArgs(projectDir, env, "up", "-d", "postgres"),
+		composeCommandArgs(projectDir, env, "run", "--rm", "migrate"),
+		composeCommandArgs(projectDir, env, "up", "-d", "api", "worker"),
 	}
 	for _, step := range steps {
 		if err := runCommandIn(projectDir, "docker", step...); err != nil {
@@ -720,7 +720,7 @@ func down(args cliArgs) error {
 	if err != nil {
 		return err
 	}
-	step := []string{"compose", "--project-name", "abra", "--env-file", env, "down"}
+	step := composeCommandArgs(projectDir, env, "down")
 	if boolFlag(args, "reset") {
 		step = append(step, "--volumes")
 	}
@@ -735,6 +735,14 @@ func down(args cliArgs) error {
 		return modelsDown(modelArgs)
 	}
 	return nil
+}
+
+func composeCommandArgs(projectDir, env string, command ...string) []string {
+	args := []string{"compose", "--project-name", "abra", "--env-file", env}
+	if fileExists(filepath.Join(projectDir, "docker-compose.dev.yml")) {
+		args = append(args, "-f", "docker-compose.yml", "-f", "docker-compose.dev.yml")
+	}
+	return append(args, command...)
 }
 
 func shouldStopLocalModelsForDown(args cliArgs) bool {
@@ -3710,6 +3718,7 @@ Usage:
   abra ingest --git https://github.com/owner/repo.git [--ref main] [--scope repo:demo]
   abra watch local --scope repo:demo --path . [--wait] [--wait-timeout 10m]
   abra watch git --scope repo:demo --git https://github.com/owner/repo.git [--wait] [--wait-timeout 10m]
+  abra source mcp --scope team:platform --mcp-url https://mcp.example/mcp --tool export_documents [--wait]
   abra sources [--scope repo:demo]
   abra jobs [--scope repo:demo]
   abra observe "Agents should rerun release checks before tagging" [--scope repo:demo] [--propose]
@@ -4016,11 +4025,14 @@ volumes, env files, runtime bundles, or memory data.
 	}
 }
 
-const demoEnv = `ABRA_API_KEYS=demo-only-dev-token
+const demoEnv = `COMPOSE_FILE=docker-compose.yml:docker-compose.dev.yml
+ABRA_API_KEYS=demo-only-dev-token
 ABRA_API_TOKEN=demo-only-dev-token
 NODE_ENV=development
 ABRA_APPROVAL_MODE=advisory
 ABRA_PORT=18080
+ABRA_IMAGE=abra:local
+POSTGRES_IMAGE=pgvector/pgvector:pg16
 POSTGRES_USER=abra
 POSTGRES_PASSWORD=dev-only-postgres-password
 POSTGRES_DB=abra
@@ -4054,6 +4066,9 @@ const productionEnvExample = `NODE_ENV=production
 ABRA_API_KEYS=replace-with-generated-token
 ABRA_WEBHOOK_SECRETS=replace-with-webhook-signing-secret
 ABRA_APPROVAL_MODE=enforce
+# Replace these placeholder digests with the release image digest and an operator-verified pgvector digest.
+ABRA_IMAGE=ghcr.io/hermawan22/abra@sha256:0000000000000000000000000000000000000000000000000000000000000000
+POSTGRES_IMAGE=pgvector/pgvector@sha256:0000000000000000000000000000000000000000000000000000000000000000
 POSTGRES_USER=abra
 POSTGRES_PASSWORD=replace-with-generated-database-password
 POSTGRES_DB=abra

@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -3529,6 +3530,42 @@ func TestDefaultEnvPathUsesCheckoutOnlyForAbraSourceCheckout(t *testing.T) {
 	absRoot, _ := filepath.Abs(root)
 	if dir != absRoot {
 		t.Fatalf("projectDir = %q, want checkout dir %q", dir, absRoot)
+	}
+}
+
+func TestComposeCommandArgsUsesDevOverrideWhenPresent(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "docker-compose.yml"), "services: {}\n")
+	mustWrite(t, filepath.Join(root, "docker-compose.dev.yml"), "services: {}\n")
+
+	got := composeCommandArgs(root, "/tmp/abra.env", "up", "-d", "api")
+	want := []string{
+		"compose",
+		"--project-name",
+		"abra",
+		"--env-file",
+		"/tmp/abra.env",
+		"-f",
+		"docker-compose.yml",
+		"-f",
+		"docker-compose.dev.yml",
+		"up",
+		"-d",
+		"api",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("composeCommandArgs = %#v, want %#v", got, want)
+	}
+}
+
+func TestComposeCommandArgsUsesBaseComposeWhenDevOverrideMissing(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "docker-compose.yml"), "services: {}\n")
+
+	got := composeCommandArgs(root, "/tmp/abra.env", "down")
+	want := []string{"compose", "--project-name", "abra", "--env-file", "/tmp/abra.env", "down"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("composeCommandArgs = %#v, want %#v", got, want)
 	}
 }
 

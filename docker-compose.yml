@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: pgvector/pgvector:pg16
+    image: ${POSTGRES_IMAGE:?set POSTGRES_IMAGE to a digest-pinned pgvector image or use docker-compose.dev.yml for local builds}
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-abra}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
@@ -16,8 +16,7 @@ services:
       retries: 20
 
   migrate:
-    build: .
-    image: ${ABRA_IMAGE:-abra:local}
+    image: ${ABRA_IMAGE:?set ABRA_IMAGE to a digest-pinned Abra image or use docker-compose.dev.yml for local builds}
     command: ["/app/abra-migrate"]
     environment:
       DATABASE_URL: ${ABRA_DATABASE_URL:?set ABRA_DATABASE_URL}
@@ -45,8 +44,7 @@ services:
       - setup
 
   api:
-    build: .
-    image: ${ABRA_IMAGE:-abra:local}
+    image: ${ABRA_IMAGE:?set ABRA_IMAGE to a digest-pinned Abra image or use docker-compose.dev.yml for local builds}
     command: ["/app/abra-api"]
     environment:
       DATABASE_URL: ${ABRA_DATABASE_URL:?set ABRA_DATABASE_URL}
@@ -93,8 +91,7 @@ services:
     restart: unless-stopped
 
   worker:
-    build: .
-    image: ${ABRA_IMAGE:-abra:local}
+    image: ${ABRA_IMAGE:?set ABRA_IMAGE to a digest-pinned Abra image or use docker-compose.dev.yml for local builds}
     command: ["/app/abra-worker"]
     environment:
       DATABASE_URL: ${ABRA_DATABASE_URL:?set ABRA_DATABASE_URL}

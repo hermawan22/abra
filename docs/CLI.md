@@ -202,10 +202,12 @@ abra agents verify . --scope <scope-from-abra-scope>
 Then tell the agent: `Use Abra MCP first. Exact scope: repo:<project>. Call
 discover_scopes with expected_scope="repo:<project>", then call
 working_memory_compose with task=<current task>, scope="repo:<project>", and
-agent="codex" before answering or changing code. If discover_scopes does not
-show repo:<project> or working_memory_compose returns no source-backed context,
-run abra scope, ingest the project with that exact scope, rerun abra agents
-verify, then retry with this exact scope.`
+agent="codex" before answering or changing code. If Abra MCP tools are
+unavailable, run abra doctor, fix the MCP/token warning, fully restart the AI
+client, and retry before re-ingesting. If discover_scopes does not show
+repo:<project> or working_memory_compose returns no source-backed context, run
+abra scope, ingest the project with that exact scope, rerun abra agents verify .
+--scope repo:<project> --agent codex, then retry with this exact scope.`
 
 `abra scope` also prints the exact `abra agents bootstrap`, `abra agents init`,
 `abra ingest`, and `abra agents verify` commands for the current project. Use
@@ -448,13 +450,22 @@ cp examples/env/production.env.example .env.production
 $EDITOR .env.production
 ```
 
-Start Postgres, run migrations, then start API and worker:
+Set `ABRA_IMAGE` and `POSTGRES_IMAGE` in `.env.production` to digest-pinned
+release/operator-approved images. The example file contains valid placeholder
+digests for config validation; replace them before boot.
+
+Pull images, start Postgres, run migrations, then start API and worker:
 
 ```sh
+docker compose --env-file .env.production pull
 docker compose --env-file .env.production up -d postgres
 docker compose --env-file .env.production run --rm migrate
 docker compose --env-file .env.production up -d api worker
 ```
+
+For local source-checkout development, prefer `abra up`; it applies
+`docker-compose.dev.yml` and builds `abra:local` without making production
+Compose depend on a local checkout.
 
 Check readiness:
 

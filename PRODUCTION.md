@@ -54,9 +54,15 @@ boot. To point Compose at managed Postgres with `pgvector`, set:
 ABRA_DATABASE_URL=postgres://user:password@postgres.example.invalid:5432/abra
 ```
 
+Production Compose intentionally has no local source-build fallback. Set
+`ABRA_IMAGE` and `POSTGRES_IMAGE` to digest-pinned references in
+`.env.production`; the example file uses all-zero digest placeholders only so
+configuration validation can run before operators replace them.
+
 Install:
 
 ```sh
+docker compose --env-file .env.production pull
 docker compose --env-file .env.production up -d postgres
 docker compose --env-file .env.production run --rm migrate
 docker compose --env-file .env.production up -d api worker
@@ -67,20 +73,14 @@ Always pass `--env-file .env.production`; the development `.env` uses host-orien
 Upgrade:
 
 ```sh
-docker compose --env-file .env.production build api worker migrate
+docker compose --env-file .env.production pull
 docker compose --env-file .env.production run --rm migrate
 docker compose --env-file .env.production up -d api worker
 ```
 
-If `ABRA_IMAGE` points at a pushed registry image, use a digest-pinned
-first-party GHCR reference and pull instead of building locally:
-
-```sh
-ABRA_IMAGE=ghcr.io/hermawan22/abra@sha256:... \
-  docker compose --env-file .env.production pull
-docker compose --env-file .env.production run --rm migrate
-docker compose --env-file .env.production up -d api worker
-```
+Use `docker-compose.dev.yml` only for local source-checkout development or
+release-gate stack builds. Do not deploy production with `build: .` or
+`ABRA_IMAGE=abra:local`.
 
 Back up the `abra-postgres` volume or, for serious production use, point `ABRA_DATABASE_URL` at managed Postgres with `pgvector` and an existing backup policy. The bundled backup, restore-drill, and reindex scripts are in `scripts/`.
 

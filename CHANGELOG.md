@@ -24,6 +24,8 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Make batched embedding ingestion preserve batch range and token estimates on provider failures for easier local model and custom provider troubleshooting.
 - Keep `ingest_documents(continue_on_error=true)` on per-document ingestion so partial connector overlays still receive stable success/error entries while the default fail-fast path gets cross-document embedding efficiency.
 - Keep Codex MCP installation automatic only for Codex while guiding other agents to the generic MCP config.
+- Require production Compose image refs through digest-pinned `ABRA_IMAGE` and `POSTGRES_IMAGE`, moving local source builds into the dev override used by `abra up` and release-gate stack builds.
+- Extend OSS hygiene checks to fail production-facing Compose files that use local build contexts, local image fallbacks, or mutable image tags.
 - Treat a working directory as an Abra source checkout only when it matches the Abra repo fingerprint, so user projects with their own Compose files still use the global CLI runtime and env paths.
 - Make agent ready prompts distinguish unavailable MCP/token setup from missing source-backed memory, and make `abra compose` ignore generic gate blocks when deciding whether source-backed context exists.
 - Make generated `AGENTS.md` recovery guidance use the same MCP/token-before-reingest order as the ready prompt.

@@ -236,7 +236,7 @@ rerun the same verify command and retry with the printed ready prompt.
 Prompt pattern:
 
 ```text
-Use Abra MCP first. Exact scope: repo:<project>. Call discover_scopes with expected_scope="repo:<project>", then call working_memory_compose with task=<current task>, scope="repo:<project>", and agent="codex" before answering or changing code. If discover_scopes does not show repo:<project> or working_memory_compose returns no source-backed context, run abra scope, ingest the project with that exact scope, rerun abra agents verify . --scope repo:<project> --agent codex, then retry with this exact scope.
+Use Abra MCP first. Exact scope: repo:<project>. Call discover_scopes with expected_scope="repo:<project>", then call working_memory_compose with task=<current task>, scope="repo:<project>", and agent="codex" before answering or changing code. If Abra MCP tools are unavailable, run abra doctor, fix the MCP/token warning, fully restart the AI client, and retry before re-ingesting. If discover_scopes does not show repo:<project> or working_memory_compose returns no source-backed context, run abra scope, ingest the project with that exact scope, rerun abra agents verify . --scope repo:<project> --agent codex, then retry with this exact scope.
 ```
 
 Stop the stack and the default local embedding runner:
@@ -388,15 +388,23 @@ By default this uses the Compose-managed Postgres service with the
 `POSTGRES_*` and `ABRA_DATABASE_URL` values from `.env.production`. Replace the
 database password before first boot. To use an external Postgres with
 `pgvector`, set `ABRA_DATABASE_URL=postgres://...`; Compose maps that value to
-the container's `DATABASE_URL`.
+the container's `DATABASE_URL`. Production Compose requires digest-pinned
+`ABRA_IMAGE` and `POSTGRES_IMAGE` values. The example env file uses valid
+placeholder digests so `docker compose config` can validate the file, but you
+must replace them with release/operator-approved digests before booting.
 
-Start Postgres, run migrations, then start the API and worker:
+Pull the pinned images, start Postgres, run migrations, then start the API and worker:
 
 ```sh
+docker compose --env-file .env.production pull
 docker compose --env-file .env.production up -d postgres
 docker compose --env-file .env.production run --rm migrate
 docker compose --env-file .env.production up -d api worker
 ```
+
+For local source-checkout development, keep using `abra up`; it layers
+`docker-compose.dev.yml` over the production base and builds `abra:local`
+without weakening the production Compose file.
 
 Check the service:
 
@@ -790,8 +798,9 @@ Forgetting a claim marks it `deprecated`. Source re-ingestion will not reactivat
 ## Environment
 
 ```text
-DATABASE_URL=postgres://abra:dev-only-postgres-password@localhost:5433/abra
-PORT=18080
+ABRA_PORT=18080
+POSTGRES_PORT=5433
+ABRA_DATABASE_URL=postgres://abra:dev-only-postgres-password@postgres:5432/abra
 NODE_ENV=development
 ABRA_API_KEYS=replace-me
 ABRA_WEBHOOK_SECRETS=replace-webhook-secret

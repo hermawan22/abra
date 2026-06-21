@@ -208,6 +208,132 @@ function helmImageDigestFindings(files) {
   return findings;
 }
 
+function composeProductionImageFindings(files) {
+  const composeFiles = files.filter((file) => {
+    const name = file.toLowerCase();
+    if (!/(^|\/)(docker-compose|compose)[^/]*\.ya?ml$/.test(name)) {
+      return false;
+    }
+    if (/(^|[.-])(dev|demo|local|test)([.-]|$)/.test(name)) {
+      return false;
+    }
+    return /(^|\/)(docker-compose\.ya?ml|compose\.ya?ml)$/.test(name) || /(prod|production)/.test(name);
+  });
+  const findings = [];
+  for (const file of composeFiles) {
+    let content;
+    try {
+      content = readFileSync(file, "utf8");
+    } catch {
+      continue;
+    }
+    const lines = content.split(/\r?\n/);
+    let inServices = false;
+    let service = "";
+    let inBuild = false;
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index];
+      if (/^services:\s*$/.test(line)) {
+        inServices = true;
+        service = "";
+        inBuild = false;
+        continue;
+      }
+      if (!inServices) {
+        continue;
+      }
+      const serviceMatch = line.match(/^  ([A-Za-z0-9_.-]+):\s*$/);
+      if (serviceMatch) {
+        service = serviceMatch[1];
+        inBuild = false;
+        continue;
+      }
+      if (!service || /^\S/.test(line)) {
+        inServices = false;
+        service = "";
+        inBuild = false;
+        continue;
+      }
+      const buildMatch = line.match(/^    build:\s*(.*)$/);
+      if (buildMatch) {
+        inBuild = true;
+        const value = stripInlineComment(buildMatch[1]).trim();
+        if (value === "." || value === "" || value.startsWith("{")) {
+          findings.push({
+            file,
+            line: index + 1,
+            rule: "compose_production_build_context",
+            message: `production-facing Compose service ${service} must not build from the local checkout`
+          });
+        }
+        continue;
+      }
+      if (inBuild && line.match(/^      context:\s*\.\s*(?:#.*)?$/)) {
+        findings.push({
+          file,
+          line: index + 1,
+          rule: "compose_production_build_context",
+          message: `production-facing Compose service ${service} must not build from the local checkout`
+        });
+        continue;
+      }
+      if (!/^      /.test(line)) {
+        inBuild = false;
+      }
+      const imageMatch = line.match(/^    image:\s*(.+)$/);
+      if (!imageMatch) {
+        continue;
+      }
+      const ref = imageFallbackRef(imageMatch[1]);
+      if (ref == null) {
+        continue;
+      }
+      if (isLocalImageRef(ref)) {
+        findings.push({
+          file,
+          line: index + 1,
+          rule: "compose_production_local_image_fallback",
+          message: `production-facing Compose service ${service} must not default to local image ${ref}`
+        });
+        continue;
+      }
+      if (!hasSha256Digest(ref)) {
+        findings.push({
+          file,
+          line: index + 1,
+          rule: "compose_production_mutable_image",
+          message: `production-facing Compose service ${service} image ${ref} must be digest-pinned`
+        });
+      }
+    }
+  }
+  return findings;
+}
+
+function stripInlineComment(value) {
+  return String(value || "").replace(/\s+#.*$/, "");
+}
+
+function imageFallbackRef(value) {
+  const trimmed = stripInlineComment(value).trim().replace(/^['"]|['"]$/g, "");
+  const fallback = trimmed.match(/^\$\{[^}:]+(?::-|-)([^}]+)\}$/);
+  if (fallback) {
+    return fallback[1].trim();
+  }
+  if (/^\$\{[^}:]+:\?/.test(trimmed)) {
+    return null;
+  }
+  return trimmed;
+}
+
+function hasSha256Digest(ref) {
+  return /@sha256:[0-9a-f]{64}$/i.test(ref);
+}
+
+function isLocalImageRef(ref) {
+  return /(^|\/)abra:local$/.test(ref) || /:local$/.test(ref);
+}
+
 function assertSelfTest(condition, message) {
   if (!condition) {
     throw new Error(message);
@@ -263,6 +389,36 @@ function runSelfTest() {
     );
     mkdirSync("deploy/helm", { recursive: true });
     writeFileSync("deploy/helm/values.yaml", "image:\n  repository: ghcr.io/example/abra\n  digest: \"\"\n");
+    writeFileSync(
+      "docker-compose.yml",
+      [
+        "services:",
+        "  db:",
+        "    image: pgvector/pgvector:pg16",
+        "  api:",
+        "    build: .",
+        "    image: ${ABRA_IMAGE:-abra:local}",
+        "    environment:",
+        "      NODE_ENV: ${NODE_ENV:-production}",
+        "  required:",
+        "    image: ${ABRA_IMAGE:?set ABRA_IMAGE}",
+        "  pinned:",
+        "    image: ghcr.io/example/abra@sha256:" + "0".repeat(64),
+        ""
+      ].join("\n")
+    );
+    writeFileSync(
+      "docker-compose.dev.yml",
+      [
+        "services:",
+        "  api:",
+        "    build: .",
+        "    image: abra:local",
+        "    environment:",
+        "      NODE_ENV: development",
+        ""
+      ].join("\n")
+    );
 
     const findings = workflowActionRefFindings([
       ".github/workflows/bad.yml",
@@ -292,6 +448,28 @@ function runSelfTest() {
     const helmFindings = helmImageDigestFindings(["deploy/helm/values.yaml"]);
     assertSelfTest(helmFindings.length === 1, `expected 1 Helm image digest finding, got ${helmFindings.length}`);
     assertSelfTest(helmFindings[0].rule === "helm_image_digest_required", "expected Helm image digest rule");
+    const composeFindings = composeProductionImageFindings(["docker-compose.yml", "docker-compose.dev.yml"]);
+    assertSelfTest(composeFindings.length === 3, `expected 3 Compose image findings, got ${composeFindings.length}`);
+    assertSelfTest(
+      composeFindings.some((finding) => finding.rule === "compose_production_mutable_image" && finding.message.includes("db")),
+      "expected mutable production Compose image finding"
+    );
+    assertSelfTest(
+      composeFindings.some((finding) => finding.rule === "compose_production_build_context" && finding.message.includes("api")),
+      "expected production Compose local build finding"
+    );
+    assertSelfTest(
+      composeFindings.some((finding) => finding.rule === "compose_production_local_image_fallback" && finding.message.includes("api")),
+      "expected production Compose local image fallback finding"
+    );
+    assertSelfTest(
+      !composeFindings.some((finding) =>
+        finding.message.includes("service required ") ||
+        finding.message.includes("service pinned ") ||
+        finding.file.includes("dev")
+      ),
+      "expected required env image, pinned image, and dev override to be ignored"
+    );
   } finally {
     process.chdir(originalCwd);
     rmSync(root, { recursive: true, force: true });
@@ -309,7 +487,8 @@ const findings = [
   ...files.flatMap(scanFile),
   ...workflowActionRefFindings(files),
   ...rawInstallerURLFindings(files),
-  ...helmImageDigestFindings(files)
+  ...helmImageDigestFindings(files),
+  ...composeProductionImageFindings(files)
 ];
 
 if (findings.length > 0) {

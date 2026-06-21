@@ -328,6 +328,13 @@ await test('trims trailing slash from custom release base URL', async () => {
   assert.equal(urls[1], `file://${releaseDir}/SHA256SUMS`);
 });
 
+await test('prints direct next command when install dir is not on PATH', async () => {
+  const result = await runInstaller({ attestation: '0' });
+  await assertInstalled(result);
+  assert.match(result.stderr, /Add this to PATH if needed: export PATH=/);
+  assert.match(result.stderr, /Next: .*\/bin\/abra setup/);
+});
+
 await test('warns when PATH resolves a different abra binary after install', async () => {
   const result = await runInstaller({ attestation: '0', existingAbra: true });
   await assertInstalled(result);

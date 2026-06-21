@@ -29,6 +29,7 @@ const cleanupManagedStack = manageStack && boolEnv("ABRA_RELEASE_CLEANUP_STACK",
 const managedComposeProject = process.env.ABRA_RELEASE_COMPOSE_PROJECT_NAME || `abra-release-gate-${runId.toLowerCase()}`;
 const managedComposeHTTPPort = process.env.ABRA_RELEASE_ABRA_PORT || urlPort(baseUrl, managedHTTPPort);
 const managedComposePostgresPort = process.env.ABRA_RELEASE_POSTGRES_PORT || "55433";
+const managedAbraImage = process.env.ABRA_RELEASE_IMAGE || "abra:release-gate";
 const dogfoodContainerSourceRoot = process.env.ABRA_RELEASE_DOGFOOD_SOURCE_ROOT || "/tmp/abra-src";
 const checks = [];
 const managedApiKeys = placeholderSecret(process.env.ABRA_API_KEYS) ? token : process.env.ABRA_API_KEYS;
@@ -36,10 +37,16 @@ const managedWebhookSecrets = placeholderSecret(process.env.ABRA_WEBHOOK_SECRETS
 const managedStackEnv = {
   ...(manageStack ? {
     COMPOSE_PROJECT_NAME: managedComposeProject,
+    ABRA_IMAGE: managedAbraImage,
+    POSTGRES_IMAGE: process.env.POSTGRES_IMAGE || "pgvector/pgvector:pg16",
     ABRA_PUBLISH_ADDR: "127.0.0.1",
     ABRA_PORT: managedComposeHTTPPort,
     POSTGRES_BIND_ADDR: "127.0.0.1",
     POSTGRES_PORT: managedComposePostgresPort
+  } : {}),
+  ...(!manageStack ? {
+    ABRA_IMAGE: process.env.ABRA_IMAGE || "ghcr.io/hermawan22/abra@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    POSTGRES_IMAGE: process.env.POSTGRES_IMAGE || "pgvector/pgvector@sha256:0000000000000000000000000000000000000000000000000000000000000000"
   } : {}),
   ABRA_API_KEYS: managedApiKeys,
   ABRA_WEBHOOK_SECRETS: managedWebhookSecrets,
@@ -57,6 +64,14 @@ const managedStackEnv = {
   WORKER_SOURCE_TIMEOUT: process.env.WORKER_SOURCE_TIMEOUT || "10m",
   WORKER_LEASE_TIMEOUT: process.env.WORKER_LEASE_TIMEOUT || "15m"
 };
+
+const productionComposeEnv = {
+  ...managedStackEnv,
+  ABRA_IMAGE: process.env.ABRA_IMAGE || "ghcr.io/hermawan22/abra@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  POSTGRES_IMAGE: process.env.POSTGRES_IMAGE || "pgvector/pgvector@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+};
+
+const composeDevFiles = ["-f", "docker-compose.yml", "-f", "docker-compose.dev.yml"];
 
 function placeholderSecret(value) {
   const normalized = String(value || "").trim().toLowerCase();
@@ -109,6 +124,28 @@ function boolEnv(name, fallback = false) {
     return false;
   }
   return fallback;
+}
+
+function imageRefIsDigestPinned(value) {
+  return /@sha256:[0-9a-f]{64}$/i.test(String(value || "").trim());
+}
+
+function validateProductionComposeImages() {
+  const invalid = [];
+  for (const name of ["ABRA_IMAGE", "POSTGRES_IMAGE"]) {
+    if (process.env[name] && !imageRefIsDigestPinned(process.env[name])) {
+      invalid.push(`${name} must be digest-pinned with @sha256:<64 hex>`);
+    }
+  }
+  checks.push({
+    name: "production_compose_image_refs",
+    command: "validate ABRA_IMAGE and POSTGRES_IMAGE",
+    ok: invalid.length === 0,
+    exit_code: invalid.length === 0 ? 0 : 1,
+    duration_ms: 0,
+    stdout: invalid.length === 0 ? "production Compose images are digest-pinned or using digest-shaped sentinels" : "",
+    stderr: invalid.join("; ")
+  });
 }
 
 function truncate(value) {
@@ -267,6 +304,7 @@ async function main() {
       stderr: ""
     });
   }
+  validateProductionComposeImages();
 
   await runCommand("agent_context_files", "go", ["run", "./cmd/abra", "agents", "verify", ".", "--scope", "repo:abra", "--files-only", "--strict"]);
   await runCommand("script_checks", "npm", ["run", "check:scripts"]);
@@ -274,8 +312,8 @@ async function main() {
   await runCommand("npm_pack_allowlist", "npm", ["run", "test:npm-pack"]);
   await runCommand("oss_hygiene", "npm", ["run", "check:oss"]);
   await runCommand("go_tests", "go", ["test", "./..."]);
-  await runCommand("docker_compose_config", "docker", ["compose", "config"], {
-    env: managedStackEnv
+  await runCommand("docker_compose_config", "docker", ["compose", "-f", "docker-compose.yml", "config"], {
+    env: productionComposeEnv
   });
   await runCommand("helm_lint", "helm", ["lint", "./deploy/helm"]);
   await runCommand("helm_template", "helm", ["template", "abra", "./deploy/helm"]);
@@ -286,16 +324,16 @@ async function main() {
 
   if (manageStack) {
     const stackCheckStart = checks.length;
-    await runCommand("docker_compose_build_stack", "docker", ["compose", "build", "api", "worker", "migrate"], {
+    await runCommand("docker_compose_build_stack", "docker", ["compose", ...composeDevFiles, "build", "api", "worker", "migrate"], {
       env: managedStackEnv
     });
-    await runCommand("docker_compose_postgres_up", "docker", ["compose", "up", "-d", "postgres"], {
+    await runCommand("docker_compose_postgres_up", "docker", ["compose", ...composeDevFiles, "up", "-d", "postgres"], {
       env: managedStackEnv
     });
-    await runCommand("docker_compose_migrate", "docker", ["compose", "run", "--rm", "migrate"], {
+    await runCommand("docker_compose_migrate", "docker", ["compose", ...composeDevFiles, "run", "--rm", "migrate"], {
       env: managedStackEnv
     });
-    await runCommand("docker_compose_up", "docker", ["compose", "up", "-d", "api", "worker"], {
+    await runCommand("docker_compose_up", "docker", ["compose", ...composeDevFiles, "up", "-d", "api", "worker"], {
       env: managedStackEnv
     });
     if (checks.slice(stackCheckStart).some((check) => !check.ok)) {
@@ -323,7 +361,7 @@ async function main() {
     await runCommand("eval_tier23", "npm", ["run", "eval:tier23"]);
     if (approvalEnforcementGate) {
       if (manageStack) {
-        await runCommand("docker_compose_enforce_up", "docker", ["compose", "up", "-d", "--force-recreate", "api", "worker"], {
+        await runCommand("docker_compose_enforce_up", "docker", ["compose", ...composeDevFiles, "up", "-d", "--force-recreate", "api", "worker"], {
           env: {
             ...managedStackEnv,
             ABRA_APPROVAL_MODE: "enforce",
@@ -334,22 +372,22 @@ async function main() {
         env: { ABRA_TIER23_EXPECT_APPROVAL_ENFORCEMENT: "1" }
       });
       if (manageStack) {
-        await runCommand("docker_compose_advisory_up", "docker", ["compose", "up", "-d", "--force-recreate", "api", "worker"], {
+        await runCommand("docker_compose_advisory_up", "docker", ["compose", ...composeDevFiles, "up", "-d", "--force-recreate", "api", "worker"], {
           env: managedStackEnv
         });
       }
     }
     if (prepareDogfoodSource) {
-      await runCommand("prepare_dogfood_source_dir", "docker", ["compose", "exec", "-T", "worker", "sh", "-lc", `rm -rf ${dogfoodContainerSourceRoot} && mkdir -p ${dogfoodContainerSourceRoot}`], {
+      await runCommand("prepare_dogfood_source_dir", "docker", ["compose", ...composeDevFiles, "exec", "-T", "worker", "sh", "-lc", `rm -rf ${dogfoodContainerSourceRoot} && mkdir -p ${dogfoodContainerSourceRoot}`], {
         env: manageStack ? managedStackEnv : {}
       });
       await runCommand("prepare_dogfood_source_copy", "bash", [
         "-lc",
-        `COPYFILE_DISABLE=1 tar --exclude .tmp --exclude node_modules --exclude .git --exclude '._*' --no-xattrs -cf - . | docker compose exec -T worker tar -C ${dogfoodContainerSourceRoot} -xf -`
+        `COPYFILE_DISABLE=1 tar --exclude .tmp --exclude node_modules --exclude .git --exclude '._*' --no-xattrs -cf - . | docker compose -f docker-compose.yml -f docker-compose.dev.yml exec -T worker tar -C ${dogfoodContainerSourceRoot} -xf -`
       ], {
         env: manageStack ? managedStackEnv : {}
       });
-      await runCommand("prepare_dogfood_source_clean", "docker", ["compose", "exec", "-T", "worker", "find", dogfoodContainerSourceRoot, "-name", "._*", "-delete"], {
+      await runCommand("prepare_dogfood_source_clean", "docker", ["compose", ...composeDevFiles, "exec", "-T", "worker", "find", dogfoodContainerSourceRoot, "-name", "._*", "-delete"], {
         env: manageStack ? managedStackEnv : {}
       });
     }
@@ -369,7 +407,7 @@ async function cleanup() {
   if (!cleanupManagedStack) {
     return;
   }
-  await runCommand("docker_compose_down_managed_stack", "docker", ["compose", "down", "--volumes"], {
+  await runCommand("docker_compose_down_managed_stack", "docker", ["compose", ...composeDevFiles, "down", "--volumes"], {
     env: managedStackEnv
   });
 }

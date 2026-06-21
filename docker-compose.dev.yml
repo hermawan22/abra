@@ -1,0 +1,15 @@
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:-pgvector/pgvector:pg16}
+
+  migrate:
+    build: .
+    image: ${ABRA_IMAGE:-abra:local}
+
+  api:
+    build: .
+    image: ${ABRA_IMAGE:-abra:local}
+
+  worker:
+    build: .
+    image: ${ABRA_IMAGE:-abra:local}

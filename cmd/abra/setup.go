@@ -24,7 +24,7 @@ func setup(ctx context.Context, args cliArgs) error {
 		fmt.Println("Production env created.")
 		fmt.Println("Configure embeddings with:")
 		fmt.Println("  abra config model compatible --base-url https://models.example.com/v1 --model embedding-model --dimensions 1024 --env-file " + envPath(args))
-		fmt.Println("For an intentionally self-hosted local Qwen endpoint in production, also set ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=true after reviewing capacity and security.")
+		fmt.Println("For an intentionally self-hosted local Qwen endpoint in production, also set ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=true and ABRA_LOCAL_EMBEDDING_IMAGE to a digest-pinned runner image after reviewing capacity and security.")
 		fmt.Println("Then start with:")
 		fmt.Println("  abra up --env-file " + envPath(args))
 		return nil
