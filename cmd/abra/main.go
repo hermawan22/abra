@@ -2090,6 +2090,7 @@ func composeMemory(ctx context.Context, args cliArgs) error {
 		"max_queries":        intFlag(args, "max-queries", 4),
 		"token_budget":       intFlag(args, "token-budget", 1200),
 		"include_unverified": boolFlag(args, "include-unverified"),
+		"persist_learning":   boolFlag(args, "persist-learning"),
 	})
 	if err != nil {
 		return err
@@ -2115,6 +2116,18 @@ func composeMemory(ctx context.Context, args cliArgs) error {
 	}
 	if len(health) > 0 {
 		fmt.Printf("health: %s score=%d signals=%d\n", stringValue(health["status"], "unknown"), intValue(health["score"]), lenSlice(health["signals"]))
+		if signals, _ := health["signals"].([]any); len(signals) > 0 {
+			fmt.Println("health signals:")
+			printComposeSignals(signals, 5)
+		}
+	}
+	if quality, _ := verification["retrieval_quality"].(map[string]any); len(quality) > 0 {
+		fmt.Printf("retrieval: results=%d sources=%d low_confidence=%t low_source_diversity=%t\n",
+			intValue(quality["result_count"]),
+			intValue(quality["unique_sources"]),
+			boolValue(quality["low_confidence"], false),
+			boolValue(quality["low_source_diversity"], false),
+		)
 	}
 	if citations, _ := result["citations"].([]any); len(citations) > 0 {
 		fmt.Println("citations:")
@@ -2148,12 +2161,92 @@ func composeMemory(ctx context.Context, args cliArgs) error {
 			fmt.Println("- " + stringValue(action, ""))
 		}
 	}
+	if actions, ok := decision["allowed_next_actions"].([]any); ok && len(actions) > 0 {
+		fmt.Println("allowed next actions:")
+		printComposeStringList(actions, 6)
+	}
+	if validation, ok := result["validation_plan"].([]any); ok && len(validation) > 0 {
+		fmt.Println("validation plan:")
+		printComposeValidationPlan(validation, 6)
+	}
+	if steps, ok := result["suggested_steps"].([]any); ok && len(steps) > 0 {
+		fmt.Println("suggested steps:")
+		printComposeStringList(steps, 5)
+	}
+	if boolFlag(args, "prompt") {
+		window, _ := result["context_window"].(map[string]any)
+		prompt := stringValue(window["prompt"], "")
+		if prompt == "" {
+			fmt.Println("prompt-ready context: unavailable")
+		} else {
+			fmt.Println("prompt-ready context:")
+			fmt.Println(prompt)
+		}
+	}
 	if len(stats) > 0 && intValue(stats["facts"])+intValue(stats["supporting_documents"])+intValue(stats["summaries"])+intValue(stats["graph_relations"]) == 0 {
 		fmt.Println("No source-backed context found for this scope.")
 		fmt.Println("Confirm the project scope: abra scope")
 		fmt.Println("Then ingest the project with that exact scope: abra ingest . --code --scope " + scope)
 	}
 	return nil
+}
+
+func printComposeSignals(signals []any, limit int) {
+	for i, raw := range signals {
+		if i >= limit {
+			fmt.Printf("- +%d more\n", len(signals)-i)
+			return
+		}
+		signal, _ := raw.(map[string]any)
+		code := stringValue(signal["code"], "unknown")
+		severity := stringValue(signal["severity"], "unknown")
+		action := stringValue(signal["action"], "")
+		count := intValue(signal["count"])
+		line := "- " + code + " (" + severity
+		if count > 0 {
+			line += fmt.Sprintf(", count=%d", count)
+		}
+		line += ")"
+		if action != "" {
+			line += " -> " + action
+		}
+		fmt.Println(line)
+	}
+}
+
+func printComposeStringList(values []any, limit int) {
+	for i, raw := range values {
+		if i >= limit {
+			fmt.Printf("- +%d more\n", len(values)-i)
+			return
+		}
+		text := strings.TrimSpace(stringValue(raw, ""))
+		if text == "" {
+			continue
+		}
+		fmt.Println("- " + text)
+	}
+}
+
+func printComposeValidationPlan(values []any, limit int) {
+	for i, raw := range values {
+		if i >= limit {
+			fmt.Printf("- +%d more\n", len(values)-i)
+			return
+		}
+		item, _ := raw.(map[string]any)
+		label := firstNonEmpty(stringValue(item["command"], ""), stringValue(item["type"], ""), stringValue(item["name"], "validation"))
+		if boolValue(item["required"], false) {
+			label = "required " + label
+		} else {
+			label = "optional " + label
+		}
+		reason := strings.TrimSpace(stringValue(item["reason"], ""))
+		if reason != "" {
+			label += " - " + reason
+		}
+		fmt.Println("- " + label)
+	}
 }
 
 func mcp(ctx context.Context, args cliArgs) error {
@@ -3902,9 +3995,14 @@ Runs hybrid lexical/vector retrieval over source-backed memory.
 `
 	case "compose":
 		return `Usage:
-  abra compose "task" --scope repo:demo [--agent codex] [--hook before_task] [--json]
+  abra compose "task" --scope repo:demo [--agent codex] [--hook before_task] [--prompt] [--persist-learning] [--json]
 
-Builds a task-specific working-memory packet for AI coding agents.
+Builds a task-specific working-memory packet for AI coding agents. Human output
+includes the decision gate, retrieval quality, health signals, validation plan,
+allowed next actions, and suggested steps. Use --prompt to also print the
+prompt-ready context window for another AI client. By default compose is
+read-only; --persist-learning writes actionable learning suggestions as pending
+review proposals and requires write access.
 `
 	case "scope":
 		return `Usage:

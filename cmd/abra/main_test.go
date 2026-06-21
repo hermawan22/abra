@@ -1243,6 +1243,86 @@ func TestComposeReportsNoSourceBackedContextWhenOnlyGateBlocksExist(t *testing.T
 	}
 }
 
+func TestComposeHumanOutputIncludesAgentHandoff(t *testing.T) {
+	var requestBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/memory/compose" {
+			t.Fatalf("request = %s %s, want POST /memory/compose", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+			t.Fatalf("decode compose request: %v", err)
+		}
+		writeTestJSON(t, w, map[string]any{
+			"scope": "repo:demo",
+			"verification": map[string]any{
+				"verdict": "partial",
+				"retrieval_quality": map[string]any{
+					"result_count":         4,
+					"unique_sources":       1,
+					"low_confidence":       false,
+					"low_source_diversity": true,
+				},
+			},
+			"agent_decision": map[string]any{
+				"decision":             "caution",
+				"required_actions":     []any{"corroborate_with_additional_source"},
+				"allowed_next_actions": []any{"inspect_validation_plan"},
+			},
+			"memory_health": map[string]any{
+				"status": "needs_review",
+				"score":  82,
+				"signals": []any{
+					map[string]any{"code": "source_refresh_due", "severity": "warning", "count": 2, "action": "refresh_stale_sources"},
+				},
+			},
+			"validation_plan": []any{
+				map[string]any{"command": "go test ./...", "required": true, "reason": "Go code changed"},
+			},
+			"suggested_steps": []any{"Refresh stale source before broad edits."},
+			"context_window": map[string]any{
+				"prompt": "Task: ship a change\nUse citations.",
+			},
+			"stats": map[string]any{
+				"facts":                1,
+				"supporting_documents": 1,
+				"summaries":            1,
+				"graph_relations":      1,
+				"context_blocks":       4,
+			},
+		})
+	}))
+	defer server.Close()
+
+	output := captureStdout(t, func() {
+		if err := run(context.Background(), []string{"compose", "ship a change", "--scope", "repo:demo", "--prompt", "--persist-learning", "--base-url", server.URL, "--token", "test-token"}); err != nil {
+			t.Fatalf("compose error = %v", err)
+		}
+	})
+	if requestBody["persist_learning"] != true {
+		t.Fatalf("persist_learning = %#v, want true", requestBody["persist_learning"])
+	}
+	for _, want := range []string{
+		"Compose: partial / caution",
+		"health signals:",
+		"source_refresh_due (warning, count=2) -> refresh_stale_sources",
+		"retrieval: results=4 sources=1 low_confidence=false low_source_diversity=true",
+		"required actions:",
+		"corroborate_with_additional_source",
+		"allowed next actions:",
+		"inspect_validation_plan",
+		"validation plan:",
+		"required go test ./... - Go code changed",
+		"suggested steps:",
+		"Refresh stale source before broad edits.",
+		"prompt-ready context:",
+		"Task: ship a change",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("compose output missing %q:\n%s", want, output)
+		}
+	}
+}
+
 func TestShellQuoteEscapesSingleQuotes(t *testing.T) {
 	if got := shellQuote("dev'token"); got != "'dev'\"'\"'token'" {
 		t.Fatalf("shellQuote = %q", got)

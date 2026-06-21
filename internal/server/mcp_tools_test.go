@@ -337,11 +337,14 @@ func TestPolicyPlanMCPRequiresScope(t *testing.T) {
 	}
 }
 
-func TestWorkingMemoryComposeMCPHasDiagnosticMode(t *testing.T) {
+func TestWorkingMemoryComposeMCPHasReadOnlyDefaultAndPersistenceOptIn(t *testing.T) {
 	schema := mcpToolSchema(t, "working_memory_compose")
 	required := requiredSet(t, schema)
 	if required["diagnostic"] {
 		t.Fatalf("working_memory_compose required = %#v, diagnostic must be optional", schema["required"])
+	}
+	if required["persist_learning"] {
+		t.Fatalf("working_memory_compose required = %#v, persist_learning must be optional", schema["required"])
 	}
 	properties, ok := schema["properties"].(map[string]any)
 	if !ok {
@@ -353,6 +356,13 @@ func TestWorkingMemoryComposeMCPHasDiagnosticMode(t *testing.T) {
 	}
 	if diagnostic["type"] != "boolean" {
 		t.Fatalf("diagnostic type = %#v, want boolean", diagnostic["type"])
+	}
+	persistLearning, ok := properties["persist_learning"].(map[string]any)
+	if !ok {
+		t.Fatalf("working_memory_compose missing persist_learning property in %#v", properties)
+	}
+	if persistLearning["type"] != "boolean" {
+		t.Fatalf("persist_learning type = %#v, want boolean", persistLearning["type"])
 	}
 }
 

@@ -73,6 +73,7 @@ type ComposeInput struct {
 	TokenBudget       int                       `json:"token_budget,omitempty"`
 	IncludeUnverified bool                      `json:"include_unverified,omitempty"`
 	Diagnostic        bool                      `json:"diagnostic,omitempty"`
+	PersistLearning   bool                      `json:"persist_learning,omitempty"`
 	AgentProfile      *store.AgentProfileRecord `json:"-"`
 }
 

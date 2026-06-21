@@ -75,7 +75,7 @@ steps. `abra agents ready` is a non-mutating alias for verify. Both commands
 print a ready prompt and next steps for the AI client; `--json` returns
 `server_ready`, `client_ready`, `ready_prompt`, and `next_steps` for automation.
 The compose call runs in diagnostic mode, so verification does not write compose
-audit events or automatic learning proposals. If `abra doctor` says MCP is ok
+audit events or learning proposals. If `abra doctor` says MCP is ok
 but Codex has no Abra tools or no context, run `abra mcp install-codex`, fully
 quit and reopen Codex Desktop, then rerun `abra agents verify . --scope
 <scope-from-abra-scope>`; re-ingest only if verify says the exact scope or
@@ -322,6 +322,8 @@ From a source checkout, run the CLI as `go run ./cmd/abra <command>`. In a relea
 | list observations | `abra observations --scope repo:demo --query release` |
 | propose existing observation | `abra observations propose <observation-id> --scope repo:demo --claim "Agents should rerun release checks." --source-url file://release-runbook.md` |
 | think | `abra think "question" --scope <scope-from-abra-scope>` |
+| compose prompt-ready agent context | `abra compose "ship a change" --scope <scope-from-abra-scope> --prompt` |
+| compose and queue learning proposals | `abra compose "ship a change" --scope <scope-from-abra-scope> --persist-learning` |
 | print project scope for agents | `abra scope` |
 | status | `abra status` |
 | doctor | `abra doctor` |

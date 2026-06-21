@@ -679,7 +679,7 @@ await runCheck("tier3_agent_workflow_trace", async () => {
   };
 });
 
-await runCheck("tier3_working_memory_auto_persists_learning_proposals", async () => {
+await runCheck("tier3_working_memory_persist_learning_opt_in", async () => {
   const approvalId = approvalEnforcementExpected
     ? await approvedRequest({
         action: "agent_write",
@@ -716,7 +716,8 @@ await runCheck("tier3_working_memory_auto_persists_learning_proposals", async ()
     limit: 6,
     max_queries: 6,
     token_budget: 900,
-    include_unverified: true
+    include_unverified: true,
+    persist_learning: true
   };
   const packet = await request("/memory/compose", {
     method: "POST",
@@ -729,7 +730,7 @@ await runCheck("tier3_working_memory_auto_persists_learning_proposals", async ()
   const proposalSuggestion = (packet.learning_suggestions || []).find((suggestion) => {
     return suggestion.title === "Promote or reject unverified memory" && suggestion.persisted === true && suggestion.proposal_id;
   });
-  assert(proposalSuggestion, "working memory did not auto-persist the unverified-memory learning suggestion");
+  assert(proposalSuggestion, "working memory did not persist the unverified-memory learning suggestion when persist_learning=true");
 
   const repeated = await request("/memory/compose", {
     method: "POST",
@@ -765,7 +766,7 @@ await runCheck("tier3_working_memory_auto_persists_learning_proposals", async ()
   assert(
     Array.isArray(listed.learning_proposals) &&
       listed.learning_proposals.some((proposal) => proposal.id === proposalSuggestion.proposal_id),
-    "pending learning proposal list did not include the auto-persisted proposal"
+    "pending learning proposal list did not include the persisted proposal"
   );
   assert(matchingPending.length === 1, `expected one matching pending learning proposal, got ${matchingPending.length}`);
   const decided = await request(`/learning/proposals/${encodeURIComponent(proposalSuggestion.proposal_id)}/decide`, {

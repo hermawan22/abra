@@ -9,7 +9,7 @@ import (
 )
 
 func shouldAutoPersistComposeLearning(input memory.ComposeInput) bool {
-	return !input.Diagnostic
+	return input.PersistLearning && !input.Diagnostic
 }
 
 func (h *handler) persistComposeLearningSuggestions(ctx context.Context, result *memory.ComposeResult, createdBy string) {

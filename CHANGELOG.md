@@ -19,6 +19,8 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Apply the configured request body limit to stateless MCP requests so MCP batch ingestion cannot bypass the HTTP ingest/webhook body guardrail.
 - Add source freshness policy and schedule fields for HTTP, MCP, and CLI source configs, including `--freshness-seconds` and `--schedule` for CLI-created sources.
 - Add source freshness health signals (`source_refresh_due`, `source_refresh_overdue`) so agents can distinguish stale memory from missing context.
+- Add richer `abra compose` human output and `--prompt` so CLI-only users can hand prompt-ready working memory to any AI client.
+- Add explicit `persist_learning` / `--persist-learning` opt-in for working-memory learning proposal writes so compose is read-only by default.
 
 ### Changed
 

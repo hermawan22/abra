@@ -604,6 +604,9 @@ func (h *handler) composeMemory(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAccess(w, r, authActionRead, input.Scope) {
 		return
 	}
+	if input.PersistLearning && !h.requireAccess(w, r, authActionWrite, input.Scope) {
+		return
+	}
 	input, _, profileErr := h.applyAgentProfileToCompose(r.Context(), input)
 	if profileErr != nil {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "agent_profile_denied", "detail": profileErr.Error()})
@@ -616,6 +619,7 @@ func (h *handler) composeMemory(w http.ResponseWriter, r *http.Request) {
 		attribute.Int("abra.token_budget", input.TokenBudget),
 		attribute.Bool("abra.include_unverified", input.IncludeUnverified),
 		attribute.Bool("abra.diagnostic", input.Diagnostic),
+		attribute.Bool("abra.persist_learning", input.PersistLearning),
 	)
 	result, err := h.memory.Compose(ctx, input)
 	if err != nil {
@@ -1463,6 +1467,10 @@ func (h *handler) mcpToolCall(w http.ResponseWriter, r *http.Request, id any, pa
 			TokenBudget:       intArg(args, "token_budget", 0),
 			IncludeUnverified: boolArg(args, "include_unverified", false),
 			Diagnostic:        boolArg(args, "diagnostic", false),
+			PersistLearning:   boolArg(args, "persist_learning", false),
+		}
+		if input.PersistLearning && !h.requireAccess(w, r, authActionWrite, scope) {
+			return
 		}
 		var profileErr error
 		input, _, profileErr = h.applyAgentProfileToCompose(r.Context(), input)
@@ -2071,7 +2079,8 @@ func mcpTools() []map[string]any {
 				"max_queries":        map[string]any{"type": "integer", "minimum": 1, "maximum": 12},
 				"token_budget":       map[string]any{"type": "integer", "minimum": 300, "maximum": 12000},
 				"include_unverified": map[string]any{"type": "boolean"},
-				"diagnostic":         map[string]any{"type": "boolean", "description": "Read-only compose for health checks; suppresses memory.composed audit events and automatic learning proposal persistence."},
+				"diagnostic":         map[string]any{"type": "boolean", "description": "Read-only compose for health checks; suppresses memory.composed audit events and learning proposal persistence."},
+				"persist_learning":   map[string]any{"type": "boolean", "description": "Opt in to writing actionable learning suggestions as pending proposals. Requires write access and is ignored when diagnostic is true."},
 			}),
 		},
 		{

@@ -27,12 +27,18 @@ func TestShouldPersistLearningSuggestionKeepsActionableSuggestion(t *testing.T) 
 	}
 }
 
-func TestShouldAutoPersistComposeLearningSkipsDiagnostic(t *testing.T) {
+func TestShouldAutoPersistComposeLearningRequiresExplicitOptIn(t *testing.T) {
 	if shouldAutoPersistComposeLearning(memory.ComposeInput{Diagnostic: true}) {
-		t.Fatal("diagnostic compose must not auto-persist learning suggestions")
+		t.Fatal("diagnostic compose must not persist learning suggestions")
 	}
-	if !shouldAutoPersistComposeLearning(memory.ComposeInput{}) {
-		t.Fatal("default compose should auto-persist actionable learning suggestions")
+	if shouldAutoPersistComposeLearning(memory.ComposeInput{}) {
+		t.Fatal("default compose must remain read-only")
+	}
+	if !shouldAutoPersistComposeLearning(memory.ComposeInput{PersistLearning: true}) {
+		t.Fatal("persist_learning compose should persist actionable learning suggestions")
+	}
+	if shouldAutoPersistComposeLearning(memory.ComposeInput{PersistLearning: true, Diagnostic: true}) {
+		t.Fatal("diagnostic compose must override persist_learning")
 	}
 }
 
