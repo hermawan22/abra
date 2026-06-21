@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -42,12 +41,11 @@ func newFakeDocker(t *testing.T) *fakeDocker {
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	mustWrite(t, filepath.Join(bin, "docker"), "#!/bin/sh\nABRA_FAKE_DOCKER=1 exec \"$ABRA_TEST_BINARY\" -test.run '^TestFakeDockerProcess$' -test.paniconexit0=false -- \"$@\"\n")
+	mustWrite(t, filepath.Join(bin, "docker"), fakeDockerScript())
 	if err := os.Chmod(filepath.Join(bin, "docker"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	writeFakeDockerState(t, state, fakeDockerState{Labels: map[string]string{}})
-	t.Setenv("ABRA_TEST_BINARY", os.Args[0])
 	t.Setenv("ABRA_FAKE_DOCKER_STATE", state)
 	t.Setenv("ABRA_FAKE_DOCKER_LOG", log)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -86,11 +84,11 @@ func (f *fakeDocker) calls() []fakeDockerCall {
 	var calls []fakeDockerCall
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
-		var call fakeDockerCall
-		if err := json.Unmarshal(scanner.Bytes(), &call); err != nil {
-			f.t.Fatalf("decode fake docker call: %v", err)
+		parts := strings.SplitN(scanner.Text(), "\t", 2)
+		if len(parts) != 2 {
+			f.t.Fatalf("decode fake docker call: %q", scanner.Text())
 		}
-		calls = append(calls, call)
+		calls = append(calls, fakeDockerCall{Dir: parts[0], Args: strings.Fields(parts[1])})
 	}
 	if err := scanner.Err(); err != nil {
 		f.t.Fatal(err)
@@ -98,167 +96,113 @@ func (f *fakeDocker) calls() []fakeDockerCall {
 	return calls
 }
 
-func TestFakeDockerProcess(t *testing.T) {
-	if os.Getenv("ABRA_FAKE_DOCKER") != "1" {
-		return
-	}
-	if err := fakeDockerMain(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-	os.Exit(0)
-}
-
-func fakeDockerMain() error {
-	separator := slices.Index(os.Args, "--")
-	if separator < 0 || separator+1 >= len(os.Args) {
-		return fmt.Errorf("missing fake docker args")
-	}
-	args := append([]string(nil), os.Args[separator+1:]...)
-	statePath := os.Getenv("ABRA_FAKE_DOCKER_STATE")
-	logPath := os.Getenv("ABRA_FAKE_DOCKER_LOG")
-	if statePath == "" || logPath == "" {
-		return fmt.Errorf("missing fake docker env")
-	}
-	if err := appendFakeDockerCall(logPath, args); err != nil {
-		return err
-	}
-	state, err := loadFakeDockerState(statePath)
-	if err != nil {
-		return err
-	}
-	if len(args) == 0 {
-		return fmt.Errorf("missing docker command")
-	}
-	switch args[0] {
-	case "container":
-		return fakeDockerContainer(state, args[1:])
-	case "run":
-		updated, output, err := fakeDockerRun(state, args[1:])
-		if err != nil {
-			return err
-		}
-		if err := saveFakeDockerState(statePath, updated); err != nil {
-			return err
-		}
-		if output != "" {
-			fmt.Println(output)
-		}
-		return nil
-	case "start":
-		if !state.Exists {
-			return fmt.Errorf("container not found")
-		}
-		if len(args) > 1 {
-			fmt.Println(args[1])
-		}
-		return nil
-	case "rm":
-		state.Exists = false
-		if err := saveFakeDockerState(statePath, state); err != nil {
-			return err
-		}
-		if len(args) > 2 {
-			fmt.Println(args[2])
-		}
-		return nil
-	case "logs":
-		if !state.Exists {
-			return fmt.Errorf("container not found")
-		}
-		fmt.Print(state.Logs)
-		return nil
-	default:
-		return fmt.Errorf("unsupported fake docker command: %s", strings.Join(args, " "))
-	}
-}
-
-func fakeDockerContainer(state fakeDockerState, args []string) error {
-	if len(args) == 0 || args[0] != "inspect" {
-		return fmt.Errorf("unsupported fake docker container command: %s", strings.Join(args, " "))
-	}
-	if !state.Exists {
-		return fmt.Errorf("container not found")
-	}
-	format := ""
-	for i := 1; i < len(args); i++ {
-		if args[i] == "--format" && i+1 < len(args) {
-			format = args[i+1]
-			break
-		}
-	}
-	switch {
-	case format == "":
-		return nil
-	case format == "{{.Config.Image}}":
-		fmt.Println(state.Image)
-		return nil
-	case strings.Contains(format, ".Config.Labels"):
-		label := labelFromDockerFormat(format)
-		if value := state.Labels[label]; value != "" {
-			fmt.Println(value)
-		} else {
-			fmt.Println("<no value>")
-		}
-		return nil
-	default:
-		return fmt.Errorf("unsupported inspect format: %s", format)
-	}
-}
-
-func fakeDockerRun(state fakeDockerState, args []string) (fakeDockerState, string, error) {
-	state.Exists = true
-	state.Labels = map[string]string{}
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		switch arg {
-		case "--name":
-			i++
-		case "--pull":
-			i++
-		case "--label":
-			i++
-			key, value, _ := strings.Cut(args[i], "=")
-			state.Labels[key] = value
-		case "-p", "-v":
-			i++
-		case "-d":
-		default:
-			if strings.HasPrefix(arg, "-") {
-				if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
-					i++
-				}
-				continue
-			}
-			state.Image = arg
-			return state, "fake-container-id", nil
-		}
-	}
-	return state, "", fmt.Errorf("docker run did not include image")
-}
-
-func labelFromDockerFormat(format string) string {
-	start := strings.Index(format, "\"")
-	end := strings.LastIndex(format, "\"")
-	if start >= 0 && end > start {
-		return format[start+1 : end]
-	}
-	return ""
-}
-
-func appendFakeDockerCall(path string, args []string) error {
-	cwd, _ := os.Getwd()
-	bytes, err := json.Marshal(fakeDockerCall{Dir: cwd, Args: args})
-	if err != nil {
-		return err
-	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	_, err = file.Write(append(bytes, '\n'))
-	return err
+func fakeDockerScript() string {
+	return `#!/bin/sh
+set -eu
+state="${ABRA_FAKE_DOCKER_STATE:?}"
+log="${ABRA_FAKE_DOCKER_LOG:?}"
+mkdir -p "$state" "$(dirname "$log")"
+printf '%s\t%s\n' "$PWD" "$*" >> "$log"
+exists="$(cat "$state/exists" 2>/dev/null || printf 0)"
+cmd="${1:-}"
+if [ "$#" -gt 0 ]; then
+  shift
+fi
+case "$cmd" in
+  container)
+    sub="${1:-}"
+    if [ "$sub" != "inspect" ] || [ "$exists" != "1" ]; then
+      exit 1
+    fi
+    format=""
+    previous=""
+    for arg in "$@"; do
+      if [ "$previous" = "--format" ]; then
+        format="$arg"
+        break
+      fi
+      previous="$arg"
+    done
+    if [ "$format" = "{{.Config.Image}}" ]; then
+      cat "$state/image"
+      printf '\n'
+      exit 0
+    fi
+    case "$format" in
+      *Config.Labels*)
+        label="$(printf '%s\n' "$format" | sed -n 's/.*"\([^"]*\)".*/\1/p')"
+        value="$(grep -F "$label=" "$state/labels" 2>/dev/null | tail -n 1 | cut -d= -f2- || true)"
+        if [ -n "$value" ]; then
+          printf '%s\n' "$value"
+        else
+          printf '<no value>\n'
+        fi
+        ;;
+    esac
+    ;;
+  run)
+    printf 1 > "$state/exists"
+    : > "$state/labels"
+    image=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --name|--pull|-p|-v)
+          shift 2
+          ;;
+        --label)
+          printf '%s\n' "$2" >> "$state/labels"
+          shift 2
+          ;;
+        -d)
+          shift
+          ;;
+        -*)
+          if [ "$#" -gt 1 ]; then
+            case "$2" in
+              -*) shift ;;
+              *) shift 2 ;;
+            esac
+          else
+            shift
+          fi
+          ;;
+        *)
+          image="$1"
+          break
+          ;;
+      esac
+    done
+    if [ -z "$image" ]; then
+      exit 1
+    fi
+    printf '%s' "$image" > "$state/image"
+    printf 'fake-container-id\n'
+    ;;
+  start)
+    if [ "$exists" != "1" ]; then
+      exit 1
+    fi
+    printf '%s\n' "${1:-}"
+    ;;
+  rm)
+    printf 0 > "$state/exists"
+    if [ "${1:-}" = "-f" ]; then
+      printf '%s\n' "${2:-}"
+    else
+      printf '%s\n' "${1:-}"
+    fi
+    ;;
+  logs)
+    if [ "$exists" != "1" ]; then
+      exit 1
+    fi
+    cat "$state/logs" 2>/dev/null || true
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+`
 }
 
 func readFakeDockerState(t *testing.T, path string) fakeDockerState {
@@ -271,13 +215,21 @@ func readFakeDockerState(t *testing.T, path string) fakeDockerState {
 }
 
 func loadFakeDockerState(path string) (fakeDockerState, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return fakeDockerState{}, err
+	exists, _ := os.ReadFile(filepath.Join(path, "exists"))
+	image, _ := os.ReadFile(filepath.Join(path, "image"))
+	logs, _ := os.ReadFile(filepath.Join(path, "logs"))
+	state := fakeDockerState{
+		Exists: strings.TrimSpace(string(exists)) == "1",
+		Image:  strings.TrimSpace(string(image)),
+		Logs:   string(logs),
+		Labels: map[string]string{},
 	}
-	var state fakeDockerState
-	if err := json.Unmarshal(raw, &state); err != nil {
-		return fakeDockerState{}, err
+	rawLabels, _ := os.ReadFile(filepath.Join(path, "labels"))
+	for _, line := range strings.Split(string(rawLabels), "\n") {
+		key, value, ok := strings.Cut(line, "=")
+		if ok {
+			state.Labels[key] = value
+		}
 	}
 	if state.Labels == nil {
 		state.Labels = map[string]string{}
@@ -296,11 +248,30 @@ func saveFakeDockerState(path string, state fakeDockerState) error {
 	if state.Labels == nil {
 		state.Labels = map[string]string{}
 	}
-	raw, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
+	if err := os.MkdirAll(path, 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, raw, 0o644)
+	exists := "0"
+	if state.Exists {
+		exists = "1"
+	}
+	if err := os.WriteFile(filepath.Join(path, "exists"), []byte(exists), 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(path, "image"), []byte(state.Image), 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(path, "logs"), []byte(state.Logs), 0o644); err != nil {
+		return err
+	}
+	var labels strings.Builder
+	for key, value := range state.Labels {
+		labels.WriteString(key)
+		labels.WriteString("=")
+		labels.WriteString(value)
+		labels.WriteString("\n")
+	}
+	return os.WriteFile(filepath.Join(path, "labels"), []byte(labels.String()), 0o644)
 }
 
 func newEmbeddingServer(t *testing.T) *httptest.Server {
