@@ -229,7 +229,7 @@ func requireLocalModelProvider(args cliArgs, action string) error {
 		return nil
 	}
 	provider := configuredEmbeddingProvider(args)
-	if provider == "" || provider == "local" {
+	if provider == "" || isLocalProviderName(provider) {
 		return nil
 	}
 	return fmt.Errorf("abra models %s manages only the built-in local Qwen runner, but EMBEDDING_PROVIDER=%s in %s. Abra will use the configured provider instead. Use `abra config` to inspect it, or pass --force only if you intentionally want to manage the unused local runner", action, provider, envPath(args))
@@ -240,7 +240,7 @@ func inactiveLocalModelNotice(args cliArgs) map[string]any {
 		return nil
 	}
 	provider := configuredEmbeddingProvider(args)
-	if provider == "" || provider == "local" {
+	if provider == "" || isLocalProviderName(provider) {
 		return nil
 	}
 	return map[string]any{
@@ -263,7 +263,7 @@ func configuredEmbeddingProvider(args cliArgs) string {
 
 func embeddingRunner(args cliArgs) embeddingRunnerConfig {
 	values, _ := readEnvValues(envPath(args))
-	if provider := strings.TrimSpace(values["EMBEDDING_PROVIDER"]); provider != "" && provider != "local" {
+	if provider := strings.TrimSpace(values["EMBEDDING_PROVIDER"]); provider != "" && !isLocalProviderName(provider) {
 		values = map[string]string{}
 	}
 	baseURL := firstNonEmpty(flag(args, "base-url", ""), values["EMBEDDING_BASE_URL"], defaultEmbeddingBaseURL)
@@ -403,7 +403,7 @@ func syncLocalRunnerEnv(args cliArgs) error {
 	if err != nil {
 		return err
 	}
-	if provider := strings.TrimSpace(values["EMBEDDING_PROVIDER"]); provider != "" && provider != "local" {
+	if provider := strings.TrimSpace(values["EMBEDDING_PROVIDER"]); provider != "" && !isLocalProviderName(provider) {
 		return nil
 	}
 	cfg := embeddingRunner(args)
@@ -476,7 +476,7 @@ func checkEmbeddingReady(ctx context.Context, cfg embeddingRunnerConfig) error {
 
 func localEmbeddingCheck(ctx context.Context, args cliArgs) map[string]any {
 	values, err := readEnvValues(envPath(args))
-	if err != nil || strings.TrimSpace(values["EMBEDDING_PROVIDER"]) != "local" {
+	if err != nil || !isLocalProviderName(values["EMBEDDING_PROVIDER"]) {
 		return map[string]any{"name": "local_embeddings", "ok": true, "skipped": true}
 	}
 	cfg := embeddingRunner(args)

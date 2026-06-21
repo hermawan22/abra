@@ -98,7 +98,7 @@ Then run the guided CLI onboarding:
 abra setup
 ```
 
-`abra setup` checks required commands, creates the runtime env file, asks which embedding provider to use, can start the built-in local Qwen embedding runner, and can start the local stack. From a source checkout it uses `.tmp/quickstart.env`; from a global CLI install it stores runtime files under your Abra config directory and can be run from any folder. `abra install` is a compatibility alias for `abra setup`; the curl script is what installs the CLI binary. If you skip setup startup and later run `abra up`, the default local provider starts the Qwen embedding runner automatically before API readiness is checked.
+`abra setup` checks required commands, creates the runtime env file, asks which embedding provider to use, can start the built-in local Qwen embedding runner, and can start the local stack. From a source checkout it uses `.tmp/quickstart.env`; from a global CLI install it stores runtime files under your Abra config directory and can be run from any folder. `abra install` is a compatibility alias for `abra setup`; the curl script is what installs the CLI binary. If you skip setup startup and later run `abra up`, the default local provider starts the Qwen embedding runner automatically before API readiness is checked. `qwen3` and `local-smart` are accepted as local neural provider aliases and use the same runner lifecycle.
 
 If setup completes but ingest or Codex still cannot use Abra, run `abra doctor` before editing env files. It separates runtime env issues, worker interval problems, API/MCP readiness, Codex token-env visibility, model config, and local model readiness. With the default local provider, `abra up` starts the embedding runner automatically; use `abra models status` to inspect it and `abra models up` to repair or manage it directly.
 
@@ -131,8 +131,8 @@ reloads the MCP config and token environment.
 Use `abra agents init` and `abra agents verify` separately when you want the
 manual steps. `abra agents verify` and `abra agents ready` print the exact
 ready prompt plus next steps. Use `abra agents ready . --scope <scope-from-abra-scope> --json`
-when an editor, CI job, or agent launcher needs `ready_prompt` and recovery
-`next_steps` without scraping terminal output.
+when an editor, CI job, or agent launcher needs `agent_ready`, `ready_prompt`,
+and recovery `next_steps` without scraping terminal output.
 
 For Claude Code or another MCP-capable agent, keep the same source-backed
 workflow but select the agent profile explicitly and wire the generic MCP config
@@ -903,7 +903,7 @@ ABRA_AI_PROVIDER_CONCURRENCY=4
 RERANKER_PROVIDER=
 ```
 
-The provider contract is generic: any embedding endpoint that implements the configured embeddings API shape can be used by setting `EMBEDDING_BASE_URL`, `EMBEDDING_API_KEY`, `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`, and optionally `EMBEDDING_TIMEOUT`. Empty API keys are allowed for self-hosted endpoints. The CLI infers dimensions for known OpenAI, Qwen, BGE, Nomic, and Gemini embedding model names; unknown compatible models require `--dimensions` so vector storage is configured intentionally. Abra does not use an LLM for answer generation; the provider is used to embed chunks, claims, and recall queries for hybrid retrieval. `ABRA_AI_PROVIDER_CONCURRENCY` is a service-wide guard around embedding and reranker calls, separate from compose fan-out settings; keep it low for one local model runner and tune upward for horizontally scaled provider endpoints. The optional reranker uses `RERANKER_PROVIDER`, `RERANKER_BASE_URL`, `RERANKER_API_KEY`, and `RERANKER_MODEL`. If reranking fails, recall keeps the hybrid retrieval result instead of failing the user query.
+The provider contract is generic: any embedding endpoint that implements the configured embeddings API shape can be used by setting `EMBEDDING_BASE_URL`, `EMBEDDING_API_KEY`, `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`, and optionally `EMBEDDING_TIMEOUT`. Empty API keys are allowed for self-hosted endpoints. The CLI infers dimensions for known OpenAI, Qwen, BGE, Nomic, and Gemini embedding model names; unknown compatible models require `--dimensions` so vector storage is configured intentionally. `EMBEDDING_PROVIDER=local`, `qwen3`, and `local-smart` all mean the built-in local neural runner; `abra models up` normalizes those aliases back to `local` after syncing runtime env. Abra does not use an LLM for answer generation; the provider is used to embed chunks, claims, and recall queries for hybrid retrieval. `ABRA_AI_PROVIDER_CONCURRENCY` is a service-wide guard around embedding and reranker calls, separate from compose fan-out settings; keep it low for one local model runner and tune upward for horizontally scaled provider endpoints. The optional reranker uses `RERANKER_PROVIDER`, `RERANKER_BASE_URL`, `RERANKER_API_KEY`, and `RERANKER_MODEL`. If reranking fails, recall keeps the hybrid retrieval result instead of failing the user query.
 
 ## V1 Direction
 

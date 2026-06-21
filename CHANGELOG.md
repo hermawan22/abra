@@ -14,6 +14,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Add first-class rerank warnings and per-result rerank metadata so working-memory packets expose reranker failures, bounded rerank scores, and base-vs-final ranking.
 - Add direct local `abra ingest` per-file progress in human output, with `--quiet` and `--json` keeping automation output clean.
 - Add explicit `server_ready`, `client_ready`, and `client_warnings` fields to `abra agents verify --json` so client MCP/token issues do not look like missing memory context.
+- Add `agent_ready` to `abra agents verify --json` so automation can distinguish server-side memory readiness from active AI-client readiness.
 - Add fail-fast MCP `ingest_documents` batching that validates every document first, embeds chunks and extracted claims across the whole request, then persists only after the embedding provider succeeds.
 - Add top-level `abra --version` and `abra -v` aliases for standard CLI install and troubleshooting checks.
 - Apply the configured request body limit to stateless MCP requests so MCP batch ingestion cannot bypass the HTTP ingest/webhook body guardrail.
@@ -27,6 +28,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 ### Changed
 
 - Infer embedding dimensions for known compatible models and require `--dimensions` for unknown compatible providers instead of silently defaulting every custom endpoint to OpenAI dimensions.
+- Treat `qwen3` and `local-smart` as first-class local provider aliases across `abra up`, `abra down`, `abra models`, `abra doctor`, and readiness checks.
 - Redact and bound provider error bodies and transport causes before exposing them through API, CLI, MCP, logs, or job metadata.
 - Make batched embedding ingestion preserve batch range and token estimates on provider failures for easier local model and custom provider troubleshooting.
 - Keep `ingest_documents(continue_on_error=true)` on per-document ingestion so partial connector overlays still receive stable success/error entries while the default fail-fast path gets cross-document embedding efficiency.

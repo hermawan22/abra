@@ -824,7 +824,7 @@ func TestAgentsVerifyJSONSeparatesServerAndClientReadiness(t *testing.T) {
 	if err := json.Unmarshal([]byte(output), &payload); err != nil {
 		t.Fatalf("decode verify json: %v\n%s", err, output)
 	}
-	if payload["ok"] != true || payload["server_ready"] != true || payload["client_ready"] != false || intValue(payload["client_warnings"]) == 0 {
+	if payload["ok"] != true || payload["server_ready"] != true || payload["client_ready"] != false || payload["agent_ready"] != false || intValue(payload["client_warnings"]) == 0 {
 		t.Fatalf("readiness payload = %#v", payload)
 	}
 	nextSteps, _ := payload["next_steps"].([]any)
@@ -1372,30 +1372,34 @@ func TestCfgReadsRuntimeEnvFile(t *testing.T) {
 }
 
 func TestModelConfigCheckExplainsLocalModel(t *testing.T) {
-	root := t.TempDir()
-	home := t.TempDir()
-	t.Setenv("ABRA_HOME", home)
-	t.Chdir(root)
-	mustWrite(t, filepath.Join(home, "quickstart.env"), strings.Join([]string{
-		"EMBEDDING_PROVIDER=local",
-		"EMBEDDING_BASE_URL=http://host.docker.internal:8080/v1",
-		"EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0",
-		"EMBEDDING_DIMENSIONS=1024",
-		"",
-	}, "\n"))
+	for _, provider := range []string{"local", "qwen3"} {
+		t.Run(provider, func(t *testing.T) {
+			root := t.TempDir()
+			home := t.TempDir()
+			t.Setenv("ABRA_HOME", home)
+			t.Chdir(root)
+			mustWrite(t, filepath.Join(home, "quickstart.env"), strings.Join([]string{
+				"EMBEDDING_PROVIDER=" + provider,
+				"EMBEDDING_BASE_URL=http://host.docker.internal:8080/v1",
+				"EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0",
+				"EMBEDDING_DIMENSIONS=1024",
+				"",
+			}, "\n"))
 
-	check := modelConfigCheck(parseArgs([]string{"doctor"}))
-	if check["ok"] != true {
-		t.Fatalf("check = %#v", check)
-	}
-	detail := stringValue(check["detail"], "")
-	for _, want := range []string{"provider=local", "base_url=http://host.docker.internal:8080/v1", "dimensions=1024"} {
-		if !strings.Contains(detail, want) {
-			t.Fatalf("detail missing %q: %s", want, detail)
-		}
-	}
-	if !strings.Contains(stringValue(check["hint"], ""), "abra models status") {
-		t.Fatalf("hint = %q", check["hint"])
+			check := modelConfigCheck(parseArgs([]string{"doctor"}))
+			if check["ok"] != true {
+				t.Fatalf("check = %#v", check)
+			}
+			detail := stringValue(check["detail"], "")
+			for _, want := range []string{"provider=" + provider, "base_url=http://host.docker.internal:8080/v1", "dimensions=1024"} {
+				if !strings.Contains(detail, want) {
+					t.Fatalf("detail missing %q: %s", want, detail)
+				}
+			}
+			if !strings.Contains(stringValue(check["hint"], ""), "abra models status") {
+				t.Fatalf("hint = %q", check["hint"])
+			}
+		})
 	}
 }
 
@@ -1991,6 +1995,14 @@ func TestUpAutoStartsLocalModelsOnlyForLocalProvider(t *testing.T) {
 	if !shouldStartLocalModelsForUp(parseArgs([]string{"up"})) {
 		t.Fatal("up should start local models when provider is local")
 	}
+	mustWrite(t, localEnv, "EMBEDDING_PROVIDER=qwen3\n")
+	if !shouldStartLocalModelsForUp(parseArgs([]string{"up"})) {
+		t.Fatal("up should start local models when provider is qwen3 alias")
+	}
+	mustWrite(t, localEnv, "EMBEDDING_PROVIDER=local-smart\n")
+	if !shouldStartLocalModelsForUp(parseArgs([]string{"up"})) {
+		t.Fatal("up should start local models when provider is local-smart alias")
+	}
 	if shouldStartLocalModelsForUp(parseArgs([]string{"up", "--no-models"})) {
 		t.Fatal("up --no-models should not start local models")
 	}
@@ -2042,6 +2054,32 @@ func TestModelsCommandsRespectActiveCompatibleProvider(t *testing.T) {
 	err := run(context.Background(), []string{"models", "up"})
 	if err == nil || !strings.Contains(err.Error(), "EMBEDDING_PROVIDER=compatible") {
 		t.Fatalf("models up error = %v", err)
+	}
+}
+
+func TestModelsCommandsTreatLocalAliasesAsActive(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	mustWrite(t, filepath.Join(home, "quickstart.env"), strings.Join([]string{
+		"EMBEDDING_PROVIDER=qwen3",
+		"EMBEDDING_BASE_URL=http://host.docker.internal:9999/v1",
+		"EMBEDDING_MODEL=alias-model",
+		"EMBEDDING_DIMENSIONS=1024",
+		"",
+	}, "\n"))
+
+	if err := requireLocalModelProvider(parseArgs([]string{"models", "up"}), "up"); err != nil {
+		t.Fatalf("qwen3 alias should be active local provider: %v", err)
+	}
+	if notice := inactiveLocalModelNotice(parseArgs([]string{"models", "status"})); notice != nil {
+		t.Fatalf("qwen3 alias should not be inactive: %#v", notice)
+	}
+	cfg := embeddingRunner(cliArgs{Flags: map[string]string{}, Bools: map[string]bool{}})
+	if cfg.Model != "alias-model" {
+		t.Fatalf("runner model = %q", cfg.Model)
+	}
+	if cfg.BaseURL != "http://127.0.0.1:9999/v1" {
+		t.Fatalf("runner base url = %q", cfg.BaseURL)
 	}
 }
 
@@ -2170,6 +2208,22 @@ func TestQueryCommandsReturnFriendlyMissingInputErrors(t *testing.T) {
 				t.Fatalf("error = %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestReadyzPathUsesDeepCheckForLocalAliases(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	envFile := filepath.Join(home, "quickstart.env")
+	for _, provider := range []string{"local", "qwen3", "local-smart"} {
+		mustWrite(t, envFile, "EMBEDDING_PROVIDER="+provider+"\n")
+		if got := readyzPath(parseArgs([]string{"status"})); got != "/readyz?deep=1" {
+			t.Fatalf("readyz path for provider %s = %q", provider, got)
+		}
+	}
+	mustWrite(t, envFile, "EMBEDDING_PROVIDER=compatible\n")
+	if got := readyzPath(parseArgs([]string{"status"})); got != "/readyz" {
+		t.Fatalf("readyz path for compatible = %q", got)
 	}
 }
 
@@ -2957,6 +3011,14 @@ func TestDownStopsLocalModelsByDefault(t *testing.T) {
 	if !shouldStopLocalModelsForDown(args) {
 		t.Fatal("down should stop local models for local provider")
 	}
+	if err := updateEnvValues(args, map[string]string{
+		"EMBEDDING_PROVIDER": "qwen3",
+	}); err != nil {
+		t.Fatalf("update env error = %v", err)
+	}
+	if !shouldStopLocalModelsForDown(args) {
+		t.Fatal("down should stop local models for qwen3 alias")
+	}
 	keep := parseArgs([]string{"down", "--keep-models"})
 	if shouldStopLocalModelsForDown(keep) {
 		t.Fatal("down --keep-models should not stop local models")
@@ -2972,6 +3034,39 @@ func TestDownStopsLocalModelsByDefault(t *testing.T) {
 	forced := parseArgs([]string{"down", "--models"})
 	if !shouldStopLocalModelsForDown(forced) {
 		t.Fatal("down --models should force model stop")
+	}
+}
+
+func TestSyncLocalRunnerEnvNormalizesLocalAliases(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+
+	if err := run(context.Background(), []string{"init"}); err != nil {
+		t.Fatalf("init error = %v", err)
+	}
+	args := parseArgs([]string{"models", "up"})
+	if err := updateEnvValues(args, map[string]string{
+		"EMBEDDING_PROVIDER":   "local-smart",
+		"EMBEDDING_BASE_URL":   "http://host.docker.internal:9999/v1",
+		"EMBEDDING_MODEL":      "alias-model",
+		"EMBEDDING_DIMENSIONS": "1024",
+	}); err != nil {
+		t.Fatalf("update env error = %v", err)
+	}
+	if err := syncLocalRunnerEnv(args); err != nil {
+		t.Fatalf("sync local runner env error = %v", err)
+	}
+	values, err := readEnvValues(filepath.Join(home, "quickstart.env"))
+	if err != nil {
+		t.Fatalf("read env: %v", err)
+	}
+	if values["EMBEDDING_PROVIDER"] != "local" {
+		t.Fatalf("provider = %q", values["EMBEDDING_PROVIDER"])
+	}
+	if values["EMBEDDING_MODEL"] != "alias-model" {
+		t.Fatalf("model = %q", values["EMBEDDING_MODEL"])
 	}
 }
 

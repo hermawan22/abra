@@ -415,7 +415,7 @@ func configShow(args cliArgs) error {
 		fmt.Println("rerank_model: " + stringValue(view["reranker_model"], ""))
 		fmt.Println("rerank_key:   " + stringValue(view["reranker_api_key"], ""))
 	}
-	if stringValue(view["embedding_provider"], "") == "local" {
+	if isLocalProviderName(stringValue(view["embedding_provider"], "")) {
 		if image := stringValue(view["local_runner_image"], ""); image != "" {
 			fmt.Println("local_image: " + image)
 		}
@@ -704,7 +704,7 @@ func up(ctx context.Context, args cliArgs) error {
 		fmt.Println("Using runtime: " + projectDir)
 	}
 	if shouldStartLocalModelsForUp(args) {
-		fmt.Println("Starting local embedding runner for provider=local.")
+		fmt.Println("Starting local embedding runner for provider=" + activeEmbeddingProvider(args) + ".")
 		if err := modelsUp(ctx, args); err != nil {
 			return err
 		}
@@ -731,13 +731,21 @@ func shouldStartLocalModelsForUp(args cliArgs) bool {
 	if err != nil {
 		return false
 	}
-	if strings.TrimSpace(values["EMBEDDING_PROVIDER"]) != "local" {
+	if !isLocalProviderName(values["EMBEDDING_PROVIDER"]) {
 		return false
 	}
 	if strings.EqualFold(strings.TrimSpace(values["NODE_ENV"]), "production") && !yesish(values["ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION"]) {
 		return false
 	}
 	return true
+}
+
+func activeEmbeddingProvider(args cliArgs) string {
+	values, err := readEnvValues(envPath(args))
+	if err != nil {
+		return "local"
+	}
+	return valueOr(strings.TrimSpace(values["EMBEDDING_PROVIDER"]), "local")
 }
 
 func down(args cliArgs) error {
@@ -810,7 +818,7 @@ func shouldStopLocalModelsForDown(args cliArgs) bool {
 	if err != nil {
 		return false
 	}
-	return strings.TrimSpace(values["EMBEDDING_PROVIDER"]) == "local"
+	return isLocalProviderName(values["EMBEDDING_PROVIDER"])
 }
 
 func status(ctx context.Context, args cliArgs) error {
@@ -1013,7 +1021,7 @@ func modelConfigCheck(args cliArgs) map[string]any {
 	if dimensions != "" {
 		detail += " dimensions=" + dimensions
 	}
-	if provider == "local" {
+	if isLocalProviderName(provider) {
 		return map[string]any{
 			"name":   "model_config",
 			"ok":     true,
@@ -2518,6 +2526,7 @@ func verifyAgentContext(ctx context.Context, args cliArgs, path, scope string) e
 	}
 	ok := checksOK(checks, strict)
 	serverReady, clientReady, clientWarnings := agentReadinessSummary(checks, filesOnly)
+	agentReady := serverReady && clientReady
 	readyPrompt := agentReadyPrompt(scope, agent)
 	nextSteps := agentVerifyNextSteps(path, scope, agent, ok, filesOnly)
 	if ok && !filesOnly && !clientReady {
@@ -2528,6 +2537,7 @@ func verifyAgentContext(ctx context.Context, args cliArgs, path, scope string) e
 			"ok":              ok,
 			"server_ready":    serverReady,
 			"client_ready":    clientReady,
+			"agent_ready":     agentReady,
 			"client_warnings": clientWarnings,
 			"scope":           scope,
 			"path":            path,
@@ -3195,7 +3205,7 @@ func readyFailureDetail(result map[string]any, err error) string {
 
 func readyzPath(args cliArgs) string {
 	values, err := readEnvValues(envPath(args))
-	if err == nil && strings.TrimSpace(values["EMBEDDING_PROVIDER"]) == "local" {
+	if err == nil && isLocalProviderName(values["EMBEDDING_PROVIDER"]) {
 		return "/readyz?deep=1"
 	}
 	return "/readyz"
@@ -3978,6 +3988,7 @@ Source ingestion flags:
   abra config show [--json]
   abra config path
   abra config model local [--base-url http://host.docker.internal:8080/v1] [--runner-image image@sha256:...] [--pull-policy missing] [--readiness-timeout 10s]
+  abra config model qwen3
   abra config model openai --api-key-stdin
   abra config model compatible --base-url <url> --model <model> --dimensions <size> [--api-key-stdin]
 

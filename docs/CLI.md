@@ -48,11 +48,12 @@ View or change the important runtime config without opening the env file:
 abra config show
 abra config path
 abra config model local
+abra config model qwen3
 abra config model openai --api-key-stdin
 abra config model compatible --base-url https://api.example.com/v1 --model embedding-model --dimensions 1024
 ```
 
-For non-interactive local setup, use `abra setup --yes`. For authenticated compatible providers during onboarding, use `printf '%s' "$PROVIDER_API_KEY" | abra setup --compatible --embedding-base-url https://api.example.com/v1 --embedding-model embedding-model --dimensions 1024 --api-key-stdin`. The CLI infers dimensions for known OpenAI, Qwen, BGE, Nomic, and Gemini embedding model names; pass `--dimensions` for unknown compatible models. For OpenAI, non-interactive setup requires `--api-key-stdin` or `OPENAI_API_KEY`.
+For non-interactive local setup, use `abra setup --yes`. `qwen3` and `local-smart` are local neural aliases; they use the same built-in Qwen runner lifecycle as `local`, and `abra models up` normalizes the stored provider back to `local` after syncing the env. For authenticated compatible providers during onboarding, use `printf '%s' "$PROVIDER_API_KEY" | abra setup --compatible --embedding-base-url https://api.example.com/v1 --embedding-model embedding-model --dimensions 1024 --api-key-stdin`. The CLI infers dimensions for known OpenAI, Qwen, BGE, Nomic, and Gemini embedding model names; pass `--dimensions` for unknown compatible models. For OpenAI, non-interactive setup requires `--api-key-stdin` or `OPENAI_API_KEY`.
 Use `abra setup --yes --no-models` only when you intentionally manage the embedding endpoint yourself; otherwise the default local provider is started for you by setup or `abra up`.
 
 Make the current repo Codex-ready after setup:
@@ -73,7 +74,9 @@ Use `abra agents init --agent codex`, `abra ingest . --code --scope
 <scope-from-abra-scope> --agent codex` separately only when you need the manual
 steps. `abra agents ready` is a non-mutating alias for verify. Both commands
 print a ready prompt and next steps for the AI client; `--json` returns
-`server_ready`, `client_ready`, `ready_prompt`, and `next_steps` for automation.
+`ok`, `server_ready`, `client_ready`, `agent_ready`, `ready_prompt`, and
+`next_steps` for automation. Use `agent_ready`, not `ok` alone, when deciding
+whether the active AI client can rely on Abra MCP.
 The compose call runs in diagnostic mode, so verification does not write compose
 audit events or learning proposals. If `abra doctor` says MCP is ok
 but Codex has no Abra tools or no context, run `abra mcp install-codex`, fully
@@ -91,7 +94,7 @@ abra up
 abra status
 ```
 
-For local-runner troubleshooting, use `abra models status` and `abra models up` directly. These commands manage only the built-in local Qwen runner, publish it on `127.0.0.1` by default, use Docker pull policy `missing`, and recreate the container when runner-relevant model, dimension, port, cache, publish, image, pull, pooling, or context settings change. Production local embeddings require `ABRA_LOCAL_EMBEDDING_IMAGE` to be an operator-verified `@sha256` image reference; otherwise use `EMBEDDING_PROVIDER=compatible`. When `EMBEDDING_PROVIDER=compatible`, model commands report the local runner as inactive unless `--force` is passed.
+For local-runner troubleshooting, use `abra models status` and `abra models up` directly. These commands manage only the built-in local Qwen runner, publish it on `127.0.0.1` by default, use Docker pull policy `missing`, and recreate the container when runner-relevant model, dimension, port, cache, publish, image, pull, pooling, or context settings change. Production local embeddings require `ABRA_LOCAL_EMBEDDING_IMAGE` to be an operator-verified `@sha256` image reference; otherwise use `EMBEDDING_PROVIDER=compatible`. When `EMBEDDING_PROVIDER` is not `local`, `qwen3`, or `local-smart`, model commands report the local runner as inactive unless `--force` is passed.
 
 Use these defaults for the remaining commands:
 

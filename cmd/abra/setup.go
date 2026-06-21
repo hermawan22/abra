@@ -115,7 +115,7 @@ func setupUsesLocalEmbeddings(args cliArgs) bool {
 	if err != nil {
 		return false
 	}
-	return strings.TrimSpace(values["EMBEDDING_PROVIDER"]) == "local"
+	return isLocalProviderName(values["EMBEDDING_PROVIDER"])
 }
 
 func normalizeLocalRuntimeDefaults(args cliArgs) error {
@@ -456,7 +456,7 @@ func printSetupNext(args cliArgs) {
 	fmt.Println("Next:")
 	fmt.Println("  abra up --env-file " + envPath(args))
 	fmt.Println("  From a source checkout, use `go run ./cmd/abra <command>` instead of `abra <command>` until the release binary is installed.")
-	if provider != "local" && provider != "" {
+	if !isLocalProviderName(provider) && provider != "" {
 		fmt.Println("  verify your " + label + " embedding endpoint is reachable from Abra")
 	}
 	fmt.Println("  cd /path/to/project")
