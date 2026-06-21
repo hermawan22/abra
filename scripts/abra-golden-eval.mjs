@@ -52,7 +52,7 @@ function materialize(value) {
 
 function scopedRecord(record) {
   const out = structuredClone(record);
-  for (const key of ["scope", "source_url", "source_id", "expected_source_url", "title", "query", "memory_task"]) {
+  for (const key of ["scope", "source_url", "source_id", "expected_source_url", "expected_memory_source_url", "title", "query", "memory_task"]) {
     if (out[key] !== undefined) {
       out[key] = materialize(out[key]);
     }
@@ -124,6 +124,15 @@ function forbidText(payload, contains, label) {
   }
 }
 
+function sourceWasCited(payload, sourceUrl) {
+  return (
+    (Array.isArray(payload.claims) && payload.claims.some((claim) => claim.source_url === sourceUrl)) ||
+    (Array.isArray(payload.facts) && payload.facts.some((claim) => claim.source_url === sourceUrl)) ||
+    (Array.isArray(payload.supporting_documents) && payload.supporting_documents.some((document) => document.source_url === sourceUrl)) ||
+    (Array.isArray(payload.evidence) && payload.evidence.some((item) => item.source_url === sourceUrl))
+  );
+}
+
 const records = await readDataset(datasetPath);
 const documents = records.filter((record) => (record.type || "case") === "document");
 const cases = records.filter((record) => (record.type || "case") === "case");
@@ -176,6 +185,8 @@ const recallRanks = [];
 let verifiedWithoutCitation = 0;
 let leakageCount = 0;
 let memoryCases = 0;
+let sourceBackedMemoryCases = 0;
+let trackedStaleMemoryMentions = 0;
 const decisions = {};
 
 await runCheck("golden_cases", async () => {
@@ -224,6 +235,7 @@ await runCheck("golden_cases", async () => {
 
     let memory = null;
     let memoryLatency = null;
+    let staleMemoryMentioned = false;
     if (item.memory_task) {
       memoryCases++;
       const before = Date.now();
@@ -264,6 +276,20 @@ await runCheck("golden_cases", async () => {
       if (item.expected_memory_contains) {
         requireText(memory, Array.isArray(item.expected_memory_contains) ? item.expected_memory_contains : [item.expected_memory_contains], item.id);
       }
+      forbidText(memory, item.forbidden_memory_contains, item.id);
+      if (item.expected_memory_source_url) {
+        sourceBackedMemoryCases++;
+        assert(
+          sourceWasCited(memory, item.expected_memory_source_url),
+          `${item.id} memory packet did not cite expected source ${item.expected_memory_source_url}`
+        );
+      }
+      staleMemoryMentioned =
+        Array.isArray(item.tracked_stale_memory_contains) &&
+        item.tracked_stale_memory_contains.some((value) => textOf(memory).includes(String(value).toLowerCase()));
+      if (staleMemoryMentioned) {
+        trackedStaleMemoryMentions++;
+      }
       if (item.expected_agent_decision) {
         const allowed = Array.isArray(item.expected_agent_decision)
           ? item.expected_agent_decision
@@ -281,7 +307,9 @@ await runCheck("golden_cases", async () => {
       supporting_documents: Array.isArray(recall.supporting_documents) ? recall.supporting_documents.length : 0,
       graph_relations: Array.isArray(recall.graph_context) ? recall.graph_context.length : 0,
       memory_latency_ms: memoryLatency,
-      agent_decision: memory ? memory.agent_decision.decision : undefined
+      agent_decision: memory ? memory.agent_decision.decision : undefined,
+      memory_source_cited: item.expected_memory_source_url && memory ? sourceWasCited(memory, item.expected_memory_source_url) : undefined,
+      tracked_stale_memory_mentioned: staleMemoryMentioned || undefined
     });
   }
   assert(verifiedWithoutCitation === 0, `${verifiedWithoutCitation} verified claims were missing source_url`);
@@ -308,6 +336,8 @@ const summary = {
     verified_without_citation: verifiedWithoutCitation,
     leakage_count: leakageCount,
     memory_cases: memoryCases,
+    source_backed_memory_cases: sourceBackedMemoryCases,
+    tracked_stale_memory_mentions: trackedStaleMemoryMentions,
     agent_decisions: decisions
   },
   artifacts

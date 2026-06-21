@@ -58,8 +58,8 @@ ABRA_DATABASE_URL=postgres://user:password@postgres.example.invalid:5432/abra
 
 Production Compose intentionally has no local source-build fallback. Set
 `ABRA_IMAGE` and `POSTGRES_IMAGE` to digest-pinned references in
-`.env.production`; the example file uses all-zero digest placeholders only so
-configuration validation can run before operators replace them.
+`.env.production`; the example file uses explicit placeholder digests that must
+be replaced with real release/operator-approved digests before validation or boot.
 
 Install:
 

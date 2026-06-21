@@ -397,6 +397,7 @@ func (r *Repository) FinishIngestionJob(ctx context.Context, jobID string, lease
 	}
 	if runErr != nil {
 		var status string
+		retryable := shouldRetryIngestionJob(runErr)
 		metadata := map[string]any{
 			"documents_skipped":       stats.DocumentsSkipped,
 			"documents_deferred":      stats.DocumentsDeferred,
@@ -409,12 +410,12 @@ func (r *Repository) FinishIngestionJob(ctx context.Context, jobID string, lease
 		}
 		err := r.pool.QueryRow(ctx, `
 			UPDATE ingestion_jobs
-			SET status = CASE WHEN attempts >= max_attempts THEN 'failed' ELSE 'retry' END,
+			SET status = CASE WHEN attempts >= max_attempts OR NOT $11::boolean THEN 'failed' ELSE 'retry' END,
 			    lease_owner = NULL,
 			    heartbeat_at = NULL,
-			    finished_at = CASE WHEN attempts >= max_attempts THEN now() ELSE NULL END,
+			    finished_at = CASE WHEN attempts >= max_attempts OR NOT $11::boolean THEN now() ELSE NULL END,
 			    next_attempt_at = CASE
-			      WHEN attempts >= max_attempts THEN NULL
+			      WHEN attempts >= max_attempts OR NOT $11::boolean THEN NULL
 			      ELSE now() + make_interval(secs => LEAST($10::int, $9::int * power(2, GREATEST(attempts - 1, 0))::int))
 			    END,
 			    documents_seen = $2,
@@ -428,7 +429,7 @@ func (r *Repository) FinishIngestionJob(ctx context.Context, jobID string, lease
 			  AND status = 'running'
 			  AND lease_owner = $8
 			RETURNING status
-		`, jobID, stats.DocumentsSeen, stats.DocumentsChanged, stats.ChunksWritten, stats.ClaimsWritten, runErr.Error(), jsonb(metadata), leaseOwner, defaultRetryBackoffBaseSeconds, defaultRetryBackoffMaxSeconds).Scan(&status)
+		`, jobID, stats.DocumentsSeen, stats.DocumentsChanged, stats.ChunksWritten, stats.ClaimsWritten, runErr.Error(), jsonb(metadata), leaseOwner, defaultRetryBackoffBaseSeconds, defaultRetryBackoffMaxSeconds, retryable).Scan(&status)
 		if err == pgx.ErrNoRows {
 			return r.jobStatus(ctx, jobID)
 		}
@@ -464,6 +465,13 @@ func (r *Repository) FinishIngestionJob(ctx context.Context, jobID string, lease
 		return r.jobStatus(ctx, jobID)
 	}
 	return status, err
+}
+
+func shouldRetryIngestionJob(err error) bool {
+	if providerErr, ok := ai.ProviderErrorInfo(err); ok {
+		return providerErr.Retryable
+	}
+	return true
 }
 
 func providerFailureMetadata(err error) map[string]any {

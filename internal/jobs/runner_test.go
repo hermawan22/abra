@@ -196,6 +196,18 @@ func TestProviderFailureMetadataUsesStructuredProviderError(t *testing.T) {
 	}
 }
 
+func TestShouldRetryIngestionJobHonorsProviderRetryability(t *testing.T) {
+	if !shouldRetryIngestionJob(errors.New("temporary filesystem failure")) {
+		t.Fatal("generic errors should remain retryable")
+	}
+	if !shouldRetryIngestionJob(fmt.Errorf("wrapped: %w", &ai.ProviderError{Code: "provider_timeout", Retryable: true})) {
+		t.Fatal("retryable provider errors should retry")
+	}
+	if shouldRetryIngestionJob(fmt.Errorf("wrapped: %w", &ai.ProviderError{Code: "auth_failed", Retryable: false})) {
+		t.Fatal("non-retryable provider errors should fail without queue churn")
+	}
+}
+
 func TestRunnerCountsPreReadSkippedFilesByReason(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, root, "src/app.ts", "export const app = true\n")

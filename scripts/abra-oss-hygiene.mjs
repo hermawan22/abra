@@ -184,6 +184,37 @@ function rawInstallerURLFindings(files) {
   return findings;
 }
 
+function publicPlaceholderDigestFindings(files) {
+  const publicFiles = files.filter(
+    (file) =>
+      file.startsWith("deploy/") ||
+      file.startsWith("examples/") ||
+      file.startsWith("docs/") ||
+      ["README.md", "PRODUCTION.md", "SECURITY.md"].includes(file)
+  );
+  const findings = [];
+  const placeholderPattern = /sha256:0{64}/g;
+  for (const file of publicFiles) {
+    let content;
+    try {
+      content = readFileSync(file, "utf8");
+    } catch {
+      continue;
+    }
+    placeholderPattern.lastIndex = 0;
+    let match;
+    while ((match = placeholderPattern.exec(content)) !== null) {
+      findings.push({
+        file,
+        line: lineNumberFor(content, match.index),
+        rule: "public_placeholder_digest",
+        message: "public deployment docs/examples must use explicit replacement placeholders, not all-zero sha256 digests"
+      });
+    }
+  }
+  return findings;
+}
+
 function helmImageDigestFindings(files) {
   const file = "deploy/helm/values.yaml";
   if (!files.includes(file)) {
@@ -203,6 +234,15 @@ function helmImageDigestFindings(files) {
       line: lineNumberFor(content, emptyDigest.index),
       rule: "helm_image_digest_required",
       message: "Helm defaults must render digest-pinned images instead of mutable version tags"
+    });
+  }
+  const placeholderDigest = /^\s*digest:\s*["']?sha256:0{64}["']?\s*$/m.exec(content);
+  if (placeholderDigest) {
+    findings.push({
+      file,
+      line: lineNumberFor(content, placeholderDigest.index),
+      rule: "helm_image_digest_placeholder",
+      message: "Helm image digest must be a real release digest, not the all-zero placeholder"
     });
   }
   return findings;
@@ -304,6 +344,13 @@ function composeProductionImageFindings(files) {
           rule: "compose_production_mutable_image",
           message: `production-facing Compose service ${service} image ${ref} must be digest-pinned`
         });
+      } else if (hasAllZeroSha256Digest(ref)) {
+        findings.push({
+          file,
+          line: index + 1,
+          rule: "compose_production_placeholder_digest",
+          message: `production-facing Compose service ${service} image ${ref} must use a real release digest, not the all-zero placeholder`
+        });
       }
     }
   }
@@ -328,6 +375,10 @@ function imageFallbackRef(value) {
 
 function hasSha256Digest(ref) {
   return /@sha256:[0-9a-f]{64}$/i.test(ref);
+}
+
+function hasAllZeroSha256Digest(ref) {
+  return /@sha256:0{64}$/i.test(ref);
 }
 
 function isLocalImageRef(ref) {
@@ -387,6 +438,11 @@ function runSelfTest() {
         ""
       ].join("\n")
     );
+    mkdirSync("deploy/kubernetes", { recursive: true });
+    writeFileSync(
+      "deploy/kubernetes/bad.yaml",
+      "image: ghcr.io/example/abra@sha256:" + "0".repeat(64) + "\n"
+    );
     mkdirSync("deploy/helm", { recursive: true });
     writeFileSync("deploy/helm/values.yaml", "image:\n  repository: ghcr.io/example/abra\n  digest: \"\"\n");
     writeFileSync(
@@ -445,11 +501,14 @@ function runSelfTest() {
     assertSelfTest(installFindings.length === 1, `expected 1 raw installer URL finding, got ${installFindings.length}`);
     assertSelfTest(installFindings[0].file === "bad-install.md", "expected bad installer docs finding");
     assertSelfTest(installFindings[0].rule === "raw_branch_installer_url", "expected raw installer URL rule");
+    const publicDigestFindings = publicPlaceholderDigestFindings(["deploy/kubernetes/bad.yaml", "scripts/internal.js"]);
+    assertSelfTest(publicDigestFindings.length === 1, `expected 1 public placeholder digest finding, got ${publicDigestFindings.length}`);
+    assertSelfTest(publicDigestFindings[0].rule === "public_placeholder_digest", "expected public placeholder digest rule");
     const helmFindings = helmImageDigestFindings(["deploy/helm/values.yaml"]);
     assertSelfTest(helmFindings.length === 1, `expected 1 Helm image digest finding, got ${helmFindings.length}`);
     assertSelfTest(helmFindings[0].rule === "helm_image_digest_required", "expected Helm image digest rule");
     const composeFindings = composeProductionImageFindings(["docker-compose.yml", "docker-compose.dev.yml"]);
-    assertSelfTest(composeFindings.length === 3, `expected 3 Compose image findings, got ${composeFindings.length}`);
+    assertSelfTest(composeFindings.length === 4, `expected 4 Compose image findings, got ${composeFindings.length}`);
     assertSelfTest(
       composeFindings.some((finding) => finding.rule === "compose_production_mutable_image" && finding.message.includes("db")),
       "expected mutable production Compose image finding"
@@ -463,12 +522,12 @@ function runSelfTest() {
       "expected production Compose local image fallback finding"
     );
     assertSelfTest(
-      !composeFindings.some((finding) =>
-        finding.message.includes("service required ") ||
-        finding.message.includes("service pinned ") ||
-        finding.file.includes("dev")
-      ),
-      "expected required env image, pinned image, and dev override to be ignored"
+      composeFindings.some((finding) => finding.rule === "compose_production_placeholder_digest" && finding.message.includes("pinned")),
+      "expected production Compose all-zero placeholder digest finding"
+    );
+    assertSelfTest(
+      !composeFindings.some((finding) => finding.message.includes("service required ") || finding.file.includes("dev")),
+      "expected required env image and dev override to be ignored"
     );
   } finally {
     process.chdir(originalCwd);
@@ -487,6 +546,7 @@ const findings = [
   ...files.flatMap(scanFile),
   ...workflowActionRefFindings(files),
   ...rawInstallerURLFindings(files),
+  ...publicPlaceholderDigestFindings(files),
   ...helmImageDigestFindings(files),
   ...composeProductionImageFindings(files)
 ];
