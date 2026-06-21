@@ -2001,6 +2001,15 @@ func (h *handler) mcpToolCall(w http.ResponseWriter, r *http.Request, id any, pa
 		if !h.requireAccess(w, r, authActionWrite, sourceConfig.Scope) {
 			return
 		}
+		if approvalAction := sourceValidationApprovalAction(sourceConfig); approvalAction != "" && !h.requireRiskApproval(w, r, approvalRequirement{
+			Action:     approvalAction,
+			Scope:      sourceConfig.Scope,
+			TargetType: "source_config",
+			TargetID:   sourceConfigApprovalTarget(sourceConfig),
+			ApprovalID: strings.TrimSpace(sourceConfig.ApprovalID),
+		}) {
+			return
+		}
 		tools, listErr := jobs.ListMCPTools(r.Context(), jobs.SourceConfig{
 			ID:             firstNonEmpty(sourceConfig.ID, "connector-inspect"),
 			Scope:          sourceConfig.Scope,

@@ -22,7 +22,10 @@ worker:
   replicas: 1
   interval: 5m
   maxSourcesPerRun: "25"
+  maxChangedDocumentsPerSource: "100"
   concurrency: "1"
+  sourceTimeout: 2m
+  leaseTimeout: 5m
   gitCacheDir: /var/cache/abra/git
   gitCacheSizeLimit: 1Gi
   gitCloneDepth: "1"

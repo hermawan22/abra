@@ -123,6 +123,13 @@ if [ "$#" -gt 0 ]; then
   shift
 fi
 case "$cmd" in
+  info)
+    if [ "${1:-}" = "--format" ]; then
+      printf 'fake-docker\n'
+      exit 0
+    fi
+    printf 'ServerVersion: fake-docker\n'
+    ;;
   container)
     sub="${1:-}"
     if [ "$#" -gt 0 ]; then

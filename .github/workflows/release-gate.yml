@@ -17,6 +17,7 @@ concurrency:
 jobs:
   quick-release-gate:
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -40,7 +41,8 @@ jobs:
         uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
 
       - name: Start local embedding model
-        run: go run ./cmd/abra models up
+        timeout-minutes: 18
+        run: go run ./cmd/abra models up --reranker-provider none --startup-timeout 12m --readiness-timeout 30s
 
       - name: Run quick managed release gate
         run: |

@@ -218,6 +218,7 @@ prometheusRule:
 - Keep `config.aiProviderConcurrency=1` for a single local model runner. Raise it only when the embedding or reranker provider is horizontally scaled and latency/error metrics show headroom.
 - Tune `config.embeddingBatchMaxItems` and `config.embeddingBatchMaxTokens` for provider request size. Use smaller values for local Qwen context-window reliability; raise them only for compatible providers with measured capacity.
 - Keep `worker.concurrency=1` for the default local Qwen runner. Raise it up to `32` only after provider capacity and database pool usage show headroom; same-source jobs are serialized within one worker process.
+- Tune `worker.maxChangedDocumentsPerSource`, `worker.sourceTimeout`, and `worker.leaseTimeout` for large repositories or slow connector exports. Keep source timeout below the lease timeout unless workers can heartbeat reliably for the longer source run.
 - Keep Abra's built-in Postgres-backed rate limit enabled with `config.rateLimitMax` and `config.rateLimitWindow`; it applies across replicated API pods after migrations are applied. Add ingress or gateway rate limits for defense in depth on exposed deployments.
 - Set `config.composeHealthCacheTtl=0s` only when every working-memory compose call must run a fresh scoped health aggregate.
 - Keep `config.composeRecallConcurrency` and `config.composeGraphConcurrency` at conservative values until database pool usage and memory-compose p95 have been measured under expected agent traffic. Values must be between `1` and `32`.

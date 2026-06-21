@@ -39,6 +39,9 @@ data:
   ABRA_DEPLOYMENT_ENVIRONMENT: {{ .Values.config.deploymentEnvironment | quote }}
   WORKER_INTERVAL: {{ .Values.worker.interval | quote }}
   WORKER_MAX_SOURCES_PER_RUN: {{ .Values.worker.maxSourcesPerRun | quote }}
+  WORKER_MAX_CHANGED_DOCUMENTS_PER_SOURCE: {{ .Values.worker.maxChangedDocumentsPerSource | quote }}
   WORKER_CONCURRENCY: {{ .Values.worker.concurrency | quote }}
+  WORKER_SOURCE_TIMEOUT: {{ .Values.worker.sourceTimeout | quote }}
+  WORKER_LEASE_TIMEOUT: {{ .Values.worker.leaseTimeout | quote }}
   ABRA_GIT_CACHE_DIR: {{ .Values.worker.gitCacheDir | quote }}
   ABRA_GIT_CLONE_DEPTH: {{ .Values.worker.gitCloneDepth | quote }}

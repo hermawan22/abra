@@ -85,8 +85,8 @@ func modelsUp(ctx context.Context, args cliArgs) error {
 			return err
 		}
 	}
-	if _, err := execLookPath("docker"); err != nil {
-		return errors.New("missing required command: docker")
+	if err := ensureDockerDaemon(); err != nil {
+		return err
 	}
 	if boolFlag(args, "recreate") {
 		for _, cfg := range cfgs {
@@ -99,9 +99,10 @@ func modelsUp(ctx context.Context, args cliArgs) error {
 		}
 	}
 	fmt.Println("First run may download model weights; this can take several minutes.")
+	startupTimeout := localRunnerStartupTimeout(args)
 	for _, cfg := range cfgs {
 		fmt.Println("Waiting for " + cfg.Kind + " endpoint: " + localRunnerReadyURL(cfg))
-		if err := waitLocalRunnerReady(ctx, cfg, 10*time.Minute); err != nil {
+		if err := waitLocalRunnerReady(ctx, cfg, startupTimeout); err != nil {
 			return fmt.Errorf("%w\nRun: abra models logs\nRun: abra models status", err)
 		}
 		fmt.Println("Local " + cfg.Kind + " ready")
@@ -596,6 +597,21 @@ func localRunnerReadinessTimeout(args cliArgs, values map[string]string) time.Du
 			return time.Duration(seconds) * time.Second
 		}
 		return 10 * time.Second
+	}
+	return timeout
+}
+
+func localRunnerStartupTimeout(args cliArgs) time.Duration {
+	raw := firstNonEmpty(flag(args, "startup-timeout", ""), os.Getenv("ABRA_LOCAL_MODEL_STARTUP_TIMEOUT"))
+	if raw == "" {
+		return 10 * time.Minute
+	}
+	timeout, err := time.ParseDuration(raw)
+	if err != nil || timeout <= 0 {
+		if seconds, parseErr := strconv.Atoi(raw); parseErr == nil && seconds > 0 {
+			return time.Duration(seconds) * time.Second
+		}
+		return 10 * time.Minute
 	}
 	return timeout
 }

@@ -5764,7 +5764,7 @@ After changing embedding providers, re-ingest important sources for reliable vec
 `
 	case "models", "model":
 		return `Usage:
-  abra models up [--recreate] [--port 8080] [--pull-policy missing] [--model-id Qwen/Qwen3-Embedding-0.6B-GGUF] [--model Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0]
+  abra models up [--recreate] [--port 8080] [--pull-policy missing] [--startup-timeout 10m] [--model-id Qwen/Qwen3-Embedding-0.6B-GGUF] [--model Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0]
   abra models status [--json]
   abra models logs
   abra models down
@@ -5780,6 +5780,7 @@ Operational flags:
   --image          llama.cpp server image; use a digest-pinned image in production
   --pull-policy    Docker image pull policy: missing, always, or never
   --readiness-timeout timeout for one readiness request, default 10s
+  --startup-timeout total wait per model runner, default 10m
   --cache-dir      host model cache directory
   --container      Docker container name
   --base-url       local OpenAI-compatible base URL

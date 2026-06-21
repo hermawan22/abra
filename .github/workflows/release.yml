@@ -139,7 +139,8 @@ jobs:
         run: npm audit --audit-level=high
 
       - name: Start local embedding model
-        run: go run ./cmd/abra models up
+        timeout-minutes: 18
+        run: go run ./cmd/abra models up --reranker-provider none --startup-timeout 12m --readiness-timeout 30s
 
       - name: Run release gate
         run: |

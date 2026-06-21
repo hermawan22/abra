@@ -11,6 +11,7 @@ const defaultScopeSuffix =
   new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14);
 const defaultLimit = Number(process.env.ABRA_GOLDEN_LIMIT || "5");
 const memoryMaxMs = Number(process.env.ABRA_GOLDEN_MEMORY_MAX_MS || "3500");
+const requestTimeoutMs = Number(process.env.ABRA_GOLDEN_REQUEST_TIMEOUT_MS || "30000");
 const startedAt = new Date().toISOString();
 const checks = [];
 const artifacts = { base_url: baseUrl, dataset: datasetPath };
@@ -37,9 +38,10 @@ function connectorFixtureHost(address) {
 }
 
 async function request(path, { method = "GET", body, expectStatus = 200 } = {}) {
-  const response = await fetch(`${baseUrl}${path}`, {
-    method,
-    headers: {
+	const response = await fetch(`${baseUrl}${path}`, {
+		method,
+		signal: AbortSignal.timeout(requestTimeoutMs),
+		headers: {
       authorization: `Bearer ${token}`,
       ...(body === undefined ? {} : { "content-type": "application/json" })
     },

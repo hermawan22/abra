@@ -106,6 +106,17 @@ func TestSourceValidationApprovalActionRequiresApprovalForServerCredentialEnv(t 
 	}
 }
 
+func TestInspectConnectorSourceUsesValidationApprovalActionForServerCredentialEnv(t *testing.T) {
+	source := mcpConnectorSourceConfigFromArgs(map[string]any{
+		"scope":            "team:a",
+		"mcp_url":          "https://mcp.example.invalid/mcp",
+		"bearer_token_env": "MCP_TOKEN",
+	}, false)
+	if got := sourceValidationApprovalAction(source); got != "connector_enable" {
+		t.Fatalf("inspect connector approval action = %q, want connector_enable", got)
+	}
+}
+
 func TestSourceConfigApprovalTarget(t *testing.T) {
 	if got := sourceConfigApprovalTarget(store.SourceConfigRecord{ID: "source-1"}); got != "source-1" {
 		t.Fatalf("target = %q, want source-1", got)

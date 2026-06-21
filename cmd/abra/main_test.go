@@ -3626,6 +3626,22 @@ func TestEmbeddingRunnerUsesImageAndReadinessEnv(t *testing.T) {
 	}
 }
 
+func TestLocalRunnerStartupTimeoutUsesFlagAndEnv(t *testing.T) {
+	t.Setenv("ABRA_LOCAL_MODEL_STARTUP_TIMEOUT", "3m")
+	if got := localRunnerStartupTimeout(parseArgs([]string{"models", "up"})); got != 3*time.Minute {
+		t.Fatalf("startup timeout from env = %s", got)
+	}
+	if got := localRunnerStartupTimeout(parseArgs([]string{"models", "up", "--startup-timeout", "45"})); got != 45*time.Second {
+		t.Fatalf("startup timeout from seconds flag = %s", got)
+	}
+	if got := localRunnerStartupTimeout(parseArgs([]string{"models", "up", "--startup-timeout", "2m"})); got != 2*time.Minute {
+		t.Fatalf("startup timeout from duration flag = %s", got)
+	}
+	if got := localRunnerStartupTimeout(parseArgs([]string{"models", "up", "--startup-timeout", "0s"})); got != 10*time.Minute {
+		t.Fatalf("invalid startup timeout fallback = %s", got)
+	}
+}
+
 func TestProductionLocalRunnerRequiresDigestPinnedImage(t *testing.T) {
 	root := t.TempDir()
 	home := t.TempDir()
