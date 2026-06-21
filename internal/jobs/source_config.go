@@ -15,6 +15,7 @@ type SourceConfig struct {
 	SourceType     ingest.SourceType
 	Name           string
 	BaseURL        string
+	ConnectorKind  string
 	Authority      string
 	AuthorityScore float64
 	Config         map[string]any
@@ -32,6 +33,12 @@ func (s SourceConfig) ValidateIngestContract() error {
 			return err
 		}
 		return nil
+	case ingest.SourceTypeMCP:
+		spec, err := s.MCPSourceSpec()
+		if err != nil {
+			return err
+		}
+		return spec.Validate()
 	case "":
 		return fmt.Errorf("source %q source_type is required", s.ID)
 	default:
@@ -39,6 +46,64 @@ func (s SourceConfig) ValidateIngestContract() error {
 		// OSS worker only schedules markdown/local_repo/git_repo; overlays own validation.
 		return nil
 	}
+}
+
+type MCPSourceSpec struct {
+	ID             string
+	Scope          string
+	ServerURL      string
+	Tool           string
+	Arguments      map[string]any
+	BearerTokenEnv string
+	HeaderEnv      map[string]string
+	SourceType     string
+}
+
+func (s SourceConfig) MCPSourceSpec() (MCPSourceSpec, error) {
+	serverURL := firstString(s.Config, "server_url", "mcp_url", "url")
+	if serverURL == "" {
+		serverURL = strings.TrimSpace(s.BaseURL)
+	}
+	spec := MCPSourceSpec{
+		ID:             s.ID,
+		Scope:          strings.TrimSpace(s.Scope),
+		ServerURL:      serverURL,
+		Tool:           firstString(s.Config, "tool", "tool_name"),
+		Arguments:      mapValue(s.Config["arguments"]),
+		BearerTokenEnv: firstString(s.Config, "bearer_token_env", "token_env"),
+		HeaderEnv:      stringMapValue(s.Config["header_env"]),
+		SourceType:     firstString(s.Config, "document_source_type", "default_source_type"),
+	}
+	if spec.SourceType == "" {
+		spec.SourceType = strings.TrimSpace(s.ConnectorKind)
+	}
+	if spec.SourceType == "" {
+		spec.SourceType = string(ingest.SourceTypeMCP)
+	}
+	return spec, nil
+}
+
+func (s MCPSourceSpec) Validate() error {
+	if strings.TrimSpace(s.ID) == "" {
+		return fmt.Errorf("mcp source id is required")
+	}
+	if strings.TrimSpace(s.Scope) == "" {
+		return fmt.Errorf("source %q scope is required", s.ID)
+	}
+	if strings.TrimSpace(s.ServerURL) == "" {
+		return fmt.Errorf("source %q mcp server_url or base_url is required", s.ID)
+	}
+	u, err := url.Parse(strings.TrimSpace(s.ServerURL))
+	if err != nil {
+		return fmt.Errorf("parse source %q mcp server_url: %w", s.ID, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("source %q mcp server_url must use http or https", s.ID)
+	}
+	if strings.TrimSpace(s.Tool) == "" {
+		return fmt.Errorf("source %q mcp tool is required", s.ID)
+	}
+	return nil
 }
 
 func (s SourceConfig) IngestSpec() (ingest.SourceSpec, error) {
@@ -230,4 +295,34 @@ func firstString(values map[string]any, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func mapValue(value any) map[string]any {
+	if value == nil {
+		return map[string]any{}
+	}
+	if typed, ok := value.(map[string]any); ok {
+		return typed
+	}
+	return map[string]any{}
+}
+
+func stringMapValue(value any) map[string]string {
+	out := map[string]string{}
+	switch typed := value.(type) {
+	case map[string]string:
+		for key, item := range typed {
+			if strings.TrimSpace(key) != "" && strings.TrimSpace(item) != "" {
+				out[strings.TrimSpace(key)] = strings.TrimSpace(item)
+			}
+		}
+	case map[string]any:
+		for key, item := range typed {
+			text := stringValue(item)
+			if strings.TrimSpace(key) != "" && text != "" {
+				out[strings.TrimSpace(key)] = text
+			}
+		}
+	}
+	return out
 }

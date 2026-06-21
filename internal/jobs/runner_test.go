@@ -2,8 +2,11 @@ package jobs
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -157,6 +160,93 @@ func TestRunnerCountsPreReadSkippedFilesByReason(t *testing.T) {
 	}
 	if len(brain.inputs) != 1 || brain.inputs[0].Title != "src/app.ts" {
 		t.Fatalf("inputs = %+v", brain.inputs)
+	}
+}
+
+func TestRunnerIngestsMCPSourceDocuments(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if body["method"] != "tools/call" {
+			t.Fatalf("method = %v, want tools/call", body["method"])
+		}
+		params, _ := body["params"].(map[string]any)
+		if params["name"] != "export_documents" {
+			t.Fatalf("tool = %v", params["name"])
+		}
+		writeJSONResponse(t, w, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      body["id"],
+			"result": map[string]any{
+				"structuredContent": map[string]any{
+					"documents": []map[string]any{{
+						"source_type":       "confluence",
+						"source_url":        "https://wiki.example/pages/123",
+						"source_id":         "123",
+						"title":             "Platform Decision",
+						"scope":             "team:platform",
+						"content":           "Use Abra for governed agent memory.",
+						"source_updated_at": "2026-06-21T10:00:00Z",
+						"metadata":          map[string]any{"space": "ENG"},
+					}},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	store := &fakeStore{
+		states: map[string]DocumentState{},
+		sources: []SourceConfig{{
+			ID:            "mcp-confluence",
+			Scope:         "team:platform",
+			SourceType:    ingest.SourceTypeMCP,
+			Name:          "Confluence MCP",
+			BaseURL:       server.URL,
+			ConnectorKind: "confluence",
+			Authority:     "engineering-docs",
+			Config: map[string]any{
+				"tool": "export_documents",
+				"arguments": map[string]any{
+					"space": "ENG",
+				},
+			},
+		}},
+	}
+	brain := &fakeIngestor{}
+	runner := NewRunner(store, brain, Options{
+		MaxSourcesPerRun:             10,
+		MaxChangedDocumentsPerSource: 10,
+		SourceTimeout:                time.Second,
+	})
+
+	stats, err := runner.RunOnce(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.DocumentsSeen != 1 || stats.DocumentsChanged != 1 || stats.ChunksWritten != 2 || stats.ClaimsWritten != 1 {
+		t.Fatalf("stats = %+v", stats)
+	}
+	if len(brain.inputs) != 1 {
+		t.Fatalf("ingested %d documents", len(brain.inputs))
+	}
+	input := brain.inputs[0]
+	if input.SourceType != "confluence" || input.SourceURL != "https://wiki.example/pages/123" || input.Title != "Platform Decision" {
+		t.Fatalf("input = %+v", input)
+	}
+	if input.SourceUpdatedAt != "2026-06-21T10:00:00Z" {
+		t.Fatalf("source_updated_at = %q", input.SourceUpdatedAt)
+	}
+	if input.Metadata["source_config_id"] != "mcp-confluence" ||
+		input.Metadata["connector_kind"] != "confluence" ||
+		input.Metadata["authority"] != "engineering-docs" ||
+		input.Metadata["space"] != "ENG" {
+		t.Fatalf("metadata = %#v", input.Metadata)
+	}
+	if !store.success {
+		t.Fatal("source success was not recorded")
 	}
 }
 
@@ -557,6 +647,14 @@ func waitStarted(t *testing.T, started <-chan struct{}) {
 	case <-started:
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for ingestion to start")
+	}
+}
+
+func writeJSONResponse(t *testing.T, w http.ResponseWriter, value any) {
+	t.Helper()
+	w.Header().Set("content-type", "application/json")
+	if err := json.NewEncoder(w).Encode(value); err != nil {
+		t.Fatalf("write json: %v", err)
 	}
 }
 

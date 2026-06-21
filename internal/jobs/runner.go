@@ -373,6 +373,11 @@ func (r *Runner) runSource(ctx context.Context, source SourceConfig, jobID strin
 	defer func() {
 		observability.End(span, runErr)
 	}()
+	if source.SourceType == ingest.SourceTypeMCP {
+		stats, err := r.runMCPSource(ctx, source, jobID)
+		runErr = err
+		return stats, err
+	}
 	sourceCtx, cancel := context.WithTimeout(ctx, r.options.SourceTimeout)
 	defer cancel()
 	heartbeatErrs := r.startHeartbeatLoop(sourceCtx, jobID, cancel)

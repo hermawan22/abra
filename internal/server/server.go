@@ -2202,7 +2202,7 @@ func mcpTools() []map[string]any {
 		},
 		{
 			"name":        "upsert_source_config",
-			"description": "Create or update a source config. Core worker scheduling supports markdown, local_repo, and git_repo; deployment overlays may store other source types and own their scheduling. Trusted authority changes require approval when enforcement is active.",
+			"description": "Create or update a source config. Core worker scheduling supports markdown, local_repo, git_repo, and mcp sources. The mcp source type calls a configured HTTP MCP tool that returns normalized Abra documents. Deployment overlays may store other source types and own their scheduling. Trusted authority changes require approval when enforcement is active.",
 			"inputSchema": objectSchema([]string{"scope", "source_type", "name"}, map[string]any{
 				"id":              stringSchema(),
 				"scope":           stringSchema(),

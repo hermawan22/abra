@@ -37,7 +37,7 @@ Agents / agent runtimes
       -> Auto-ingestion Worker
 ```
 
-Source systems are ingested through the API, signed webhooks, or `source_configs` consumed by the worker. The OSS build supports generic document ingestion, local repo ingestion, and provider-neutral remote Git ingestion. Deployment extensions can add event connectors for Confluence, Jira, Slack decisions, Drive, or other systems by pushing normalized documents into Abra.
+Source systems are ingested through the API, signed webhooks, or `source_configs` consumed by the worker. The OSS build supports generic document ingestion, local repo ingestion, provider-neutral remote Git ingestion, and MCP-backed sources that call an existing HTTP MCP tool returning normalized Abra documents. Deployment extensions can add event connectors for Confluence, Jira, Slack decisions, Drive, or other systems by exposing an MCP document-export tool or pushing normalized documents into Abra.
 
 ## 3-Minute CLI Install
 
@@ -949,13 +949,13 @@ Do not give autonomous agents all-scope `admin` credentials. Give them scoped wr
 
 ## Auto Ingestion
 
-The OSS surface is generic document ingestion through `POST /ingest/documents` or MCP `ingest_document`, batch ingestion through MCP `ingest_documents`, and signed connector batches through `POST /ingest/webhooks`. Production deployments should automate ingestion outside the request path:
+The OSS surface is generic document ingestion through `POST /ingest/documents` or MCP `ingest_document`, batch ingestion through MCP `ingest_documents`, signed connector batches through `POST /ingest/webhooks`, and scheduled source configs for `markdown`, `local_repo`, `git_repo`, and `mcp`. Production deployments should automate ingestion outside the request path:
 
 - Poll or subscribe to approved systems such as Confluence, Jira, Git repositories, runbooks, or decision logs.
 - Map every source to a stable `source_url`, `source_type`, `scope`, title, and authority level.
 - Re-ingest idempotently. When a source changes, missing claims and graph relations are deprecated, still-present claims and relations are reactivated, and source summaries are replaced.
 - Preserve ACL and scope metadata before records become available to agents.
-- Keep connector-specific auth and normalization in a private overlay or fork.
+- Keep connector-specific auth and normalization in a private overlay, fork, or MCP source tool.
 
 Worker runs are written to `ingestion_jobs` and exposed through `GET /ingestion/jobs`. Signed webhook documents also create durable queued jobs so slow embedding providers do not block webhook responses. Operators and agent gateways can manually enqueue a source with `POST /ingestion/jobs` or MCP `enqueue_ingestion_job`, list jobs with `list_ingestion_jobs`, retry failed/canceled jobs with `POST /ingestion/jobs/:jobId/retry` or MCP `retry_ingestion_job`, and cancel queued/retry jobs with `POST /ingestion/jobs/:jobId/cancel` or MCP `cancel_ingestion_job`. Source configs can be written and listed through both HTTP and MCP (`upsert_source_config`, `list_source_configs`). Source configs also keep the latest success/error timestamps for quick operator checks over HTTP or MCP. Source config changes, including pause/resume status changes, write `source_config.upserted` audit events so operators can review lifecycle changes through `GET /audit/events`.
 
@@ -965,9 +965,9 @@ OSS repo ingestion supports mounted paths through `local_repo` and provider-neut
 
 Set `include_code=true` to add deterministic structural code graph extraction. Code ingestion is opt-in so large repositories do not get indexed accidentally. Code files create chunks, graph relations, and deterministic summaries; they do not create verified natural-language claims from raw source text or comments. The extractor records file, route, package, component, symbol, import, export, dependency, and Go package/symbol relations without calling an LLM.
 
-Core scheduled sources are `markdown`, `local_repo`, and `git_repo`. `markdown` and `local_repo` must point at a local path or `file://` URL visible to the worker. `git_repo` accepts `base_url` or `config.repository_url` / `config.remote_url` / `config.git_remote_url`, plus optional `branch`, `git_depth`, `provider`, and `project_path`. `WORKER_CONCURRENCY` runs multiple claimed ingestion jobs in one worker process while serializing jobs with the same source ID; keep it at `1` for the default local Qwen runner and raise it only after provider and database capacity are measured. Private connector overlays are still the right place for Confluence, Jira, Slack, provider-specific webhook diffing, ACL normalization, and token rotation; after normalization they can push documents through `POST /ingest/documents` / `POST /ingest/webhooks`.
+Core scheduled sources are `markdown`, `local_repo`, `git_repo`, and `mcp`. `markdown` and `local_repo` must point at a local path or `file://` URL visible to the worker. `git_repo` accepts `base_url` or `config.repository_url` / `config.remote_url` / `config.git_remote_url`, plus optional `branch`, `git_depth`, `provider`, and `project_path`. `mcp` accepts `base_url` or `config.server_url`, `config.tool`, optional `config.arguments`, optional `config.bearer_token_env`, and optional `config.document_source_type`; the MCP tool must return normalized Abra documents as JSON in `structuredContent` or a text content item. `WORKER_CONCURRENCY` runs multiple claimed ingestion jobs in one worker process while serializing jobs with the same source ID; keep it at `1` for the default local Qwen runner and raise it only after provider and database capacity are measured. Private connector overlays are still the right place for Confluence, Jira, Slack, provider-specific webhook diffing, ACL normalization, and token rotation when those systems do not already expose an MCP document-export tool; after normalization they can push documents through `POST /ingest/documents` / `POST /ingest/webhooks` or be called through an `mcp` source config.
 
-Non-core source types such as `jira`, `confluence`, or deployment-specific names may still be stored as overlay source configs, but the OSS worker will not schedule them. The overlay owns discovery, credentials, ACL normalization, diffing, and retries; Abra owns the durable memory contract after normalized documents arrive.
+Non-core source types such as `jira`, `confluence`, or deployment-specific names may still be stored as overlay source configs, but the OSS worker will not schedule those vendor-specific types directly. Use `mcp` when an existing MCP server can export normalized documents; otherwise the overlay owns discovery, credentials, ACL normalization, diffing, and retries while Abra owns the durable memory contract after normalized documents arrive.
 
 ```json
 {

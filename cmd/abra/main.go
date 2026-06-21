@@ -1556,6 +1556,14 @@ func watch(ctx context.Context, args cliArgs) error {
 			args.Flags["git"] = args.Rest[0]
 			args.Rest = args.Rest[1:]
 		}
+	case "mcp":
+		if flag(args, "mcp-url", "") == "" && flag(args, "url", "") == "" {
+			if len(args.Rest) == 0 {
+				return errors.New("source mcp requires --mcp-url <url> or a positional MCP HTTP URL")
+			}
+			args.Flags["mcp-url"] = args.Rest[0]
+			args.Rest = args.Rest[1:]
+		}
 	default:
 		return fmt.Errorf("unknown watch mode %q\n\n%s", mode, commandUsage("watch"))
 	}
@@ -1567,6 +1575,7 @@ func sourceIngest(ctx context.Context, args cliArgs) error {
 	sourceURL := ""
 	scopeHint := "."
 	config := map[string]any{}
+	isMCPSource := flag(args, "mcp-url", "") != "" || flag(args, "url", "") != "" || strings.EqualFold(flag(args, "type", ""), "mcp")
 	if repo := firstNonEmpty(flag(args, "git", ""), flag(args, "repo", "")); repo != "" {
 		sourceType = "git_repo"
 		sourceURL = repo
@@ -1576,6 +1585,31 @@ func sourceIngest(ctx context.Context, args cliArgs) error {
 			config["git_ref"] = ref
 		}
 		config["git_depth"] = intFlag(args, "depth", 1)
+	} else if isMCPSource {
+		sourceType = "mcp"
+		sourceURL = firstNonEmpty(flag(args, "mcp-url", ""), flag(args, "url", ""))
+		scopeHint = sourceURL
+		tool := flag(args, "tool", "")
+		if tool == "" {
+			return errors.New("source mcp requires --tool <mcp-tool-name>")
+		}
+		config["server_url"] = sourceURL
+		config["tool"] = tool
+		if raw := flag(args, "arguments-json", flag(args, "args-json", "")); raw != "" {
+			arguments, err := parseJSONObjectFlag(raw, "arguments-json")
+			if err != nil {
+				return err
+			}
+			config["arguments"] = arguments
+		} else {
+			config["arguments"] = map[string]any{}
+		}
+		if envName := flag(args, "bearer-token-env", ""); envName != "" {
+			config["bearer_token_env"] = envName
+		}
+		if docSourceType := flag(args, "document-source-type", ""); docSourceType != "" {
+			config["document_source_type"] = docSourceType
+		}
 	} else {
 		path := flag(args, "path", ".")
 		abs, err := filepath.Abs(path)
@@ -1587,28 +1621,30 @@ func sourceIngest(ctx context.Context, args cliArgs) error {
 		scopeHint = abs
 	}
 	scope := scopeOrDefault(args, scopeHint)
-	if include := csv(flag(args, "include", "")); len(include) > 0 {
-		config["include"] = include
-	} else {
-		config["include"] = []string{"**/*.md"}
-	}
-	if exclude := csv(flag(args, "exclude", "")); len(exclude) > 0 {
-		config["exclude"] = exclude
-	}
-	if boolFlag(args, "code") {
-		config["include_code"] = true
-		if codeInclude := csv(flag(args, "code-include", "")); len(codeInclude) > 0 {
-			config["code_include"] = codeInclude
+	if sourceType != "mcp" {
+		if include := csv(flag(args, "include", "")); len(include) > 0 {
+			config["include"] = include
+		} else {
+			config["include"] = []string{"**/*.md"}
 		}
-		if codeExclude := csv(flag(args, "code-exclude", "")); len(codeExclude) > 0 {
-			config["code_exclude"] = codeExclude
+		if exclude := csv(flag(args, "exclude", "")); len(exclude) > 0 {
+			config["exclude"] = exclude
 		}
-	}
-	if maxFileBytes := intFlag(args, "max-file-bytes", 0); maxFileBytes > 0 {
-		config["max_file_bytes"] = maxFileBytes
-	}
-	if boolFlag(args, "include-generated") {
-		config["include_generated"] = true
+		if boolFlag(args, "code") {
+			config["include_code"] = true
+			if codeInclude := csv(flag(args, "code-include", "")); len(codeInclude) > 0 {
+				config["code_include"] = codeInclude
+			}
+			if codeExclude := csv(flag(args, "code-exclude", "")); len(codeExclude) > 0 {
+				config["code_exclude"] = codeExclude
+			}
+		}
+		if maxFileBytes := intFlag(args, "max-file-bytes", 0); maxFileBytes > 0 {
+			config["max_file_bytes"] = maxFileBytes
+		}
+		if boolFlag(args, "include-generated") {
+			config["include_generated"] = true
+		}
 	}
 	name := flag(args, "name", "")
 	if name == "" {
@@ -1622,7 +1658,7 @@ func sourceIngest(ctx context.Context, args cliArgs) error {
 		"source_type":     sourceType,
 		"scope":           scope,
 		"base_url":        sourceURL,
-		"connector_kind":  flag(args, "connector", "generic"),
+		"connector_kind":  flag(args, "connector", defaultConnectorKind(sourceType)),
 		"status":          flag(args, "status", "active"),
 		"authority":       flag(args, "authority", "manual-unverified"),
 		"authority_score": floatFlag(args, "authority-score", 0.35),
@@ -2964,10 +3000,8 @@ func printReady(args cliArgs) {
 	fmt.Println("Codex:     abra mcp install-codex")
 	fmt.Println("Scope:     cd /path/to/project && abra scope")
 	fmt.Println("Agent:     cd /path/to/project && abra agents bootstrap --agent codex")
-	fmt.Println("Init:      cd /path/to/project && abra agents init --agent codex")
-	fmt.Println("Next:      cd /path/to/project && abra ingest . --code --scope <scope>")
-	fmt.Println("Check:     cd /path/to/project && abra agents verify . --scope <scope>")
 	fmt.Println(`Then:      abra think "What should I know before changing this project?" --scope <scope>`)
+	fmt.Println("Manual:    abra agents init --agent codex && abra ingest . --code --scope <scope> && abra agents verify . --scope <scope>")
 }
 
 func runCommand(name string, args ...string) error {
@@ -3218,6 +3252,24 @@ func flag(args cliArgs, name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func defaultConnectorKind(sourceType string) string {
+	if strings.TrimSpace(sourceType) == "mcp" {
+		return "mcp"
+	}
+	return "generic"
+}
+
+func parseJSONObjectFlag(raw, flagName string) (map[string]any, error) {
+	var value map[string]any
+	if err := json.Unmarshal([]byte(raw), &value); err != nil {
+		return nil, fmt.Errorf("--%s must be a JSON object: %w", flagName, err)
+	}
+	if value == nil {
+		value = map[string]any{}
+	}
+	return value, nil
 }
 
 func scopeOrDefault(args cliArgs, pathHint string) string {
@@ -3682,11 +3734,13 @@ onboarding, or abra up for non-interactive stack startup.
 		return `Usage:
   abra watch local --scope repo:demo --path . [--include "**/*.md"] [--code] [--wait] [--wait-timeout 10m]
   abra watch git --scope repo:demo --git https://github.com/owner/repo.git [--ref main] [--wait] [--wait-timeout 10m]
+  abra source mcp --scope team:platform --mcp-url https://mcp.example/mcp --tool export_documents [--arguments-json '{"space":"ENG"}'] [--document-source-type confluence] [--wait]
 
 This creates or updates a source config, then enqueues an ingestion job.
-The OSS worker supports markdown, local_repo, and git_repo. External systems
-such as Jira, Confluence, Slack, and Drive should push normalized documents
-through the HTTP/MCP ingestion API or a deployment-specific connector overlay.
+The OSS worker supports markdown, local_repo, git_repo, and MCP HTTP sources
+whose configured tool returns normalized Abra documents. External systems such
+as Jira, Confluence, Slack, and Drive can either expose an MCP document-export
+tool or push normalized documents through the HTTP/MCP ingestion API.
 Use --wait-timeout or ABRA_CLI_WAIT_TIMEOUT for slow local model or large repo runs.
 `
 	case "sources":

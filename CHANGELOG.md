@@ -28,6 +28,9 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Make agent ready prompts distinguish unavailable MCP/token setup from missing source-backed memory, and make `abra compose` ignore generic gate blocks when deciding whether source-backed context exists.
 - Make generated `AGENTS.md` recovery guidance use the same MCP/token-before-reingest order as the ready prompt.
 - Persist fail-fast batch ingestion inside one database transaction after validation and embedding, rolling back the batch on the first persistence error.
+- Add worker-supported `mcp` source configs so Abra can call an existing HTTP MCP tool that returns normalized source documents, then ingest them through the same queued pipeline as other sources.
+- Take transaction-scoped advisory locks per source during document persistence so concurrent ingestion of the same source cannot interleave refresh and write phases.
+- Make setup and ready next steps present `abra agents bootstrap` as the primary path and label `agents init` / `ingest` / `verify` / `mcp install-codex` as the manual alternative.
 - Bound reranker rank boosts instead of adding raw provider scores directly to recall ranking.
 - Omit raw rerank query text from retrieval warnings, keep rerank metadata JSON stable, and only mark recall as reranked when a returned candidate index was actually applied.
 - Default `base_rank_score` to `rank_score` for non-reranked recall results so public ranking metadata remains internally consistent.

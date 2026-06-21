@@ -294,7 +294,7 @@ Production ingestion should be automated but bounded:
 - Prefer source webhooks or scheduled connector jobs over manual uploads.
 - Ingest only approved sources and map each source to a stable scope and authority.
 - Keep private connector credentials outside the Abra OSS image.
-- Use `POST /ingest/webhooks` for connector overlays that can push normalized documents. Configure `ABRA_WEBHOOK_SECRETS` and send `x-abra-signature: sha256=<hmac>` so webhook bodies are tamper-evident in addition to API-key auth.
+- Use `mcp` source configs when an internal MCP server can export normalized Abra documents, or `POST /ingest/webhooks` for connector overlays that can push normalized documents. Configure `ABRA_WEBHOOK_SECRETS` and send `x-abra-signature: sha256=<hmac>` so webhook bodies are tamper-evident in addition to API-key auth.
 - Treat source refresh as idempotent. Re-ingestion deprecates missing claims and graph relations, reactivates still-present claims and relations from the same source, and replaces source-scoped summaries.
 - Store connector state outside the request path so ingestion spikes do not affect recall latency.
 

@@ -162,3 +162,48 @@ func TestSourceConfigValidateIngestContractAllowsOverlaySource(t *testing.T) {
 		t.Fatalf("overlay source should not be validated as core worker source: %v", err)
 	}
 }
+
+func TestSourceConfigMCPSourceSpec(t *testing.T) {
+	source := SourceConfig{
+		ID:            "mcp-confluence",
+		Scope:         "team:platform",
+		SourceType:    ingest.SourceTypeMCP,
+		Name:          "Confluence MCP",
+		BaseURL:       "https://mcp.example.local/mcp",
+		ConnectorKind: "confluence",
+		Config: map[string]any{
+			"tool":             "export_documents",
+			"arguments":        map[string]any{"space": "ENG"},
+			"bearer_token_env": "CONFLUENCE_MCP_TOKEN",
+			"header_env":       map[string]any{"x-tenant": "TENANT_ID"},
+		},
+	}
+	spec, err := source.MCPSourceSpec()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := spec.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if spec.ServerURL != "https://mcp.example.local/mcp" || spec.Tool != "export_documents" {
+		t.Fatalf("spec = %+v", spec)
+	}
+	if spec.SourceType != "confluence" || spec.BearerTokenEnv != "CONFLUENCE_MCP_TOKEN" || spec.HeaderEnv["x-tenant"] != "TENANT_ID" {
+		t.Fatalf("spec metadata = %+v", spec)
+	}
+	if spec.Arguments["space"] != "ENG" {
+		t.Fatalf("arguments = %#v", spec.Arguments)
+	}
+}
+
+func TestSourceConfigValidateIngestContractRejectsInvalidMCPSource(t *testing.T) {
+	source := SourceConfig{
+		ID:         "mcp",
+		Scope:      "team:platform",
+		SourceType: ingest.SourceTypeMCP,
+		Config:     map[string]any{"tool": "export_documents"},
+	}
+	if err := source.ValidateIngestContract(); err == nil {
+		t.Fatal("expected missing MCP server URL to fail")
+	}
+}

@@ -373,7 +373,22 @@ curl -sS -H "$auth_header" \
 ```
 
 For worker-based source refreshes, use `abra ingest . --code --tracked`, `abra watch local --path . --wait --wait-timeout 10m`,
-or `abra watch git --git https://github.com/owner/repo.git --wait --wait-timeout 10m`.
+`abra watch git --git https://github.com/owner/repo.git --wait --wait-timeout 10m`, or an MCP-backed source such as:
+
+```sh
+abra source mcp \
+  --scope team:platform \
+  --mcp-url https://mcp.example.internal/mcp \
+  --tool export_documents \
+  --arguments-json '{"space":"ENG"}' \
+  --document-source-type confluence \
+  --bearer-token-env CONFLUENCE_MCP_TOKEN \
+  --wait
+```
+
+The configured MCP tool must return normalized Abra documents as JSON, either as
+`structuredContent.documents` or as a JSON text content item containing
+`{"documents":[...]}`.
 Tracked local sources require the worker process to see the same filesystem path;
 use direct `abra ingest . --code` for ordinary Docker-backed local setup.
 Use `WORKER_CONCURRENCY` to run multiple queued ingestion jobs in one worker process; keep the default `1` for local Qwen and raise it only after `abra doctor`, provider latency, and database usage show headroom.
@@ -387,8 +402,9 @@ minified, protobuf, and lock files are skipped by default. Use
 actual source of truth.
 For event-based ingestion, send normalized documents to `POST /ingest/webhooks`
 from your connector or automation. The core OSS worker schedules `local_repo`,
-`git_repo`, and markdown source configs. Other source systems should use a thin
-connector overlay that listens to source events and posts documents into Abra.
+`git_repo`, markdown, and `mcp` source configs. Other source systems should use
+a thin connector overlay that listens to source events and posts documents into
+Abra, or expose an MCP document-export tool that Abra can call.
 
 ## Self-Host Commands
 

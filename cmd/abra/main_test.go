@@ -2925,6 +2925,62 @@ func TestLocalPathShortcutQueuesTrackedJobWithTrackedFlag(t *testing.T) {
 	}
 }
 
+func TestSourceMCPQueuesSourceConfig(t *testing.T) {
+	var sourceRequest map[string]any
+	var jobRequest map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/sources/configs":
+			if err := json.NewDecoder(r.Body).Decode(&sourceRequest); err != nil {
+				t.Fatalf("decode source body: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"source_config_id": "source-mcp"})
+		case "/ingestion/jobs":
+			if err := json.NewDecoder(r.Body).Decode(&jobRequest); err != nil {
+				t.Fatalf("decode job body: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ingestion_job": map[string]any{"id": "job-mcp", "status": "queued"},
+			})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	err := run(context.Background(), []string{
+		"source", "mcp",
+		"--scope", "team:platform",
+		"--mcp-url", "https://mcp.example.local/mcp",
+		"--tool", "export_documents",
+		"--arguments-json", `{"space":"ENG"}`,
+		"--document-source-type", "confluence",
+		"--bearer-token-env", "CONFLUENCE_MCP_TOKEN",
+		"--base-url", server.URL,
+		"--token", "test-token",
+	})
+	if err != nil {
+		t.Fatalf("source mcp error = %v", err)
+	}
+	if sourceRequest["source_type"] != "mcp" || sourceRequest["connector_kind"] != "mcp" {
+		t.Fatalf("source request = %#v", sourceRequest)
+	}
+	if sourceRequest["base_url"] != "https://mcp.example.local/mcp" {
+		t.Fatalf("base_url = %v", sourceRequest["base_url"])
+	}
+	config, _ := sourceRequest["config"].(map[string]any)
+	if config["tool"] != "export_documents" || config["document_source_type"] != "confluence" || config["bearer_token_env"] != "CONFLUENCE_MCP_TOKEN" {
+		t.Fatalf("config = %#v", config)
+	}
+	args, _ := config["arguments"].(map[string]any)
+	if args["space"] != "ENG" {
+		t.Fatalf("arguments = %#v", args)
+	}
+	if jobRequest["source_config_id"] != "source-mcp" {
+		t.Fatalf("job request = %#v", jobRequest)
+	}
+}
+
 func TestLocalPathIngestReportsPreReadSkippedFilesJSON(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "README.md"), "# Local Brain\n\nAgents should use Abra.")

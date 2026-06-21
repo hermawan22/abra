@@ -16,6 +16,7 @@ const (
 	SourceTypeLocalRepo SourceType = "local_repo"
 	SourceTypeMarkdown  SourceType = "markdown"
 	SourceTypeGitRepo   SourceType = "git_repo"
+	SourceTypeMCP       SourceType = "mcp"
 )
 
 // SourceSpec is the durable configuration for a knowledge source.

@@ -317,6 +317,33 @@ func TestIngestDocumentsValidatesBeforeEmbedding(t *testing.T) {
 	}
 }
 
+func TestPreparedIngestSourceLocksDeduplicateAndSort(t *testing.T) {
+	docs := []preparedIngestDocument{
+		{input: IngestDocumentInput{Scope: "repo:b", SourceType: "markdown", SourceURL: "file://b.md"}},
+		{input: IngestDocumentInput{Scope: "repo:a", SourceType: "markdown", SourceURL: "file://a.md"}},
+		{input: IngestDocumentInput{Scope: "repo:b", SourceType: "markdown", SourceURL: "file://b.md"}},
+		{input: IngestDocumentInput{Scope: " repo:a ", SourceType: " local_repo ", SourceURL: " file://a.md "}},
+		{input: IngestDocumentInput{Scope: " repo:a ", SourceType: " local_repo ", SourceURL: " file://a.go "}},
+	}
+
+	locks := preparedIngestSourceLocks(docs)
+	if got, want := len(locks), 3; got != want {
+		t.Fatalf("locks = %d, want %d: %#v", got, want, locks)
+	}
+	got := []string{}
+	for _, lock := range locks {
+		got = append(got, lock.scope+"|"+lock.sourceURL)
+	}
+	want := []string{
+		"repo:a|file://a.go",
+		"repo:a|file://a.md",
+		"repo:b|file://b.md",
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("locks = %#v, want %#v", got, want)
+	}
+}
+
 func TestProviderLimiterSerializesEmbeddingCalls(t *testing.T) {
 	observability.ResetAIProviderMetricsForTest()
 	provider := &concurrentEmbeddingProvider{delay: 20 * time.Millisecond}

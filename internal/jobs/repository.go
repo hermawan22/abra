@@ -44,10 +44,10 @@ func (r *Repository) ListEnabledLocalMarkdownSources(ctx context.Context, limit 
 		limit = DefaultMaxSourcesPerRun
 	}
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, scope, source_type, name, COALESCE(base_url, ''), authority, authority_score, config, metadata
+		SELECT id, scope, source_type, name, COALESCE(base_url, ''), connector_kind, authority, authority_score, config, metadata
 		FROM source_configs
 		WHERE status = 'active'
-		  AND source_type IN ('local_repo', 'markdown', 'git_repo')
+		  AND source_type IN ('local_repo', 'markdown', 'git_repo', 'mcp')
 		ORDER BY priority ASC, updated_at ASC, id ASC
 		LIMIT $1
 	`, limit)
@@ -66,6 +66,7 @@ func (r *Repository) ListEnabledLocalMarkdownSources(ctx context.Context, limit 
 			&source.SourceType,
 			&source.Name,
 			&source.BaseURL,
+			&source.ConnectorKind,
 			&source.Authority,
 			&source.AuthorityScore,
 			&configRaw,
@@ -121,7 +122,7 @@ func (r *Repository) EnqueueScheduledSources(ctx context.Context, limit int) (in
 		    sc.connector_kind
 		  FROM source_configs sc
 		  WHERE sc.status = 'active'
-		    AND sc.source_type IN ('local_repo', 'markdown', 'git_repo')
+		    AND sc.source_type IN ('local_repo', 'markdown', 'git_repo', 'mcp')
 		    AND NOT EXISTS (
 		      SELECT 1
 		      FROM ingestion_jobs ij
@@ -216,6 +217,7 @@ func (r *Repository) ClaimQueuedIngestionJobs(ctx context.Context, limit int, le
 		  COALESCE(sc.source_type, claimed.source_type),
 		  COALESCE(sc.name, claimed.trigger_type || ':' || claimed.id),
 		  COALESCE(sc.base_url, ''),
+		  COALESCE(sc.connector_kind, ''),
 		  COALESCE(sc.authority, claimed.authority),
 		  COALESCE(sc.authority_score, 0),
 		  COALESCE(sc.config, '{}'::jsonb),
@@ -243,6 +245,7 @@ func (r *Repository) ClaimQueuedIngestionJobs(ctx context.Context, limit int, le
 			&job.Source.SourceType,
 			&job.Source.Name,
 			&job.Source.BaseURL,
+			&job.Source.ConnectorKind,
 			&job.Source.Authority,
 			&job.Source.AuthorityScore,
 			&configRaw,

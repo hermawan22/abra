@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -116,6 +117,24 @@ func (s *Store) withTxRunner(ctx context.Context, fn func(storeRunner) error) er
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+func (s *Store) LockSourceIngest(ctx context.Context, scope, sourceURL string) error {
+	if !s.inTx {
+		return fmt.Errorf("source ingest advisory lock requires active transaction")
+	}
+	key := sourceIngestLockKey(scope, sourceURL)
+	_, err := s.queryRunner().Exec(ctx, "SELECT pg_advisory_xact_lock($1)", key)
+	return err
+}
+
+func sourceIngestLockKey(scope, sourceURL string) int64 {
+	sum := sha256.Sum256([]byte(strings.Join([]string{
+		"source-ingest",
+		strings.TrimSpace(scope),
+		strings.TrimSpace(sourceURL),
+	}, "\x00")))
+	return int64(binary.BigEndian.Uint64(sum[:8]))
 }
 
 func (s *Store) Ready(ctx context.Context) error {
@@ -1601,7 +1620,7 @@ func (s *Store) ListObservations(ctx context.Context, filter ObservationFilter) 
 	if strings.TrimSpace(filter.Query) != "" {
 		anyQuery = fullTextAnyQuery(filter.Query)
 	}
-	rows, err := s.pool.Query(ctx, `
+	rows, err := s.queryRunner().Query(ctx, `
 		SELECT
 		  id, scope, observation_type, observation_text, status, authority, authority_score,
 		  confidence, freshness_status, COALESCE(subject_entity_id, ''), COALESCE(object_entity_id, ''),
@@ -1716,7 +1735,7 @@ func (s *Store) ListAuditEventsForDelivery(ctx context.Context, scope string, cu
 	if !cursor.CursorTime.IsZero() {
 		cursorTime = cursor.CursorTime.UTC()
 	}
-	rows, err := s.pool.Query(ctx, `
+	rows, err := s.queryRunner().Query(ctx, `
 		SELECT
 		  id,
 		  event_type,
@@ -3667,7 +3686,7 @@ func (s *Store) ListActiveRelationsFromEntity(ctx context.Context, scope, source
 	if limit < 1 || limit > 100 {
 		limit = 50
 	}
-	rows, err := s.pool.Query(ctx, `
+	rows, err := s.queryRunner().Query(ctx, `
 		SELECT
 		  r.id,
 		  src.id,

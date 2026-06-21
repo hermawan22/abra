@@ -18,8 +18,31 @@ Core scheduled source types are:
 - `markdown`
 - `local_repo`
 - `git_repo`
+- `mcp`
 
-Deployment overlays may still store other source configs, such as `jira`, `confluence`, or `drive`, through HTTP or MCP. The core worker does not schedule those source types; the overlay owns polling, webhooks, ACL normalization, and retry behavior.
+The `mcp` source type lets Abra call an existing HTTP MCP server as a source adapter. Configure `base_url` or `config.server_url`, `config.tool`, optional `config.arguments`, and optional secret references such as `config.bearer_token_env`. The configured tool must return normalized Abra documents as JSON, either in `structuredContent` or a text content item:
+
+```json
+{
+  "documents": [
+    {
+      "source_type": "confluence",
+      "source_url": "https://confluence.example/wiki/pages/123",
+      "source_id": "123",
+      "title": "Platform Architecture Decision",
+      "scope": "team:platform",
+      "content": "Decision text in markdown or plain text",
+      "source_updated_at": "2026-06-21T10:00:00Z",
+      "metadata": {
+        "space": "ENG",
+        "acl_groups": ["platform"]
+      }
+    }
+  ]
+}
+```
+
+Deployment overlays may still store other source configs, such as `jira`, `confluence`, or `drive`, through HTTP or MCP. The core worker does not schedule those vendor-specific source types directly; use `mcp` when an internal MCP server can export normalized documents, or let the overlay own polling, webhooks, ACL normalization, and retry behavior before pushing into Abra.
 
 ## Webhook Pattern
 

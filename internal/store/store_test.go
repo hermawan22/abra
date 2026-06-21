@@ -1,11 +1,84 @@
 package store
 
 import (
+	"context"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
+
+type fakeStoreRunner struct {
+	execSQL     []string
+	queryRowSQL []string
+}
+
+func (r *fakeStoreRunner) Exec(_ context.Context, sql string, _ ...any) (pgconn.CommandTag, error) {
+	r.execSQL = append(r.execSQL, compactSQL(sql))
+	return pgconn.CommandTag{}, nil
+}
+
+func (r *fakeStoreRunner) Query(_ context.Context, _ string, _ ...any) (pgx.Rows, error) {
+	return &fakeRows{}, nil
+}
+
+func (r *fakeStoreRunner) QueryRow(_ context.Context, sql string, _ ...any) pgx.Row {
+	sql = compactSQL(sql)
+	r.queryRowSQL = append(r.queryRowSQL, sql)
+	switch {
+	case strings.Contains(sql, "UPDATE relations"):
+		return fakeRow{err: pgx.ErrNoRows}
+	case strings.Contains(sql, "SELECT id FROM documents"):
+		return fakeRow{values: []any{"doc-1"}}
+	case strings.Contains(sql, "SELECT id FROM claims"):
+		return fakeRow{values: []any{"claim-1"}}
+	case strings.Contains(sql, "INSERT INTO relations"):
+		return fakeRow{values: []any{"relation-1"}}
+	case strings.Contains(sql, "SELECT id") && strings.Contains(sql, "memory_summaries"):
+		return fakeRow{values: []any{"summary-1"}}
+	default:
+		return fakeRow{values: []any{"id-1"}}
+	}
+}
+
+type fakeRow struct {
+	values []any
+	err    error
+}
+
+func (r fakeRow) Scan(dest ...any) error {
+	if r.err != nil {
+		return r.err
+	}
+	for i := range dest {
+		if i >= len(r.values) {
+			break
+		}
+		if target, ok := dest[i].(*string); ok {
+			*target, _ = r.values[i].(string)
+		}
+	}
+	return nil
+}
+
+type fakeRows struct{}
+
+func (r *fakeRows) Close()                                       {}
+func (r *fakeRows) Err() error                                   { return nil }
+func (r *fakeRows) CommandTag() pgconn.CommandTag                { return pgconn.CommandTag{} }
+func (r *fakeRows) FieldDescriptions() []pgconn.FieldDescription { return nil }
+func (r *fakeRows) Next() bool                                   { return false }
+func (r *fakeRows) Scan(...any) error                            { return nil }
+func (r *fakeRows) Values() ([]any, error)                       { return nil, nil }
+func (r *fakeRows) RawValues() [][]byte                          { return nil }
+func (r *fakeRows) Conn() *pgx.Conn                              { return nil }
+
+func compactSQL(sql string) string {
+	return strings.Join(strings.Fields(sql), " ")
+}
 
 func TestFeedbackIDNormalizesDefaultVerdict(t *testing.T) {
 	implicit := FeedbackRecord{
@@ -87,6 +160,101 @@ func TestCleanStringListTrimsAndDeduplicates(t *testing.T) {
 	want := []string{"a", "b"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("cleanStringList = %#v, want %#v", got, want)
+	}
+}
+
+func TestSourceIngestLockKeyIsStableAndSpecific(t *testing.T) {
+	base := sourceIngestLockKey(" repo:abra ", " file://README.md ")
+	same := sourceIngestLockKey("repo:abra", "file://README.md")
+	otherScope := sourceIngestLockKey("repo:other", "file://README.md")
+	otherSource := sourceIngestLockKey("repo:abra", "file://CHANGELOG.md")
+	if base != same {
+		t.Fatalf("trim-equivalent source lock keys differ: %d != %d", base, same)
+	}
+	if base == otherScope || base == otherSource {
+		t.Fatalf("source lock key should differ by scope/source URL: base=%d scope=%d source=%d", base, otherScope, otherSource)
+	}
+}
+
+func TestLockSourceIngestRequiresActiveTransaction(t *testing.T) {
+	err := (&Store{runner: &fakeStoreRunner{}}).LockSourceIngest(context.Background(), "repo:abra", "file://README.md")
+	if err == nil || !strings.Contains(err.Error(), "requires active transaction") {
+		t.Fatalf("LockSourceIngest error = %v, want active transaction requirement", err)
+	}
+}
+
+func TestIngestPersistenceMethodsUseActiveTransactionRunner(t *testing.T) {
+	ctx := context.Background()
+	runner := &fakeStoreRunner{}
+	store := &Store{runner: runner, inTx: true}
+
+	if err := store.LockSourceIngest(ctx, "repo:abra", "file://README.md"); err != nil {
+		t.Fatalf("LockSourceIngest error = %v", err)
+	}
+	docID, err := store.UpsertDocument(ctx, DocumentRecord{
+		SourceType:      "markdown",
+		SourceURL:       "file://README.md",
+		Title:           "README.md",
+		Scope:           "repo:abra",
+		ContentChecksum: "abc",
+	})
+	if err != nil || docID != "doc-1" {
+		t.Fatalf("UpsertDocument = %q, %v", docID, err)
+	}
+	if err := store.ReplaceChunks(ctx, docID, "repo:abra", []ChunkRecord{{
+		Content:             "Abra uses source-backed memory.",
+		Embedding:           []float64{1, 0, 0},
+		EmbeddingProvider:   "test",
+		EmbeddingModel:      "test-model",
+		EmbeddingDimensions: 3,
+	}}); err != nil {
+		t.Fatalf("ReplaceChunks error = %v", err)
+	}
+	if _, err := store.BeginSourceGraphRefresh(ctx, "repo:abra", "file://README.md", "job-1"); err != nil {
+		t.Fatalf("BeginSourceGraphRefresh error = %v", err)
+	}
+	if _, err := store.BeginSourceClaimRefresh(ctx, "repo:abra", "markdown", "file://README.md", "job-1"); err != nil {
+		t.Fatalf("BeginSourceClaimRefresh error = %v", err)
+	}
+	claimID, err := store.InsertClaim(ctx, ClaimRecord{
+		ClaimText:           "Agents should use Abra before code changes.",
+		Scope:               "repo:abra",
+		SourceURL:           "file://README.md",
+		SourceType:          "markdown",
+		Embedding:           []float64{1, 0, 0},
+		EmbeddingProvider:   "test",
+		EmbeddingModel:      "test-model",
+		EmbeddingDimensions: 3,
+	})
+	if err != nil || claimID != "claim-1" {
+		t.Fatalf("InsertClaim = %q, %v", claimID, err)
+	}
+	if err := store.AddEvidence(ctx, EvidenceRecord{ClaimID: claimID, DocumentID: docID, Quote: "Agents should use Abra before code changes.", SourceURL: "file://README.md", SourceType: "markdown"}); err != nil {
+		t.Fatalf("AddEvidence error = %v", err)
+	}
+	entityID, err := store.UpsertEntity(ctx, EntityRecord{Scope: "repo:abra", EntityType: "component", Name: "Abra", SourceURL: "file://README.md", SourceType: "markdown"})
+	if err != nil {
+		t.Fatalf("UpsertEntity error = %v", err)
+	}
+	relationID, err := store.UpsertRelation(ctx, RelationRecord{Scope: "repo:abra", RelationType: "depends_on", SourceEntityID: entityID, TargetEntityID: "entity-target", SourceURL: "file://README.md", SourceType: "markdown"})
+	if err != nil || relationID != "relation-1" {
+		t.Fatalf("UpsertRelation = %q, %v", relationID, err)
+	}
+	if _, err := store.ListActiveRelationsFromEntity(ctx, "repo:abra", entityID, 50); err != nil {
+		t.Fatalf("ListActiveRelationsFromEntity error = %v", err)
+	}
+	summaryID, err := store.UpsertMemorySummary(ctx, MemorySummaryRecord{Scope: "repo:abra", Level: "source", Key: "README.md", Title: "README", Summary: "Abra docs", SourceCount: 1})
+	if err != nil || summaryID != "summary-1" {
+		t.Fatalf("UpsertMemorySummary = %q, %v", summaryID, err)
+	}
+	if err := store.InsertAuditEvent(ctx, "document.ingested", "document", docID, "repo:abra", "file://README.md", map[string]any{"chunks": 1}); err != nil {
+		t.Fatalf("InsertAuditEvent error = %v", err)
+	}
+	if err := store.MarkDocumentIngestComplete(ctx, docID); err != nil {
+		t.Fatalf("MarkDocumentIngestComplete error = %v", err)
+	}
+	if len(runner.execSQL) == 0 || len(runner.queryRowSQL) == 0 {
+		t.Fatalf("fake runner was not exercised: exec=%#v queryRow=%#v", runner.execSQL, runner.queryRowSQL)
 	}
 }
 

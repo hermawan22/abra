@@ -585,6 +585,9 @@ func (s *Service) IngestDocument(ctx context.Context, input IngestDocumentInput)
 	err = s.db.WithTx(ctx, func(txStore *store.Store) error {
 		txService := *s
 		txService.db = txStore
+		if err := lockPreparedIngestSources(ctx, txStore, docs); err != nil {
+			return err
+		}
 		persisted, err := txService.persistPreparedIngestDocument(ctx, docs[0])
 		if err != nil {
 			return err
@@ -615,6 +618,9 @@ func (s *Service) IngestDocuments(ctx context.Context, inputs []IngestDocumentIn
 	err = s.db.WithTx(ctx, func(txStore *store.Store) error {
 		txService := *s
 		txService.db = txStore
+		if err := lockPreparedIngestSources(ctx, txStore, prepared); err != nil {
+			return err
+		}
 		for index, doc := range prepared {
 			result, err := txService.persistPreparedIngestDocument(ctx, doc)
 			if err != nil {
@@ -710,6 +716,45 @@ func (s *Service) embedPreparedDocuments(ctx context.Context, docs []preparedIng
 		}
 	}
 	return docs, nil
+}
+
+type ingestSourceLock struct {
+	scope     string
+	sourceURL string
+}
+
+func preparedIngestSourceLocks(docs []preparedIngestDocument) []ingestSourceLock {
+	seen := map[string]ingestSourceLock{}
+	for _, doc := range docs {
+		lock := ingestSourceLock{
+			scope:     strings.TrimSpace(doc.input.Scope),
+			sourceURL: strings.TrimSpace(doc.input.SourceURL),
+		}
+		if lock.scope == "" || lock.sourceURL == "" {
+			continue
+		}
+		key := lock.scope + "\x00" + lock.sourceURL
+		seen[key] = lock
+	}
+	keys := make([]string, 0, len(seen))
+	for key := range seen {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	locks := make([]ingestSourceLock, 0, len(keys))
+	for _, key := range keys {
+		locks = append(locks, seen[key])
+	}
+	return locks
+}
+
+func lockPreparedIngestSources(ctx context.Context, db *store.Store, docs []preparedIngestDocument) error {
+	for _, lock := range preparedIngestSourceLocks(docs) {
+		if err := db.LockSourceIngest(ctx, lock.scope, lock.sourceURL); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Service) persistPreparedIngestDocument(ctx context.Context, doc preparedIngestDocument) (IngestDocumentResult, error) {
