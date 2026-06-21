@@ -301,10 +301,15 @@ For rejection, call `POST /approvals/:approvalId/reject` with a decision reason.
 
 Production ingestion should be automated but bounded:
 
-- Prefer source webhooks or scheduled connector jobs over manual uploads.
+- Prefer scheduled source configs, signed source webhooks, or connector batch
+  jobs over manual uploads.
 - Ingest only approved sources and map each source to a stable scope and authority.
 - Keep connector credentials outside the Abra OSS image.
-- Use `mcp` source configs when a user-owned or internal MCP server can export normalized Abra documents, or `POST /ingest/webhooks` for connector overlays that can push normalized documents. Configure `ABRA_WEBHOOK_SECRETS` and send `x-abra-signature: sha256=<hmac>` so webhook bodies are tamper-evident in addition to API-key auth.
+- Use `mcp` source configs when a user-owned or internal MCP server can export
+  normalized Abra documents on a schedule, `POST /ingest/webhooks` for event
+  pushes, or `POST /ingest/documents/batch` for connector-owned batch jobs.
+  Configure `ABRA_WEBHOOK_SECRETS` and send `x-abra-signature: sha256=<hmac>`
+  for webhooks so bodies are tamper-evident in addition to API-key auth.
 - Treat source refresh as idempotent. Re-ingestion deprecates missing claims and graph relations, reactivates still-present claims and relations from the same source, and replaces source-scoped summaries.
 - Store connector state outside the request path so ingestion spikes do not affect recall latency.
 
@@ -478,7 +483,7 @@ At minimum, on-call operators should know how to:
 Run before deploy:
 
 ```text
-npm test
+npm test   # maintainer docs/scripts gate; npm is not the runtime
 go test ./...
 docker build -t abra:local .
 helm lint deploy/helm
@@ -537,12 +542,14 @@ Operational maintenance is part of the v1 bar:
 - Same-dimension embedding model changes require re-ingestion and eval comparison.
 - Embedding dimension changes require a database migration and full re-ingestion.
 
-The bundled helper commands are:
+The bundled helper commands run directly as shell scripts. The `npm run ops:*`
+aliases are source-checkout convenience wrappers only, not the production
+runtime path.
 
 ```sh
-DATABASE_URL=postgres://... npm run ops:backup
-ABRA_RESTORE_DUMP=backups/abra_YYYYMMDD_HHMMSS.dump ABRA_RESTORE_DATABASE_URL=postgres://... npm run ops:restore-drill
-DATABASE_URL=postgres://... npm run ops:reindex
+DATABASE_URL=postgres://... bash scripts/abra-backup.sh
+ABRA_RESTORE_DUMP=backups/abra_YYYYMMDD_HHMMSS.dump ABRA_RESTORE_DATABASE_URL=postgres://... bash scripts/abra-restore-drill.sh
+DATABASE_URL=postgres://... bash scripts/abra-reindex.sh
 ```
 
 `ops:restore-drill` and `ops:reindex` are dry-run by default; set `ABRA_DRY_RUN=0` only after confirming the isolated target or maintenance window.

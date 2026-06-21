@@ -23,6 +23,7 @@ func TestProviderErrorPayloadIsStructuredAndBounded(t *testing.T) {
 		BatchSize:   2,
 		BatchTokens: 90,
 		Message:     "missing auth",
+		Hint:        "check credentials",
 	}
 	payload := providerErrorPayload(fmt.Errorf("ingest failed: %w", providerErr), providerErr)
 
@@ -38,6 +39,9 @@ func TestProviderErrorPayloadIsStructuredAndBounded(t *testing.T) {
 	}
 	if detail["batch_size"] != 2 || detail["batch_start"] != 4 || detail["batch_end"] != 6 || detail["batch_tokens"] != 90 {
 		t.Fatalf("batch detail = %#v", detail)
+	}
+	if detail["hint"] != "Check the embedding provider API key, base URL, and model config, then retry ingest." {
+		t.Fatalf("hint = %#v", detail["hint"])
 	}
 	if strings.Contains(fmt.Sprint(payload["error"]), "sk-") {
 		t.Fatalf("payload error leaked secret: %#v", payload)

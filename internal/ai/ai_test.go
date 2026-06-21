@@ -190,6 +190,36 @@ func TestOpenAICompatibleProviderReturnsStructuredProviderError(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleProviderClassifiesContextOverflow(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":{"message":"requested tokens exceeds model context n_ctx"}}`, http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	provider, err := NewOpenAICompatibleProvider(OpenAICompatibleConfig{
+		BaseURL:        server.URL,
+		EmbeddingModel: "embed-model",
+	}, server.Client())
+	if err != nil {
+		t.Fatalf("NewOpenAICompatibleProvider() error = %v", err)
+	}
+
+	_, err = provider.Embed(context.Background(), EmbeddingRequest{Input: []string{"hello"}})
+	providerErr, ok := ProviderErrorInfo(err)
+	if !ok {
+		t.Fatalf("Embed() error = %T %[1]v, want ProviderError", err)
+	}
+	if providerErr.Code != "context_overflow" || providerErr.Status != http.StatusBadRequest || !providerErr.Retryable {
+		t.Fatalf("provider error classification = %#v", providerErr)
+	}
+	if providerErr.HTTPStatus() != http.StatusBadRequest {
+		t.Fatalf("HTTPStatus = %d, want %d", providerErr.HTTPStatus(), http.StatusBadRequest)
+	}
+	if !strings.Contains(providerErr.Hint, "batch") {
+		t.Fatalf("hint = %q", providerErr.Hint)
+	}
+}
+
 func TestProviderErrorRedactsTransportURLSecrets(t *testing.T) {
 	transportErr := &url.Error{
 		Op:  "Post",

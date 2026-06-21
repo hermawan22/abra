@@ -11,6 +11,10 @@ Abra's core runtime is intentionally provider-neutral. Extensions should adapt s
 5. Re-ingest idempotently when records change.
 6. Keep connector cursors, credentials, webhook state, and retry policy outside Abra core.
 
+Production connectors should run as scheduled sources, signed webhook producers,
+or connector-owned batch jobs. Do not put source-system polling, credentials, or
+vendor-specific retry loops in the OSS runtime.
+
 ## Source Config Pattern
 
 Core scheduled source types are:
@@ -56,7 +60,7 @@ x-api-key: <api-key>
 
 Set `ABRA_WEBHOOK_SECRETS` and include connector metadata such as `connector_kind`, event type, source authority, and source updated time.
 
-Webhook ingestion is asynchronous. A successful response means Abra has accepted durable ingestion jobs, not that embeddings are already written. Use the returned `ingestion_job_id` values, `abra jobs --scope <scope>`, or `GET /ingestion/jobs` to wait for `succeeded` before expecting recall or `working_memory_compose` to include the new content.
+Webhook ingestion is asynchronous. A successful response means Abra has accepted durable ingestion jobs, not that embeddings are already written. Use the returned `ingestion_job_id` values, `abra jobs --scope <scope>`, or `GET /ingestion/jobs` to wait for `succeeded` before expecting recall or `working_memory_compose` to include the new content. For larger connector refreshes, prefer `POST /ingest/documents/batch` or MCP `ingest_documents` from the connector job instead of many single-document requests.
 
 ## ACL And Policy Pattern
 

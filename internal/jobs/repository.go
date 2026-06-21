@@ -18,6 +18,11 @@ type Repository struct {
 	pool *pgxpool.Pool
 }
 
+const (
+	defaultRetryBackoffBaseSeconds = 30
+	defaultRetryBackoffMaxSeconds  = 15 * 60
+)
+
 func OpenRepository(ctx context.Context, databaseURL string) (*Repository, error) {
 	cfg, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
@@ -91,6 +96,10 @@ func (r *Repository) RecoverStaleIngestionJobs(ctx context.Context, leaseTimeout
 		    lease_owner = NULL,
 		    heartbeat_at = NULL,
 		    finished_at = CASE WHEN attempts >= max_attempts THEN now() ELSE NULL END,
+		    next_attempt_at = CASE
+		      WHEN attempts >= max_attempts THEN NULL
+		      ELSE now() + make_interval(secs => LEAST($4::int, $3::int * power(2, GREATEST(attempts - 1, 0))::int))
+		    END,
 		    error_message = COALESCE(error_message, 'lease expired'),
 		    metadata = metadata || $2::jsonb,
 		    updated_at = now()
@@ -99,7 +108,7 @@ func (r *Repository) RecoverStaleIngestionJobs(ctx context.Context, leaseTimeout
 	`, fmt.Sprintf("%d seconds", int(leaseTimeout.Seconds())), jsonb(map[string]any{
 		"recovered_at": time.Now().UTC().Format(time.RFC3339Nano),
 		"reason":       "lease_expired",
-	}))
+	}), defaultRetryBackoffBaseSeconds, defaultRetryBackoffMaxSeconds)
 	if err != nil {
 		return 0, err
 	}
@@ -206,6 +215,7 @@ func (r *Repository) ClaimQueuedIngestionJobs(ctx context.Context, limit int, le
 		  LEFT JOIN source_configs sc ON sc.id = ij.source_config_id
 		  WHERE ij.status IN ('queued', 'retry')
 		    AND ij.attempts < ij.max_attempts
+		    AND (ij.next_attempt_at IS NULL OR ij.next_attempt_at <= now())
 		    AND (
 		      (sc.status IN ('active', 'error') AND sc.source_type IN ('local_repo', 'markdown', 'git_repo', 'mcp'))
 		      OR (ij.trigger_type = 'webhook' AND EXISTS (
@@ -225,6 +235,7 @@ func (r *Repository) ClaimQueuedIngestionJobs(ctx context.Context, limit int, le
 		      heartbeat_at = now(),
 		      started_at = now(),
 		      finished_at = NULL,
+		      next_attempt_at = NULL,
 		      attempts = attempts + 1,
 		      updated_at = now()
 		  FROM next_jobs
@@ -402,6 +413,10 @@ func (r *Repository) FinishIngestionJob(ctx context.Context, jobID string, lease
 			    lease_owner = NULL,
 			    heartbeat_at = NULL,
 			    finished_at = CASE WHEN attempts >= max_attempts THEN now() ELSE NULL END,
+			    next_attempt_at = CASE
+			      WHEN attempts >= max_attempts THEN NULL
+			      ELSE now() + make_interval(secs => LEAST($10::int, $9::int * power(2, GREATEST(attempts - 1, 0))::int))
+			    END,
 			    documents_seen = $2,
 			    documents_changed = $3,
 			    chunks_written = $4,
@@ -413,7 +428,7 @@ func (r *Repository) FinishIngestionJob(ctx context.Context, jobID string, lease
 			  AND status = 'running'
 			  AND lease_owner = $8
 			RETURNING status
-		`, jobID, stats.DocumentsSeen, stats.DocumentsChanged, stats.ChunksWritten, stats.ClaimsWritten, runErr.Error(), jsonb(metadata), leaseOwner).Scan(&status)
+		`, jobID, stats.DocumentsSeen, stats.DocumentsChanged, stats.ChunksWritten, stats.ClaimsWritten, runErr.Error(), jsonb(metadata), leaseOwner, defaultRetryBackoffBaseSeconds, defaultRetryBackoffMaxSeconds).Scan(&status)
 		if err == pgx.ErrNoRows {
 			return r.jobStatus(ctx, jobID)
 		}
@@ -426,6 +441,7 @@ func (r *Repository) FinishIngestionJob(ctx context.Context, jobID string, lease
 		    lease_owner = NULL,
 		    heartbeat_at = NULL,
 		    finished_at = now(),
+		    next_attempt_at = NULL,
 		    documents_seen = $2,
 		    documents_changed = $3,
 		    chunks_written = $4,
@@ -514,6 +530,69 @@ func (r *Repository) DocumentState(ctx context.Context, doc ingest.Document) (Do
 	}
 	state.Found = true
 	return state, nil
+}
+
+func (r *Repository) DocumentStates(ctx context.Context, docs []ingest.Document) (map[string]DocumentState, error) {
+	states := make(map[string]DocumentState, len(docs))
+	if len(docs) == 0 {
+		return states, nil
+	}
+	sourceTypes := make([]string, 0, len(docs))
+	sourceURLs := make([]string, 0, len(docs))
+	scopes := make([]string, 0, len(docs))
+	for _, doc := range docs {
+		sourceTypes = append(sourceTypes, string(doc.SourceType))
+		sourceURLs = append(sourceURLs, doc.SourceURL)
+		scopes = append(scopes, doc.Scope)
+	}
+	rows, err := r.pool.Query(ctx, `
+		WITH requested AS (
+		  SELECT source_type, source_url, scope
+		  FROM unnest($1::text[], $2::text[], $3::text[]) AS input(source_type, source_url, scope)
+		)
+		SELECT requested.source_type,
+		       requested.source_url,
+		       requested.scope,
+		       d.content_checksum,
+		       COALESCE(d.metadata->>'ingest_checksum', ''),
+		       COALESCE(d.metadata->>'ingest_fingerprint', ''),
+		       COALESCE(d.metadata->>'ingest_complete' = 'true', false)
+		FROM requested
+		JOIN LATERAL (
+		  SELECT content_checksum, metadata
+		  FROM documents
+		  WHERE source_type = requested.source_type
+		    AND source_url = requested.source_url
+		    AND scope = requested.scope
+		  LIMIT 1
+		) d ON true
+	`, sourceTypes, sourceURLs, scopes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var sourceType, sourceURL, scope string
+		var state DocumentState
+		if err := rows.Scan(
+			&sourceType,
+			&sourceURL,
+			&scope,
+			&state.ContentChecksum,
+			&state.IngestChecksum,
+			&state.IngestFingerprint,
+			&state.IngestComplete,
+		); err != nil {
+			return nil, err
+		}
+		state.Found = true
+		doc := ingest.Document{SourceType: ingest.SourceType(sourceType), SourceURL: sourceURL, Scope: scope}
+		states[documentStateKey(doc)] = state
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return states, nil
 }
 
 func (r *Repository) MarkSourceSuccess(ctx context.Context, sourceID string, stats SourceStats) error {

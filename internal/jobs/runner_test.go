@@ -88,6 +88,9 @@ func TestRunnerIngestsOnlyChangedDocuments(t *testing.T) {
 	if !store.success {
 		t.Fatal("source success was not recorded")
 	}
+	if store.batchStateCalls != 1 || store.stateCalls != 0 {
+		t.Fatalf("state lookups: batch=%d single=%d, want one batch lookup", store.batchStateCalls, store.stateCalls)
+	}
 }
 
 func TestRunnerBatchesChangedSourceDocuments(t *testing.T) {
@@ -124,6 +127,42 @@ func TestRunnerBatchesChangedSourceDocuments(t *testing.T) {
 	}
 	if len(brain.inputs) != 2 {
 		t.Fatalf("ingested %d documents", len(brain.inputs))
+	}
+}
+
+func TestRunnerFallsBackToSingleDocumentStateLookup(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, root, "a.md", "# A\n\nA should be ingested.")
+	writeTestFile(t, root, "b.md", "# B\n\nB should be ingested.")
+
+	store := &singleStateStore{
+		base: fakeStore{
+			sources: []SourceConfig{{
+				ID:         "docs",
+				Scope:      "repo:fallback",
+				SourceType: ingest.SourceTypeMarkdown,
+				Name:       "Docs",
+				Config:     map[string]any{"root": root},
+			}},
+			states: map[string]DocumentState{},
+		},
+	}
+	brain := &fakeIngestor{}
+	runner := NewRunner(store, brain, Options{
+		MaxSourcesPerRun:             10,
+		MaxChangedDocumentsPerSource: 10,
+		SourceTimeout:                time.Second,
+	})
+
+	stats, err := runner.RunOnce(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.DocumentsSeen != 2 || stats.DocumentsChanged != 2 {
+		t.Fatalf("stats = %+v", stats)
+	}
+	if store.base.stateCalls != 2 {
+		t.Fatalf("single state lookups = %d, want 2", store.base.stateCalls)
 	}
 }
 
@@ -680,6 +719,43 @@ func TestRunnerProcessesWebhookDocumentJob(t *testing.T) {
 	}
 }
 
+func TestRunnerBatchesWebhookDocumentJobs(t *testing.T) {
+	store := &fakeStore{
+		queuedJobs: []QueuedIngestionJob{
+			{ID: "webhook-job-1", TriggerType: "webhook", Attempts: 1, MaxAttempts: 3},
+			{ID: "webhook-job-2", TriggerType: "webhook", Attempts: 1, MaxAttempts: 3},
+			{ID: "webhook-job-3", TriggerType: "webhook", Attempts: 1, MaxAttempts: 3},
+		},
+		webhookDocuments: map[string]IngestDocumentInput{
+			"webhook-job-1": webhookInput("webhook-job-1"),
+			"webhook-job-2": webhookInput("webhook-job-2"),
+			"webhook-job-3": webhookInput("webhook-job-3"),
+		},
+	}
+	brain := &fakeIngestor{}
+	runner := NewRunner(store, brain, Options{
+		MaxSourcesPerRun:             10,
+		MaxChangedDocumentsPerSource: 10,
+		SourceTimeout:                time.Second,
+	})
+
+	stats, err := runner.RunOnce(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.SourcesSucceeded != 3 || stats.DocumentsSeen != 3 || stats.DocumentsChanged != 3 {
+		t.Fatalf("stats = %+v", stats)
+	}
+	if len(brain.batchInputs) != 1 || len(brain.batchInputs[0]) != 3 {
+		t.Fatalf("batch inputs = %+v", brain.batchInputs)
+	}
+	for _, input := range brain.batchInputs[0] {
+		if input.Metadata["ingestion_job_id"] != input.SourceID {
+			t.Fatalf("missing webhook job metadata for %+v", input)
+		}
+	}
+}
+
 func TestRunnerHonorsWorkerConcurrency(t *testing.T) {
 	store := &fakeStore{
 		queuedJobs: []QueuedIngestionJob{
@@ -824,6 +900,8 @@ type fakeStore struct {
 	heartbeatErr        error
 	heartbeats          int
 	finishLeaseOwner    string
+	stateCalls          int
+	batchStateCalls     int
 }
 
 func (f *fakeStore) RecoverStaleIngestionJobs(context.Context, time.Duration) (int64, error) {
@@ -872,10 +950,67 @@ func (f *fakeStore) FinishIngestionJob(_ context.Context, _ string, leaseOwner s
 }
 
 func (f *fakeStore) DocumentState(_ context.Context, doc ingest.Document) (DocumentState, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stateCalls++
 	if f.err != nil {
 		return DocumentState{}, f.err
 	}
 	return f.states[doc.Path], nil
+}
+
+func (f *fakeStore) DocumentStates(_ context.Context, docs []ingest.Document) (map[string]DocumentState, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.batchStateCalls++
+	if f.err != nil {
+		return nil, f.err
+	}
+	states := make(map[string]DocumentState, len(docs))
+	for _, doc := range docs {
+		states[documentStateKey(doc)] = f.states[doc.Path]
+	}
+	return states, nil
+}
+
+type singleStateStore struct {
+	base fakeStore
+}
+
+func (s *singleStateStore) RecoverStaleIngestionJobs(ctx context.Context, leaseTimeout time.Duration) (int64, error) {
+	return s.base.RecoverStaleIngestionJobs(ctx, leaseTimeout)
+}
+
+func (s *singleStateStore) EnqueueScheduledSources(ctx context.Context, limit int) (int, error) {
+	return s.base.EnqueueScheduledSources(ctx, limit)
+}
+
+func (s *singleStateStore) ClaimQueuedIngestionJobs(ctx context.Context, limit int, leaseOwner string) ([]QueuedIngestionJob, error) {
+	return s.base.ClaimQueuedIngestionJobs(ctx, limit, leaseOwner)
+}
+
+func (s *singleStateStore) HeartbeatIngestionJob(ctx context.Context, jobID string, leaseOwner string) error {
+	return s.base.HeartbeatIngestionJob(ctx, jobID, leaseOwner)
+}
+
+func (s *singleStateStore) FinishIngestionJob(ctx context.Context, jobID string, leaseOwner string, stats SourceStats, runErr error) (string, error) {
+	return s.base.FinishIngestionJob(ctx, jobID, leaseOwner, stats, runErr)
+}
+
+func (s *singleStateStore) GetWebhookDocument(ctx context.Context, jobID string) (IngestDocumentInput, error) {
+	return s.base.GetWebhookDocument(ctx, jobID)
+}
+
+func (s *singleStateStore) DocumentState(ctx context.Context, doc ingest.Document) (DocumentState, error) {
+	return s.base.DocumentState(ctx, doc)
+}
+
+func (s *singleStateStore) MarkSourceSuccess(ctx context.Context, sourceID string, stats SourceStats) error {
+	return s.base.MarkSourceSuccess(ctx, sourceID, stats)
+}
+
+func (s *singleStateStore) MarkSourceError(ctx context.Context, sourceID string, err error) error {
+	return s.base.MarkSourceError(ctx, sourceID, err)
 }
 
 func (f *fakeStore) GetWebhookDocument(_ context.Context, jobID string) (IngestDocumentInput, error) {

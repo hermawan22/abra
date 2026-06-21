@@ -80,8 +80,9 @@ func doProviderHTTPRequest(ctx context.Context, client *http.Client, options pro
 			}
 			continue
 		}
-		code, retryable := classifyHTTPStatus(response.StatusCode)
-		return nil, providerError(options, code, response.StatusCode, retryable, attempt+1, providerErrorMessage(string(raw)), fmt.Errorf("%s: status=%d", failurePrefix, response.StatusCode))
+		body := string(raw)
+		code, retryable := classifyHTTPStatusWithBody(response.StatusCode, body)
+		return nil, providerError(options, code, response.StatusCode, retryable, attempt+1, providerErrorMessage(body), fmt.Errorf("%s: status=%d", failurePrefix, response.StatusCode))
 	}
 	if lastErr != nil {
 		code, retryable := classifyRequestError(lastErr)
@@ -104,6 +105,7 @@ func providerError(options providerHTTPRequest, code string, status int, retryab
 		BatchSize:   options.BatchSize,
 		BatchTokens: options.BatchTokens,
 		Message:     message,
+		Hint:        providerErrorHint(code),
 		Err:         err,
 	}
 }

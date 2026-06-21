@@ -56,6 +56,8 @@ func New(cfg config.Config, db *store.Store) (http.Handler, error) {
 	mux.HandleFunc("GET /claims", methodNotAllowed("POST"))
 	mux.HandleFunc("POST /observations", handler.auth(handler.captureObservation))
 	mux.HandleFunc("GET /observations", handler.auth(handler.listObservations))
+	mux.HandleFunc("POST /memory/outcomes", handler.auth(handler.captureTaskOutcomeHTTP))
+	mux.HandleFunc("GET /memory/outcomes", methodNotAllowed("POST"))
 	mux.HandleFunc("POST /claims/{claimId}/challenge", handler.auth(handler.challengeClaim))
 	mux.HandleFunc("POST /claims/{claimId}/forget", handler.auth(handler.forgetClaim))
 	mux.HandleFunc("GET /conflicts", handler.auth(handler.listConflicts))
@@ -221,6 +223,7 @@ func (h *handler) index(w http.ResponseWriter, r *http.Request) {
 			"recall":        "POST /recall",
 			"claims":        "POST /claims",
 			"observations":  "GET|POST /observations",
+			"outcomes":      "POST /memory/outcomes",
 			"challenge":     "POST /claims/{claimId}/challenge",
 			"forget":        "POST /claims/{claimId}/forget",
 			"conflicts":     "GET /conflicts",
@@ -437,6 +440,9 @@ func providerErrorPayload(err error, providerErr *ai.ProviderError) map[string]a
 	if providerErr.Message != "" {
 		details["message"] = providerErr.Message
 	}
+	if providerErr.Hint != "" {
+		details["hint"] = providerErr.Hint
+	}
 	if providerErr.BatchSize > 0 {
 		details["batch_size"] = providerErr.BatchSize
 		details["batch_start"] = providerErr.BatchStart
@@ -445,10 +451,26 @@ func providerErrorPayload(err error, providerErr *ai.ProviderError) map[string]a
 	if providerErr.BatchTokens > 0 {
 		details["batch_tokens"] = providerErr.BatchTokens
 	}
+	if hint := providerErrorHint(providerErr.Code); hint != "" {
+		details["hint"] = hint
+	}
 	return map[string]any{
 		"error":          err.Error(),
 		"error_kind":     "provider_error",
 		"provider_error": details,
+	}
+}
+
+func providerErrorHint(code string) string {
+	switch code {
+	case "context_overflow":
+		return "Abra retries smaller embedding batches automatically; if one input still exceeds the provider context, lower ABRA_EMBEDDING_BATCH_MAX_ITEMS/ABRA_EMBEDDING_BATCH_MAX_TOKENS or split very large files before ingest."
+	case "provider_timeout":
+		return "Run `abra models status`; if the model is healthy, retry with a longer ABRA_CLI_TIMEOUT or lower ABRA_EMBEDDING_BATCH_MAX_ITEMS/ABRA_EMBEDDING_BATCH_MAX_TOKENS."
+	case "auth_failed":
+		return "Check the embedding provider API key, base URL, and model config, then retry ingest."
+	default:
+		return ""
 	}
 }
 
@@ -1415,6 +1437,41 @@ func (h *handler) mcpToolCall(w http.ResponseWriter, r *http.Request, id any, pa
 			Value:           mapArg(args, "value"),
 			Metadata:        mapArg(args, "metadata"),
 		})
+	case "capture_task_outcome":
+		input := memory.TaskOutcomeInput{
+			Task:           stringArg(args, "task"),
+			Scope:          stringArg(args, "scope"),
+			Hook:           stringArg(args, "hook"),
+			Agent:          stringArg(args, "agent"),
+			Outcome:        stringArg(args, "outcome"),
+			Summary:        stringArg(args, "summary"),
+			FilesChanged:   stringListArg(args, "files_changed"),
+			CommandsRun:    commandOutcomeListArg(args, "commands_run"),
+			Tests:          testOutcomeArg(args, "tests_result"),
+			MissingContext: stringListArg(args, "missing_context"),
+			MemoryRefsUsed: memoryReferenceListArg(args, "memory_refs_used"),
+			CompletedAt:    stringArg(args, "completed_at"),
+			SourceURL:      stringArg(args, "source_url"),
+			CreatedBy:      stringArg(args, "created_by"),
+			ApprovalID:     stringArg(args, "approval_id"),
+			Metadata:       mapArg(args, "metadata"),
+		}
+		input = memory.NormalizeTaskOutcome(input)
+		if !h.requireAccess(w, r, authActionWrite, input.Scope) {
+			return
+		}
+		if !h.requireRiskApproval(w, r, approvalRequirement{
+			Action:        "agent_write",
+			Scope:         input.Scope,
+			TargetType:    "memory_write",
+			TargetID:      input.Scope,
+			ApprovalID:    input.ApprovalID,
+			PrincipalType: "agent",
+			PrincipalID:   firstNonEmpty(input.CreatedBy, input.Agent),
+		}) {
+			return
+		}
+		result, err = h.captureTaskOutcome(r.Context(), input)
 	case "list_observations":
 		scope := stringArg(args, "scope")
 		if !h.requireAccess(w, r, authActionRead, scope) {
@@ -2326,6 +2383,53 @@ func mcpTools() []map[string]any {
 			}),
 		},
 		{
+			"name":        "capture_task_outcome",
+			"description": "Capture a bounded after-task outcome as a raw source-backed observation and audit event, then create reviewable learning proposals only for repeated local outcome patterns. Does not promote trusted claims.",
+			"inputSchema": objectSchema([]string{"task", "scope"}, map[string]any{
+				"task":          stringSchema(),
+				"scope":         stringSchema(),
+				"hook":          map[string]any{"type": "string", "enum": []string{"after_task"}},
+				"agent":         stringSchema(),
+				"outcome":       map[string]any{"type": "string", "enum": []string{"succeeded", "failed", "partial", "blocked", "unknown"}},
+				"summary":       stringSchema(),
+				"files_changed": map[string]any{"type": "array", "maxItems": memory.MaxTaskOutcomeFiles, "items": stringSchema()},
+				"commands_run": map[string]any{
+					"type":     "array",
+					"maxItems": memory.MaxTaskOutcomeCommands,
+					"items": objectSchema([]string{"command"}, map[string]any{
+						"command":     stringSchema(),
+						"status":      map[string]any{"type": "string", "enum": []string{"succeeded", "failed", "skipped", "unknown"}},
+						"exit_code":   map[string]any{"type": "integer"},
+						"duration_ms": map[string]any{"type": "integer", "minimum": 0},
+					}),
+				},
+				"tests_result": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"status":   map[string]any{"type": "string", "enum": []string{"passed", "failed", "skipped", "unknown"}},
+						"summary":  stringSchema(),
+						"commands": map[string]any{"type": "array", "maxItems": memory.MaxTaskOutcomeTestCommands, "items": stringSchema()},
+					},
+				},
+				"missing_context": map[string]any{"type": "array", "maxItems": memory.MaxTaskOutcomeMissingContext, "items": stringSchema()},
+				"memory_refs_used": map[string]any{
+					"type":     "array",
+					"maxItems": memory.MaxTaskOutcomeMemoryRefs,
+					"items": objectSchema(nil, map[string]any{
+						"ref":        stringSchema(),
+						"kind":       stringSchema(),
+						"id":         stringSchema(),
+						"source_url": stringSchema(),
+					}),
+				},
+				"completed_at": stringSchema(),
+				"source_url":   stringSchema(),
+				"created_by":   stringSchema(),
+				"approval_id":  stringSchema(),
+				"metadata":     map[string]any{"type": "object"},
+			}),
+		},
+		{
 			"name":        "list_observations",
 			"description": "List or search raw observations for a scope. Observations are not trusted claims unless promoted through review.",
 			"inputSchema": objectSchema([]string{"scope"}, map[string]any{
@@ -2733,7 +2837,7 @@ func mcpTools() []map[string]any {
 
 func mcpToolTraceName(name string) string {
 	switch name {
-	case "recall", "ingest_document", "ingest_documents", "remember_claim", "capture_observation", "list_observations", "challenge", "forget", "brain_sources", "brain_summaries", "brain_think", "memory_health", "discover_scopes", "rebuild_summaries", "policy_plan", "working_memory_compose", "list_conflicts", "resolve_conflict", "upsert_acl_policy", "list_acl_policies", "acl_decision", "upsert_agent_policy", "list_agent_policies", "agent_policy_decision", "upsert_agent_profile", "list_agent_profiles", "upsert_source_config", "validate_mcp_source", "list_source_configs", "get_source_config", "set_source_config_status", "enqueue_ingestion_job", "list_ingestion_jobs", "retry_ingestion_job", "cancel_ingestion_job", "propose_learning", "list_learning_proposals", "decide_learning_proposal", "apply_learning_proposal", "request_approval":
+	case "recall", "ingest_document", "ingest_documents", "remember_claim", "capture_observation", "capture_task_outcome", "list_observations", "challenge", "forget", "brain_sources", "brain_summaries", "brain_think", "memory_health", "discover_scopes", "rebuild_summaries", "policy_plan", "working_memory_compose", "list_conflicts", "resolve_conflict", "upsert_acl_policy", "list_acl_policies", "acl_decision", "upsert_agent_policy", "list_agent_policies", "agent_policy_decision", "upsert_agent_profile", "list_agent_profiles", "upsert_source_config", "validate_mcp_source", "list_source_configs", "get_source_config", "set_source_config_status", "enqueue_ingestion_job", "list_ingestion_jobs", "retry_ingestion_job", "cancel_ingestion_job", "propose_learning", "list_learning_proposals", "decide_learning_proposal", "apply_learning_proposal", "request_approval":
 		return name
 	default:
 		return "unknown"
@@ -2811,6 +2915,60 @@ func stringListArg(args map[string]any, key string) []string {
 		if text, ok := value.(string); ok && strings.TrimSpace(text) != "" {
 			values = append(values, text)
 		}
+	}
+	return values
+}
+
+func commandOutcomeListArg(args map[string]any, key string) []memory.CommandOutcome {
+	raw, ok := args[key].([]any)
+	if !ok {
+		return nil
+	}
+	values := make([]memory.CommandOutcome, 0, len(raw))
+	for _, value := range raw {
+		item, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		values = append(values, memory.CommandOutcome{
+			Command:    stringArg(item, "command"),
+			Status:     stringArg(item, "status"),
+			ExitCode:   intArg(item, "exit_code", 0),
+			DurationMS: intArg(item, "duration_ms", 0),
+		})
+	}
+	return values
+}
+
+func testOutcomeArg(args map[string]any, key string) memory.TestOutcome {
+	raw := mapArg(args, key)
+	if raw == nil {
+		return memory.TestOutcome{}
+	}
+	return memory.TestOutcome{
+		Status:   stringArg(raw, "status"),
+		Summary:  stringArg(raw, "summary"),
+		Commands: stringListArg(raw, "commands"),
+	}
+}
+
+func memoryReferenceListArg(args map[string]any, key string) []memory.MemoryReferenceUsed {
+	raw, ok := args[key].([]any)
+	if !ok {
+		return nil
+	}
+	values := make([]memory.MemoryReferenceUsed, 0, len(raw))
+	for _, value := range raw {
+		item, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		values = append(values, memory.MemoryReferenceUsed{
+			Ref:       stringArg(item, "ref"),
+			Kind:      stringArg(item, "kind"),
+			ID:        stringArg(item, "id"),
+			SourceURL: stringArg(item, "source_url"),
+		})
 	}
 	return values
 }

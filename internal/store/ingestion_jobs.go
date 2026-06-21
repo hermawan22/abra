@@ -231,6 +231,7 @@ func (s *Store) restartRetryableWebhookJob(ctx context.Context, jobID string, me
 		    heartbeat_at = NULL,
 		    started_at = NULL,
 		    finished_at = NULL,
+		    next_attempt_at = NULL,
 		    error_message = NULL,
 		    metadata = metadata || $2::jsonb,
 		    updated_at = now()
@@ -313,6 +314,7 @@ func (s *Store) RetryIngestionJob(ctx context.Context, jobID string, input Retry
 		    heartbeat_at = NULL,
 		    started_at = NULL,
 		    finished_at = NULL,
+		    next_attempt_at = NULL,
 		    error_message = NULL,
 		    max_attempts = GREATEST(max_attempts, attempts + 1, $2),
 		    metadata = metadata || $3::jsonb,

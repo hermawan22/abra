@@ -306,7 +306,7 @@ func TestProposeObservationPostsLearningProposal(t *testing.T) {
 
 func TestSetupAndUpHelpMentionModelAutomation(t *testing.T) {
 	setupHelp := commandUsage("setup")
-	for _, want := range []string{"abra setup --yes", "abra setup --yes --no-models", "--skip-models"} {
+	for _, want := range []string{"abra setup --yes", "abra setup --yes --no-models", "--skip-models", "not a chat model"} {
 		if !strings.Contains(setupHelp, want) {
 			t.Fatalf("setup help missing %q:\n%s", want, setupHelp)
 		}
@@ -315,6 +315,21 @@ func TestSetupAndUpHelpMentionModelAutomation(t *testing.T) {
 	for _, want := range []string{"abra up [--no-models]", "starts the default local Qwen", "--no-models"} {
 		if !strings.Contains(upHelp, want) {
 			t.Fatalf("up help missing %q:\n%s", want, upHelp)
+		}
+	}
+}
+
+func TestTopLevelHelpShowsCodexOnboardingStatusFlow(t *testing.T) {
+	help := usage()
+	for _, want := range []string{
+		"cd /path/to/project",
+		"abra scope",
+		"abra agents bootstrap --agent codex",
+		"fully quit and reopen Codex Desktop",
+		"abra agents ready . --scope <scope-from-abra-scope> --json",
+	} {
+		if !strings.Contains(help, want) {
+			t.Fatalf("top-level help missing %q:\n%s", want, help)
 		}
 	}
 }
@@ -2123,6 +2138,52 @@ func TestInstallScriptDefaultsToPublishedRelease(t *testing.T) {
 	}
 }
 
+func TestUpgradeVerifiesInstallScriptAttestationBeforeExecuting(t *testing.T) {
+	root := t.TempDir()
+	bin := filepath.Join(root, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sourceScript := filepath.Join(root, "install.sh")
+	mustWrite(t, sourceScript, "echo should-not-run\n")
+	marker := filepath.Join(root, "executed")
+	mustWrite(t, filepath.Join(bin, "curl"), `#!/bin/sh
+out=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then
+    shift
+    out="$1"
+  fi
+  shift
+done
+cp "$TEST_INSTALL_SCRIPT" "$out"
+`)
+	mustWrite(t, filepath.Join(bin, "sh"), `#!/bin/sh
+printf executed > "$TEST_INSTALL_MARKER"
+`)
+	mustWrite(t, filepath.Join(bin, "gh"), `#!/bin/sh
+exit 42
+`)
+	for _, name := range []string{"curl", "sh", "gh"} {
+		if err := os.Chmod(filepath.Join(bin, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("TEST_INSTALL_SCRIPT", sourceScript)
+	t.Setenv("TEST_INSTALL_MARKER", marker)
+	t.Setenv("ABRA_INSTALL_SCRIPT", "https://example.invalid/install.sh")
+	t.Setenv("ABRA_VERIFY_INSTALL_ATTESTATION", "1")
+
+	err := upgrade(cliArgs{Flags: map[string]string{}, Bools: map[string]bool{}})
+	if err == nil || !strings.Contains(err.Error(), "attestation verification failed for install.sh") {
+		t.Fatalf("upgrade error = %v, want install.sh attestation failure", err)
+	}
+	if fileExists(marker) {
+		t.Fatalf("install script executed before successful attestation")
+	}
+}
+
 func TestMCPConfigUsesTokenEnvByDefault(t *testing.T) {
 	t.Setenv("ABRA_API_TOKEN", "fixture-token-value")
 	output := captureStdout(t, func() {
@@ -2153,6 +2214,80 @@ func TestMCPConfigLiteralTokenIsOptIn(t *testing.T) {
 	})
 	if !strings.Contains(output, "Authorization") || !strings.Contains(output, "fixture-token-value") {
 		t.Fatalf("literal mcp config missing opt-in token:\n%s", output)
+	}
+}
+
+func TestMCPStatusChecksServerToolsAndClientRecovery(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+	mustWrite(t, filepath.Join(home, "quickstart.env"), "ABRA_API_TOKEN=test-token\n")
+
+	binDir := t.TempDir()
+	codexPath := filepath.Join(binDir, "codex")
+	mustWrite(t, codexPath, "#!/bin/sh\nif [ \"$1 $2\" = 'mcp list' ]; then printf 'other http://127.0.0.1:9999/mcp\\n'; exit 0; fi\nexit 1\n")
+	if err := os.Chmod(codexPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ABRA_CODEX_COMMAND", codexPath)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/readyz":
+			writeTestJSON(t, w, map[string]any{"ok": true, "embedding_provider": "local"})
+		case "/mcp":
+			writeTestJSON(t, w, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": map[string]any{"tools": []map[string]any{
+					{"name": "discover_scopes"},
+					{"name": "working_memory_compose"},
+				}},
+			})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	output := captureStdout(t, func() {
+		if err := run(context.Background(), []string{"mcp", "status", "--base-url", server.URL, "--token", "test-token"}); err != nil {
+			t.Fatalf("mcp status error = %v", err)
+		}
+	})
+	for _, want := range []string{"ok  readyz", "ok  mcp", "warn  codex_mcp_client", "abra mcp install-codex"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("mcp status output missing %q:\n%s", want, output)
+		}
+	}
+	if strings.Contains(output, "test-token") {
+		t.Fatalf("mcp status leaked token:\n%s", output)
+	}
+}
+
+func TestPrintThinkIncludesRecoveryWhenContextIsWeak(t *testing.T) {
+	output := captureStdout(t, func() {
+		printThink(map[string]any{
+			"answer": "No source-backed answer.",
+			"scope":  "repo:demo",
+			"verification": map[string]any{
+				"verdict": "weak",
+			},
+			"agent_decision": map[string]any{
+				"decision": "needs_review",
+			},
+		})
+	})
+	for _, want := range []string{
+		"next:",
+		"abra agents verify . --scope 'repo:demo' --json",
+		"abra doctor",
+		"abra ingest . --code --scope 'repo:demo'",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("think recovery output missing %q:\n%s", want, output)
+		}
 	}
 }
 
@@ -2259,7 +2394,17 @@ func TestSetupYesNoStartDefaultsLocalQwen(t *testing.T) {
 	if values["RERANKER_BASE_URL"] != "" {
 		t.Fatalf("reranker base url = %q", values["RERANKER_BASE_URL"])
 	}
-	for _, want := range []string{"abra up --env-file", "go run ./cmd/abra <command>", "cd /path/to/project", "abra agents bootstrap --agent codex", "abra agents init --agent codex", "abra agents verify", "If Codex says Abra has no context"} {
+	for _, want := range []string{
+		"abra up --env-file",
+		"go run ./cmd/abra <command>",
+		"cd /path/to/project",
+		"abra agents bootstrap --agent codex",
+		"fully quit and reopen Codex Desktop",
+		"abra agents ready . --scope <scope-from-abra-scope> --json",
+		"abra agents init --agent codex",
+		"abra agents verify",
+		"If Codex says Abra has no context",
+	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("setup next steps missing %q:\n%s", want, output)
 		}
@@ -2273,7 +2418,7 @@ func TestSetupYesNoStartDefaultsLocalQwen(t *testing.T) {
 	if verifyIndex < 0 || ingestIndex < 0 || verifyIndex > ingestIndex {
 		t.Fatalf("setup manual path should verify before conditional ingest:\n%s", output)
 	}
-	for _, want := range []string{"run `abra agents verify --json` first", "server_ready=true but agent_ready=false", "re-ingest only if verify reports missing scope or empty source-backed memory"} {
+	for _, want := range []string{"run `abra agents ready . --scope <scope-from-abra-scope> --json` first", "server_ready=true but agent_ready=false", "re-ingest only if verify reports missing scope or empty source-backed memory"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("setup recovery guidance missing %q:\n%s", want, output)
 		}
@@ -2923,9 +3068,9 @@ func TestSetupRejectsCustomHTTPProviderSelector(t *testing.T) {
 
 	err := run(context.Background(), []string{"setup", "--provider", "custom-http", "--yes", "--no-start"})
 	if err == nil {
-		t.Fatal("expected unsupported setup model error")
+		t.Fatal("expected unsupported setup provider error")
 	}
-	if !strings.Contains(err.Error(), `unknown setup model "custom-http"`) || !strings.Contains(err.Error(), "use local, compatible, or openai") {
+	if !strings.Contains(err.Error(), `unknown setup embedding provider "custom-http"`) || !strings.Contains(err.Error(), "use local, compatible, or openai") {
 		t.Fatalf("error = %v", err)
 	}
 }
@@ -4820,11 +4965,13 @@ func TestEnsureProjectDirDownloadsRuntimeOutsideCheckout(t *testing.T) {
 	t.Chdir(root)
 
 	archive := runtimeArchive(t)
+	sum := sha256.Sum256(archive)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(archive)
 	}))
 	defer server.Close()
 	t.Setenv("ABRA_SOURCE_URL", server.URL+"/abra.tar.gz")
+	t.Setenv("ABRA_SOURCE_SHA256", fmt.Sprintf("%x", sum))
 
 	dir, err := ensureProjectDir(context.Background(), cliArgs{Flags: map[string]string{}, Bools: map[string]bool{}})
 	if err != nil {
@@ -4847,6 +4994,48 @@ func TestEnsureProjectDirDownloadsRuntimeOutsideCheckout(t *testing.T) {
 	steps := composeUpSteps(dir, filepath.Join(home, "quickstart.env"))
 	if len(steps) == 0 || !containsString(steps[0], "pull") || containsString(steps[0], "build") {
 		t.Fatalf("runtime up steps should pull published images, got %#v", steps)
+	}
+}
+
+func TestEnsureProjectDirRejectsUnverifiedRuntimeSourceURL(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+
+	archive := runtimeArchive(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(archive)
+	}))
+	defer server.Close()
+	t.Setenv("ABRA_SOURCE_URL", server.URL+"/abra.tar.gz")
+
+	_, err := ensureProjectDir(context.Background(), cliArgs{Flags: map[string]string{}, Bools: map[string]bool{}})
+	if err == nil || !strings.Contains(err.Error(), "ABRA_SOURCE_URL requires ABRA_SOURCE_SHA256") {
+		t.Fatalf("ensureProjectDir error = %v, want ABRA_SOURCE_SHA256 requirement", err)
+	}
+}
+
+func TestEnsureProjectDirAllowsExplicitUnverifiedRuntimeSourceURLOptOut(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+
+	archive := runtimeArchive(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(archive)
+	}))
+	defer server.Close()
+	t.Setenv("ABRA_SOURCE_URL", server.URL+"/abra.tar.gz")
+	t.Setenv("ABRA_ALLOW_UNVERIFIED_SOURCE_URL", "1")
+
+	dir, err := ensureProjectDir(context.Background(), cliArgs{Flags: map[string]string{}, Bools: map[string]bool{}})
+	if err != nil {
+		t.Fatalf("ensureProjectDir error = %v", err)
+	}
+	if !fileExists(filepath.Join(dir, "docker-compose.yml")) {
+		t.Fatalf("runtime docker-compose.yml was not extracted into %s", dir)
 	}
 }
 
@@ -4883,6 +5072,76 @@ func TestEnsureProjectDirDownloadsVerifiedRuntimeBundleOutsideCheckout(t *testin
 	}
 	if !fileExists(filepath.Join(dir, "docker-compose.yml")) {
 		t.Fatalf("runtime docker-compose.yml was not extracted into %s", dir)
+	}
+}
+
+func TestInitEnvUsesRuntimeBundleDigestOutsideCheckout(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+	oldVersion := version
+	version = "v9.9.9"
+	t.Cleanup(func() { version = oldVersion })
+	if err := os.MkdirAll(managedRuntimeDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	digest := "ghcr.io/hermawan22/abra@sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+	mustWrite(t, filepath.Join(managedRuntimeDir(), "IMAGE_DIGEST"), digest+"\n")
+
+	if err := initEnv(cliArgs{Flags: map[string]string{}, Bools: map[string]bool{}}); err != nil {
+		t.Fatalf("initEnv error = %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(home, "quickstart.env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(content), "ABRA_IMAGE="+digest+"\n") {
+		t.Fatalf("generated env should use runtime digest image:\n%s", content)
+	}
+	if strings.Contains(string(content), "ABRA_IMAGE=ghcr.io/hermawan22/abra:v9.9.9\n") {
+		t.Fatalf("generated env pinned mutable tag despite runtime digest bundle:\n%s", content)
+	}
+}
+
+func TestEnsureRuntimeImageDigestRewritesGeneratedMutableTagOutsideCheckout(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+	oldVersion := version
+	version = "v9.9.9"
+	t.Cleanup(func() { version = oldVersion })
+
+	if err := initEnv(cliArgs{Flags: map[string]string{}, Bools: map[string]bool{}}); err != nil {
+		t.Fatalf("initEnv error = %v", err)
+	}
+	envFile := filepath.Join(home, "quickstart.env")
+	before, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(before), "ABRA_IMAGE=ghcr.io/hermawan22/abra:v9.9.9\n") {
+		t.Fatalf("fixture env should start with mutable release tag:\n%s", before)
+	}
+
+	if err := os.MkdirAll(managedRuntimeDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	digest := "ghcr.io/hermawan22/abra@sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+	mustWrite(t, filepath.Join(managedRuntimeDir(), "IMAGE_DIGEST"), digest+"\n")
+	if err := ensureRuntimeImageDigest(cliArgs{Flags: map[string]string{}, Bools: map[string]bool{}}); err != nil {
+		t.Fatalf("ensureRuntimeImageDigest error = %v", err)
+	}
+	after, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(after), "ABRA_IMAGE="+digest+"\n") {
+		t.Fatalf("env should be rewritten to digest image:\n%s", after)
+	}
+	if strings.Contains(string(after), "ABRA_IMAGE=ghcr.io/hermawan22/abra:v9.9.9\n") {
+		t.Fatalf("env still pins mutable release tag:\n%s", after)
 	}
 }
 

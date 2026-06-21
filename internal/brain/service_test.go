@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -259,6 +260,68 @@ func TestEmbedTextsHonorsConfiguredBatchTokenLimit(t *testing.T) {
 	}
 	if got, want := fmt.Sprint(provider.callSizes), fmt.Sprint([]int{1, 1, 1}); got != want {
 		t.Fatalf("provider call sizes = %s, want %s", got, want)
+	}
+}
+
+func TestEmbedTextsSplitsContextOverflowBatch(t *testing.T) {
+	provider := &contextOverflowEmbeddingProvider{failAtOrAbove: 4}
+	service := Service{
+		cfg: config.Config{
+			Embedding:               config.AIProviderConfig{Provider: "local", Model: "qwen", Dimensions: 3},
+			EmbeddingBatchMaxItems:  4,
+			EmbeddingBatchMaxTokens: 100000,
+		},
+		embeddings: provider,
+	}
+	inputs := []string{"a", "b", "c", "d"}
+	response, err := service.embedTexts(context.Background(), inputs)
+	if err != nil {
+		t.Fatalf("embedTexts error = %v", err)
+	}
+	if got, want := fmt.Sprint(provider.callSizes), fmt.Sprint([]int{4, 2, 2}); got != want {
+		t.Fatalf("provider call sizes = %s, want %s", got, want)
+	}
+	if len(response.Embeddings) != len(inputs) {
+		t.Fatalf("embeddings = %d, want %d", len(response.Embeddings), len(inputs))
+	}
+	for i, embedding := range response.Embeddings {
+		if embedding.Index != i || embedding.Vector[0] != float64(i) {
+			t.Fatalf("embedding[%d] = index %d vector %#v", i, embedding.Index, embedding.Vector)
+		}
+	}
+	if response.Usage == nil || response.Usage.TotalTokens != 4 {
+		t.Fatalf("usage = %#v, want successful split usage", response.Usage)
+	}
+}
+
+func TestEmbedTextsSplitsProviderTimeoutBatch(t *testing.T) {
+	provider := &providerTimeoutEmbeddingProvider{failOnceAtOrAbove: 4}
+	service := Service{
+		cfg: config.Config{
+			Embedding:               config.AIProviderConfig{Provider: "local", Model: "qwen", Dimensions: 3},
+			EmbeddingBatchMaxItems:  4,
+			EmbeddingBatchMaxTokens: 100000,
+		},
+		embeddings: provider,
+	}
+	inputs := []string{"a", "b", "c", "d"}
+	response, err := service.embedTexts(context.Background(), inputs)
+	if err != nil {
+		t.Fatalf("embedTexts error = %v", err)
+	}
+	if got, want := fmt.Sprint(provider.callSizes), fmt.Sprint([]int{4, 2, 2}); got != want {
+		t.Fatalf("provider call sizes = %s, want %s", got, want)
+	}
+	if len(response.Embeddings) != len(inputs) {
+		t.Fatalf("embeddings = %d, want %d", len(response.Embeddings), len(inputs))
+	}
+	for i, embedding := range response.Embeddings {
+		if embedding.Index != i || embedding.Vector[0] != float64(i) {
+			t.Fatalf("embedding[%d] = index %d vector %#v", i, embedding.Index, embedding.Vector)
+		}
+	}
+	if response.Usage == nil || response.Usage.TotalTokens != 4 {
+		t.Fatalf("usage = %#v, want successful split usage", response.Usage)
 	}
 }
 
@@ -708,6 +771,107 @@ func (p *recordingEmbeddingProvider) Embed(_ context.Context, request ai.Embeddi
 		Embeddings: embeddings,
 		Usage:      &ai.Usage{PromptTokens: len(request.Input), TotalTokens: len(request.Input)},
 	}, nil
+}
+
+type contextOverflowEmbeddingProvider struct {
+	callSizes     []int
+	failAtOrAbove int
+}
+
+func (p *contextOverflowEmbeddingProvider) Name() string {
+	return "overflow"
+}
+
+func (p *contextOverflowEmbeddingProvider) Kind() ai.ProviderKind {
+	return ai.ProviderOpenAICompatible
+}
+
+func (p *contextOverflowEmbeddingProvider) Validate() error {
+	return nil
+}
+
+func (p *contextOverflowEmbeddingProvider) Embed(_ context.Context, request ai.EmbeddingRequest) (ai.EmbeddingResponse, error) {
+	p.callSizes = append(p.callSizes, len(request.Input))
+	if len(request.Input) >= p.failAtOrAbove {
+		return ai.EmbeddingResponse{}, &ai.ProviderError{
+			Operation:   "embedding",
+			Provider:    "local",
+			Model:       "qwen",
+			Code:        "context_overflow",
+			Status:      http.StatusBadRequest,
+			Retryable:   false,
+			BatchStart:  intFromMetadata(request.Metadata, "batch_start"),
+			BatchEnd:    intFromMetadata(request.Metadata, "batch_end"),
+			BatchSize:   len(request.Input),
+			BatchTokens: intFromMetadata(request.Metadata, "batch_tokens"),
+			Message:     "request exceeds available context size",
+		}
+	}
+	start := intFromMetadata(request.Metadata, "batch_start")
+	embeddings := make([]ai.Embedding, len(request.Input))
+	for i := range request.Input {
+		embeddings[i] = ai.Embedding{Index: i, Vector: []float64{float64(start + i), 0, 0}, Dimensions: 3}
+	}
+	return ai.EmbeddingResponse{
+		Provider:   p.Name(),
+		Model:      "test-embedding",
+		Embeddings: embeddings,
+		Usage:      &ai.Usage{PromptTokens: len(request.Input), TotalTokens: len(request.Input)},
+	}, nil
+}
+
+type providerTimeoutEmbeddingProvider struct {
+	callSizes         []int
+	failOnceAtOrAbove int
+	failed            bool
+}
+
+func (p *providerTimeoutEmbeddingProvider) Name() string {
+	return "timeout"
+}
+
+func (p *providerTimeoutEmbeddingProvider) Kind() ai.ProviderKind {
+	return ai.ProviderOpenAICompatible
+}
+
+func (p *providerTimeoutEmbeddingProvider) Validate() error {
+	return nil
+}
+
+func (p *providerTimeoutEmbeddingProvider) Embed(_ context.Context, request ai.EmbeddingRequest) (ai.EmbeddingResponse, error) {
+	p.callSizes = append(p.callSizes, len(request.Input))
+	if !p.failed && len(request.Input) >= p.failOnceAtOrAbove {
+		p.failed = true
+		return ai.EmbeddingResponse{}, &ai.ProviderError{
+			Operation:   "embedding",
+			Provider:    "local",
+			Model:       "qwen",
+			Code:        "provider_timeout",
+			Status:      http.StatusGatewayTimeout,
+			Retryable:   true,
+			BatchStart:  intFromMetadata(request.Metadata, "batch_start"),
+			BatchEnd:    intFromMetadata(request.Metadata, "batch_end"),
+			BatchSize:   len(request.Input),
+			BatchTokens: intFromMetadata(request.Metadata, "batch_tokens"),
+			Message:     "provider timed out",
+		}
+	}
+	start := intFromMetadata(request.Metadata, "batch_start")
+	embeddings := make([]ai.Embedding, len(request.Input))
+	for i := range request.Input {
+		embeddings[i] = ai.Embedding{Index: i, Vector: []float64{float64(start + i), 0, 0}, Dimensions: 3}
+	}
+	return ai.EmbeddingResponse{
+		Provider:   p.Name(),
+		Model:      "test-embedding",
+		Embeddings: embeddings,
+		Usage:      &ai.Usage{PromptTokens: len(request.Input), TotalTokens: len(request.Input)},
+	}, nil
+}
+
+func intFromMetadata(metadata map[string]any, key string) int {
+	value, _ := metadata[key].(int)
+	return value
 }
 
 type concurrentEmbeddingProvider struct {

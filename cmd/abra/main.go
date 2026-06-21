@@ -233,6 +233,9 @@ func upgrade(args cliArgs) error {
 	if output, err := download.CombinedOutput(); err != nil {
 		return installScriptDownloadError(script, err, output)
 	}
+	if err := verifyInstallScriptAttestation(scriptPath); err != nil {
+		return err
+	}
 	cmd := exec.Command("sh", scriptPath)
 	cmd.Env = append(env, "ABRA_INSTALL_SCRIPT="+script)
 	cmd.Stdout = os.Stdout
@@ -327,6 +330,11 @@ func initEnv(args cliArgs) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
+	if shouldHydrateRuntimeBeforeEnv(args) {
+		if _, err := ensureProjectDir(context.Background(), args); err != nil {
+			return err
+		}
+	}
 	content := demoEnv()
 	if boolFlag(args, "production") {
 		content = productionEnvExample
@@ -339,6 +347,13 @@ func initEnv(args cliArgs) error {
 		fmt.Println("Edit placeholders before running: abra up --env-file " + path)
 	}
 	return nil
+}
+
+func shouldHydrateRuntimeBeforeEnv(args cliArgs) bool {
+	if boolFlag(args, "production") || isAbraSourceCheckout(".") || runtimeVersion() == "main" {
+		return false
+	}
+	return strings.TrimSpace(os.Getenv("ABRA_RELEASE_BASE_URL")) != "" || strings.TrimSpace(os.Getenv("ABRA_SOURCE_URL")) != ""
 }
 
 func configCommand(args cliArgs) error {
@@ -702,6 +717,9 @@ func up(ctx context.Context, args cliArgs) error {
 		return err
 	}
 	if err := ensureEnv(args); err != nil {
+		return err
+	}
+	if err := ensureRuntimeImageDigest(args); err != nil {
 		return err
 	}
 	if err := ensureDockerDaemon(); err != nil {
@@ -3055,6 +3073,8 @@ func mcp(ctx context.Context, args cliArgs) error {
 	switch action {
 	case "install-codex", "codex":
 		return installCodexMCP(ctx, args)
+	case "status", "doctor", "check":
+		return mcpStatus(ctx, args)
 	case "":
 	default:
 		return fmt.Errorf("unknown mcp command %q\n\n%s", action, commandUsage("mcp"))
@@ -3077,6 +3097,31 @@ func mcp(ctx context.Context, args cliArgs) error {
 		},
 	}
 	return printJSON(body)
+}
+
+func mcpStatus(ctx context.Context, args cliArgs) error {
+	checks := []map[string]any{}
+	result, code, err := getJSON(ctx, args, "/readyz")
+	if err != nil || code < 200 || code >= 300 {
+		checks = append(checks, map[string]any{
+			"name":   "readyz",
+			"ok":     false,
+			"status": code,
+			"error":  readyFailureDetail(result, err),
+			"hint":   "run: abra up, then retry `abra mcp status`",
+		})
+		return printDoctor(args, checks)
+	}
+	checks = append(checks, map[string]any{
+		"name":               "readyz",
+		"ok":                 true,
+		"detail":             "Abra API is ready at " + strings.TrimRight(cfg(args).BaseURL, "/"),
+		"embedding_provider": stringValue(result["embedding_provider"], "unknown"),
+	})
+	checks = append(checks, mcpCheck(ctx, args))
+	checks = append(checks, codexMCPClientCheck(args))
+	checks = append(checks, codexLaunchEnvCheck(args))
+	return printDoctor(args, checks)
 }
 
 func scopeCommand(args cliArgs) error {
@@ -4064,6 +4109,35 @@ func printThink(result map[string]any) {
 			fmt.Printf("- %s: %s\n", stringValue(item["ref"], "?"), stringValue(item["source_url"], "unknown"))
 		}
 	}
+	if thinkNeedsRecovery(result) {
+		printThinkRecovery(stringValue(result["scope"], ""))
+	}
+}
+
+func thinkNeedsRecovery(result map[string]any) bool {
+	if citations, _ := result["citations"].([]any); len(citations) == 0 {
+		return true
+	}
+	verification, _ := result["verification"].(map[string]any)
+	if verdict := strings.ToLower(strings.TrimSpace(stringValue(verification["verdict"], ""))); verdict != "" && verdict != "strong" {
+		return true
+	}
+	decision, _ := result["agent_decision"].(map[string]any)
+	if value := strings.ToLower(strings.TrimSpace(stringValue(decision["decision"], ""))); value != "" && value != "proceed" {
+		return true
+	}
+	return false
+}
+
+func printThinkRecovery(scope string) {
+	if strings.TrimSpace(scope) == "" {
+		scope = "<scope-from-abra-scope>"
+	}
+	fmt.Println("next:")
+	fmt.Println("- abra scope")
+	fmt.Println("- abra agents verify . --scope " + shellQuote(scope) + " --json")
+	fmt.Println("- abra doctor")
+	fmt.Println("- abra ingest . --code --scope " + shellQuote(scope) + "   # only if verify reports missing scope or empty source-backed memory")
 }
 
 func printReady(args cliArgs) {
@@ -4299,7 +4373,13 @@ func downloadRuntimeArchive(ctx context.Context, archiveURL string) ([]byte, err
 	if err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(os.Getenv("ABRA_SOURCE_URL")) != "" || runtimeVersion() == "main" {
+	if strings.TrimSpace(os.Getenv("ABRA_SOURCE_URL")) != "" {
+		if err := verifyRuntimeSourceOverride(raw); err != nil {
+			return nil, err
+		}
+		return raw, nil
+	}
+	if runtimeVersion() == "main" {
 		fmt.Println("Runtime source override/main branch is not release-verified; use a pinned release for production.")
 		return raw, nil
 	}
@@ -4356,30 +4436,47 @@ func verifyReleaseChecksum(file, sums []byte, asset string) error {
 	return nil
 }
 
-func verifyRuntimeAttestation(content []byte, asset string) error {
-	mode := strings.TrimSpace(os.Getenv("ABRA_VERIFY_RUNTIME_ATTESTATION"))
-	if mode == "" {
-		mode = strings.TrimSpace(os.Getenv("ABRA_VERIFY_ATTESTATION"))
-	}
-	if mode == "" {
-		mode = "auto"
-	}
-	switch strings.ToLower(mode) {
-	case "0", "false", "no", "off":
-		fmt.Println("Skipped runtime attestation verification: ABRA_VERIFY_RUNTIME_ATTESTATION=" + mode)
-		return nil
-	case "1", "true", "yes", "on", "auto":
-	default:
-		return fmt.Errorf("invalid ABRA_VERIFY_RUNTIME_ATTESTATION=%s; use auto, 1, or 0", mode)
-	}
-	if _, err := execLookPath("gh"); err != nil {
-		if strings.EqualFold(mode, "auto") {
-			fmt.Println("GitHub CLI not found; runtime checksum verified, attestation verification skipped.")
-			fmt.Println("For hardened runtime downloads, install gh and set ABRA_VERIFY_RUNTIME_ATTESTATION=1.")
-			return nil
+func verifyRuntimeSourceOverride(raw []byte) error {
+	expected := strings.TrimSpace(os.Getenv("ABRA_SOURCE_SHA256"))
+	if expected != "" {
+		expected = strings.ToLower(strings.TrimPrefix(expected, "sha256:"))
+		if len(expected) != 64 || !isHexString(expected) {
+			return errors.New("invalid ABRA_SOURCE_SHA256; expected a 64-character SHA-256 hex digest")
 		}
-		return errors.New("missing GitHub CLI: install gh or set ABRA_VERIFY_RUNTIME_ATTESTATION=0 to skip runtime provenance verification")
+		actual := fmt.Sprintf("%x", sha256.Sum256(raw))
+		if actual != expected {
+			return errors.New("checksum mismatch for ABRA_SOURCE_URL runtime archive")
+		}
+		fmt.Println("Verified runtime source checksum: ABRA_SOURCE_SHA256")
+		return nil
 	}
+	if truthyEnv("ABRA_ALLOW_UNVERIFIED_SOURCE_URL") {
+		fmt.Println("Skipped runtime source checksum verification: ABRA_ALLOW_UNVERIFIED_SOURCE_URL=true")
+		return nil
+	}
+	return errors.New("ABRA_SOURCE_URL requires ABRA_SOURCE_SHA256; set ABRA_ALLOW_UNVERIFIED_SOURCE_URL=1 only when intentionally accepting an unverified runtime archive")
+}
+
+func isHexString(value string) bool {
+	for _, char := range value {
+		if (char >= '0' && char <= '9') || (char >= 'a' && char <= 'f') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func truthyEnv(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func verifyRuntimeAttestation(content []byte, asset string) error {
 	tmp, err := os.CreateTemp("", "abra-runtime-*-"+asset)
 	if err != nil {
 		return err
@@ -4395,14 +4492,60 @@ func verifyRuntimeAttestation(content []byte, asset string) error {
 		return err
 	}
 	defer os.Remove(tmpPath)
-	if _, err := commandOutput("gh", "attestation", "verify", "--repo", abraRepository(), tmpPath); err != nil {
-		if strings.EqualFold(mode, "auto") {
-			return fmt.Errorf("GitHub artifact attestation verification failed for %s; set ABRA_VERIFY_RUNTIME_ATTESTATION=0 only when you intentionally accept checksum-only runtime downloads", asset)
+	return verifyArtifactAttestationPath(tmpPath, asset, "runtime", "ABRA_VERIFY_RUNTIME_ATTESTATION")
+}
+
+func verifyInstallScriptAttestation(scriptPath string) error {
+	return verifyArtifactAttestationPath(scriptPath, "install.sh", "install script", "ABRA_VERIFY_INSTALL_ATTESTATION")
+}
+
+func verifyArtifactAttestationPath(path, asset, label, specificEnv string) error {
+	mode, modeEnv, err := attestationVerificationMode(specificEnv)
+	if err != nil {
+		return err
+	}
+	modeLower := strings.ToLower(mode)
+	switch modeLower {
+	case "0", "false", "no", "off":
+		fmt.Println("Skipped " + label + " attestation verification: " + modeEnv + "=" + mode)
+		return nil
+	}
+	if _, err := execLookPath("gh"); err != nil {
+		if modeLower == "auto" {
+			fmt.Println("GitHub CLI not found; " + label + " attestation verification skipped.")
+			fmt.Println("For hardened " + label + " downloads, install gh and set " + specificEnv + "=1.")
+			return nil
+		}
+		return fmt.Errorf("missing GitHub CLI: install gh or set %s=0 to skip %s provenance verification", specificEnv, label)
+	}
+	if _, err := commandOutput("gh", "attestation", "verify", "--repo", abraRepository(), path); err != nil {
+		if modeLower == "auto" {
+			return fmt.Errorf("GitHub artifact attestation verification failed for %s; set %s=0 only when you intentionally accept this download without provenance verification", asset, specificEnv)
 		}
 		return fmt.Errorf("GitHub artifact attestation verification failed for %s: %w", asset, err)
 	}
-	fmt.Println("Verified runtime artifact attestation: " + asset)
+	fmt.Println("Verified " + label + " artifact attestation: " + asset)
 	return nil
+}
+
+func attestationVerificationMode(specificEnv string) (string, string, error) {
+	modeEnv := specificEnv
+	mode := strings.TrimSpace(os.Getenv(specificEnv))
+	if mode == "" {
+		if value := strings.TrimSpace(os.Getenv("ABRA_VERIFY_ATTESTATION")); value != "" {
+			mode = value
+			modeEnv = "ABRA_VERIFY_ATTESTATION"
+		}
+	}
+	if mode == "" {
+		mode = "auto"
+	}
+	switch strings.ToLower(mode) {
+	case "0", "false", "no", "off", "1", "true", "yes", "on", "auto":
+		return mode, modeEnv, nil
+	default:
+		return "", modeEnv, fmt.Errorf("invalid %s=%s; use auto, 1, or 0", modeEnv, mode)
+	}
 }
 
 func extractTarGz(reader io.Reader, targetDir string) error {
@@ -4897,6 +5040,7 @@ Usage:
   abra agents bootstrap
   abra agents init
   abra agents verify
+  abra agents ready
   abra down [--reset] [--keep-models]
   abra status
   abra doctor
@@ -4928,7 +5072,11 @@ Common flags:
 
 First run:
   abra setup
+  cd /path/to/project
+  abra scope
   abra agents bootstrap --agent codex
+  fully quit and reopen Codex Desktop
+  abra agents ready . --scope <scope-from-abra-scope> --json
   abra think "What should I know before changing this project?" --scope <scope-from-abra-scope>
 
 Abra is CLI + MCP only. No browser UI is shipped.
@@ -5151,11 +5299,14 @@ verify.
 	case "mcp", "mcp-config":
 		return `Usage:
   abra mcp [--token-env ABRA_API_TOKEN] [--literal-token]
+  abra mcp status [--json] [--strict]
   abra mcp install-codex [--token-env ABRA_API_TOKEN]
 
 ` + "`abra mcp`" + ` prints generic remote HTTP MCP client JSON. By default it
 uses bearer_token_env_var instead of writing a literal token; use --literal-token
 only for legacy clients that cannot read bearer-token env vars.
+` + "`abra mcp status`" + ` checks API readiness, required MCP tools, Codex MCP registration,
+shell token env, and Codex Desktop launch env without printing token values.
 ` + "`abra mcp install-codex`" + ` installs Abra into Codex as a streamable HTTP MCP
 server using the Codex CLI, stores the bearer-token env var name, validates the
 Abra MCP endpoint, and sets the token for the current macOS launch environment
@@ -5185,9 +5336,10 @@ preflight checks that should exit non-zero when any check is not ok.
   abra setup --yes --no-start
 
 Guided first-run onboarding. It checks prerequisites, creates the runtime env,
-chooses the embedding provider, and can start the local stack. The default
-local provider uses the built-in Qwen/Qwen3-Embedding-0.6B runner, which
-abra up starts automatically and abra models up/status manages directly.
+chooses the embedding provider used for retrieval/vector search, and can start
+the local stack. This does not configure a chat model or LLM answer model. The
+default local provider uses the built-in Qwen/Qwen3-Embedding-0.6B runner,
+which abra up starts automatically and abra models up/status manages directly.
 
 If setup writes config but later commands cannot embed, run abra doctor first.
 For the default local provider, abra up starts the model runner automatically;
@@ -5197,8 +5349,8 @@ directly.
 Common setup flags:
   --embedding-base-url  embedding provider base URL
   --base-url            legacy alias for --embedding-base-url during setup
-  --embedding-model     embedding model name
-  --model               provider selector or legacy embedding model alias
+  --embedding-model     embedding request model name; this is not a chat model
+  --model               provider selector or legacy embedding model alias, not a chat model
   --dimensions          embedding dimensions; required for unknown compatible models, inferred for known OpenAI/Qwen/BGE/Nomic/Gemini models
   --embedding-timeout   provider timeout, default 10m for local and 30s for compatible
   --embedding-batch-max-items max embedding inputs per provider request, default 6 local and 16 compatible
@@ -5284,6 +5436,28 @@ func firstRuntimeImageDigest() string {
 		}
 	}
 	return ""
+}
+
+func ensureRuntimeImageDigest(args cliArgs) error {
+	if isAbraSourceCheckout(".") {
+		return nil
+	}
+	digest := firstRuntimeImageDigest()
+	if digest == "" {
+		return nil
+	}
+	values, err := readEnvValues(envPath(args))
+	if err != nil {
+		return err
+	}
+	current := strings.TrimSpace(values["ABRA_IMAGE"])
+	if current == "" || strings.Contains(current, "@sha256:") || current == digest {
+		return nil
+	}
+	if !strings.HasPrefix(current, "ghcr.io/hermawan22/abra:") {
+		return nil
+	}
+	return updateEnvValues(args, map[string]string{"ABRA_IMAGE": digest})
 }
 
 const demoEnvTemplate = `COMPOSE_FILE={{COMPOSE_FILE}}

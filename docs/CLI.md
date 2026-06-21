@@ -8,8 +8,12 @@ Local embedding calls default to a 10-minute provider timeout because CPU-backed
 
 ## 3-Minute Local Flow
 
+Abra is not installed or run through npm. The npm scripts in this repository are
+maintainer checks only; the CLI and production images are Go release artifacts.
+
 For OSS users, this convenience command installs the latest published release
-binary from GitHub releases:
+binary from GitHub releases. It is a quickstart path, not the hardened
+production install path:
 
 ```sh
 curl -fsSL https://github.com/hermawan22/abra/releases/latest/download/install.sh | sh
@@ -299,8 +303,9 @@ From a source checkout, run the CLI as `go run ./cmd/abra <command>`. In a relea
 
 | Task | Command |
 | --- | --- |
-| install CLI from checkout | `./scripts/install.sh` |
-| install CLI from published release | `curl -fsSL https://github.com/hermawan22/abra/releases/latest/download/install.sh \| sh` |
+| install published CLI using checkout-local installer | `./scripts/install.sh` |
+| install CLI from latest published release for quickstarts | `curl -fsSL https://github.com/hermawan22/abra/releases/latest/download/install.sh \| sh` |
+| production pinned install | `curl -fsSLO https://github.com/hermawan22/abra/releases/download/vX.Y.Z/install.sh && gh attestation verify --repo hermawan22/abra install.sh && ABRA_VERSION=vX.Y.Z ABRA_VERIFY_ATTESTATION=1 sh install.sh` |
 | check installed CLI version | `abra --version` |
 | guided first-run setup | `abra setup` |
 | make Codex ready for the current repo | `abra agents bootstrap --agent codex` |
@@ -523,11 +528,12 @@ read; the default is `1048576` bytes. Binary-looking files and generated,
 minified, protobuf, and lock files are skipped by default. Use
 `--include-generated` only for trusted sources where generated artifacts are the
 actual source of truth.
-For event-based ingestion, send normalized documents to `POST /ingest/webhooks`
-from your connector or automation. The core OSS worker schedules `local_repo`,
-`git_repo`, markdown, and `mcp` source configs. Other source systems should use
-a thin connector overlay that listens to source events and posts documents into
-Abra, or expose an MCP document-export tool that Abra can call.
+For production ingestion, use scheduled source configs, signed webhooks, or
+connector batch jobs. The core OSS worker schedules `local_repo`, `git_repo`,
+markdown, and `mcp` source configs. Other source systems should use a thin
+connector overlay that listens to source events and posts normalized documents
+to `POST /ingest/webhooks`, sends batches to `POST /ingest/documents/batch`, or
+exposes an MCP document-export tool that Abra can call.
 
 ## Self-Host Commands
 

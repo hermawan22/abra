@@ -42,6 +42,42 @@ func TestShouldAutoPersistComposeLearningRequiresExplicitOptIn(t *testing.T) {
 	}
 }
 
+func TestRepeatedOutcomePatternsRequireLocalOccurrences(t *testing.T) {
+	observations := []store.ObservationResult{
+		{
+			ID: "observation-1",
+			Value: map[string]any{
+				"missing_context": []any{"setup docs"},
+				"tests_result": map[string]any{
+					"status":   "failed",
+					"commands": []any{"go test ./internal/server"},
+				},
+			},
+		},
+		{
+			ID: "observation-2",
+			Value: map[string]any{
+				"missing_context": []any{"setup docs"},
+				"commands_run": []any{
+					map[string]any{"command": "go test ./internal/server", "status": "failed", "exit_code": float64(1)},
+				},
+			},
+		},
+	}
+	missing := repeatedMissingContextPattern("setup docs", observations)
+	if missing.Occurrences != 2 {
+		t.Fatalf("missing context occurrences = %d, want 2", missing.Occurrences)
+	}
+	failed := repeatedFailedCommandPattern("go test ./internal/server", observations)
+	if failed.Occurrences != 2 {
+		t.Fatalf("failed command occurrences = %d, want 2", failed.Occurrences)
+	}
+	absent := repeatedMissingContextPattern("deployment notes", observations)
+	if absent.Occurrences != 0 {
+		t.Fatalf("absent occurrences = %d, want 0", absent.Occurrences)
+	}
+}
+
 func TestBuildLearningApplyPlanForAcceptedClaimRequiresApprovalWhenEnforced(t *testing.T) {
 	plan := buildLearningApplyPlan(store.LearningProposalRecord{
 		ID:           "proposal-1",

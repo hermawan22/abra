@@ -49,12 +49,13 @@ Source systems are ingested through the API, signed webhooks, or `source_configs
 
 ## 3-Minute CLI Install
 
-Abra is not distributed through npm. The npm package metadata in this repo is
-private maintainer tooling only; install Abra from GitHub release binaries or
-deploy the published container images.
+Abra is not distributed through npm. Node/npm in this repo are maintainer
+script tooling only; install Abra from GitHub release binaries or deploy the
+published container images.
 
 For OSS users, this convenience command installs the latest published release
-binary from GitHub releases:
+binary from GitHub releases. It is a quickstart path, not the hardened
+production install path:
 
 ```sh
 curl -fsSL https://github.com/hermawan22/abra/releases/latest/download/install.sh | sh
@@ -440,7 +441,8 @@ Optional OpenTelemetry tracing is available through OTLP HTTP by setting `OTEL_E
 
 Production operators should read [PRODUCTION.md](./PRODUCTION.md), [docs/EXTENSIONS.md](./docs/EXTENSIONS.md), [RELEASE.md](./RELEASE.md), and [SECURITY.md](./SECURITY.md) before exposing Abra to internal agents.
 
-Bundled ops helpers and eval gates use the repository scripts. They are developer/operator tooling, not required for the Go CLI first-run path:
+Bundled ops helpers and eval gates use the repository npm scripts. They are
+developer/operator checks, not the Abra runtime or install path:
 
 ```sh
 bash scripts/abra-backup.sh
@@ -999,13 +1001,13 @@ Do not give autonomous agents all-scope `admin` credentials. Give them scoped wr
 
 ## Auto Ingestion
 
-The OSS surface is generic document ingestion through `POST /ingest/documents` or MCP `ingest_document`, batch ingestion through `POST /ingest/documents/batch` or MCP `ingest_documents`, signed connector batches through `POST /ingest/webhooks`, and scheduled source configs for `markdown`, `local_repo`, `git_repo`, and `mcp`. Production deployments should automate ingestion outside the request path:
+The OSS surface is generic document ingestion through `POST /ingest/documents` or MCP `ingest_document`, batch ingestion through `POST /ingest/documents/batch` or MCP `ingest_documents`, signed connector batches through `POST /ingest/webhooks`, and scheduled source configs for `markdown`, `local_repo`, `git_repo`, and `mcp`. Production ingestion should run through scheduled sources, signed webhooks, or connector batch jobs outside the agent request path:
 
-- Poll or subscribe to approved systems such as Confluence, Jira, Git repositories, runbooks, or decision logs.
+- Schedule approved sources, or let connector overlays poll or subscribe to approved systems such as Confluence, Jira, Git repositories, runbooks, or decision logs.
 - Map every source to a stable `source_url`, `source_type`, `scope`, title, and authority level.
 - Re-ingest idempotently. When a source changes, missing claims and graph relations are deprecated, still-present claims and relations are reactivated, and source summaries are replaced.
 - Preserve ACL and scope metadata before records become available to agents.
-- Keep connector-specific auth and normalization in a private overlay, fork, or MCP source tool.
+- Keep connector-specific auth, cursors, batch retry, and normalization in a private overlay, fork, or MCP source tool.
 
 Worker runs are written to `ingestion_jobs` and exposed through `GET /ingestion/jobs`. Signed webhook documents also create durable queued jobs so slow embedding providers do not block webhook responses. Operators and agent gateways can manually enqueue a source with `POST /ingestion/jobs` or MCP `enqueue_ingestion_job`; backfill triggers require `approval_id` when approval enforcement or stored agent policy requires review. They can list jobs with `list_ingestion_jobs`, retry failed/canceled jobs with `POST /ingestion/jobs/:jobId/retry` or MCP `retry_ingestion_job`, and cancel queued/retry jobs with `POST /ingestion/jobs/:jobId/cancel` or MCP `cancel_ingestion_job`. Source configs can be validated, written, and listed through both HTTP and MCP (`POST /sources/configs/validate`, `validate_mcp_source`, `upsert_source_config`, `list_source_configs`), and read directly over HTTP with `GET /sources/configs/:sourceConfigId`. Source configs also keep the latest success/error timestamps for quick operator checks over HTTP or MCP. Source config upserts write `source_config.upserted` audit events; pause/resume status changes write `source_config.status_changed` events so operators can review lifecycle changes through `GET /audit/events`.
 

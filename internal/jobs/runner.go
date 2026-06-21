@@ -37,6 +37,10 @@ type SourceStore interface {
 	MarkSourceError(ctx context.Context, sourceID string, err error) error
 }
 
+type BatchDocumentStateStore interface {
+	DocumentStates(ctx context.Context, docs []ingest.Document) (map[string]DocumentState, error)
+}
+
 type DocumentState struct {
 	Found             bool
 	ContentChecksum   string
@@ -225,6 +229,39 @@ func (r *Runner) runQueuedJobs(ctx context.Context, queuedJobs []QueuedIngestion
 	if len(queuedJobs) == 0 {
 		return nil
 	}
+	if batch, ok := r.ingestor.(BatchDocumentIngestor); ok {
+		return r.runQueuedJobsWithWebhookBatches(ctx, queuedJobs, batch)
+	}
+	return r.runQueuedJobsIndividually(ctx, queuedJobs)
+}
+
+func (r *Runner) runQueuedJobsWithWebhookBatches(ctx context.Context, queuedJobs []QueuedIngestionJob, batch BatchDocumentIngestor) []queuedJobResult {
+	results := make([]queuedJobResult, 0, len(queuedJobs))
+	sourceJobs := make([]QueuedIngestionJob, 0, len(queuedJobs))
+	webhookJobs := make([]QueuedIngestionJob, 0, len(queuedJobs))
+	flushWebhooks := func() {
+		if len(webhookJobs) == 0 {
+			return
+		}
+		results = append(results, r.runWebhookJobBatch(ctx, webhookJobs, batch)...)
+		webhookJobs = webhookJobs[:0]
+	}
+	for _, queuedJob := range queuedJobs {
+		if queuedJob.TriggerType == "webhook" {
+			webhookJobs = append(webhookJobs, queuedJob)
+			continue
+		}
+		flushWebhooks()
+		sourceJobs = append(sourceJobs, queuedJob)
+	}
+	flushWebhooks()
+	if len(sourceJobs) > 0 {
+		results = append(results, r.runQueuedJobsIndividually(ctx, sourceJobs)...)
+	}
+	return results
+}
+
+func (r *Runner) runQueuedJobsIndividually(ctx context.Context, queuedJobs []QueuedIngestionJob) []queuedJobResult {
 	if r.options.Concurrency <= 1 || len(queuedJobs) == 1 {
 		results := make([]queuedJobResult, 0, len(queuedJobs))
 		for _, queuedJob := range queuedJobs {
@@ -295,6 +332,12 @@ func (r *Runner) runQueuedJob(ctx context.Context, queuedJob QueuedIngestionJob)
 	} else {
 		sourceStats, err = r.runSource(ctx, source, jobID)
 	}
+	return r.finishQueuedJob(ctx, queuedJob, sourceStats, err)
+}
+
+func (r *Runner) finishQueuedJob(ctx context.Context, queuedJob QueuedIngestionJob, sourceStats SourceStats, err error) queuedJobResult {
+	source := queuedJob.Source
+	jobID := queuedJob.ID
 	finalStatus, finishErr := r.store.FinishIngestionJob(ctx, jobID, r.options.LeaseOwner, sourceStats, err)
 	if finishErr != nil {
 		r.options.Logger.Error("source ingestion job finish failed", "source_config_id", source.ID, "job_id", jobID, "trigger_type", queuedJob.TriggerType, "error", finishErr)
@@ -320,6 +363,76 @@ func (r *Runner) runQueuedJob(ctx context.Context, queuedJob QueuedIngestionJob)
 		}
 	}
 	return queuedJobResult{Stats: sourceStats, Succeeded: true}
+}
+
+func (r *Runner) runWebhookJobBatch(ctx context.Context, queuedJobs []QueuedIngestionJob, batch BatchDocumentIngestor) []queuedJobResult {
+	ctx, span := observability.Start(ctx, "abra.worker.webhook_batch")
+	var runErr error
+	defer func() {
+		observability.End(span, runErr)
+	}()
+	sourceCtx, cancel := context.WithTimeout(ctx, r.options.SourceTimeout)
+	defer cancel()
+	heartbeatErrs := make([]<-chan error, 0, len(queuedJobs))
+	docs := make([]IngestDocumentInput, 0, len(queuedJobs))
+	stats := make([]SourceStats, len(queuedJobs))
+	for index, queuedJob := range queuedJobs {
+		heartbeatErrs = append(heartbeatErrs, r.startHeartbeatLoop(sourceCtx, queuedJob.ID, cancel))
+		if err := r.heartbeatJob(sourceCtx, queuedJob.ID); err != nil {
+			runErr = err
+			return r.finishWebhookBatchWithError(ctx, queuedJobs, stats, err)
+		}
+		doc, err := r.store.GetWebhookDocument(sourceCtx, queuedJob.ID)
+		if err != nil {
+			runErr = err
+			return r.finishWebhookBatchWithError(ctx, queuedJobs, stats, err)
+		}
+		doc.Metadata = mergeJobMetadata(doc.Metadata, map[string]any{"ingestion_job_id": queuedJob.ID})
+		docs = append(docs, doc)
+		stats[index].DocumentsSeen = 1
+	}
+	if err := firstHeartbeatLoopErr(heartbeatErrs); err != nil {
+		runErr = err
+		return r.finishWebhookBatchWithError(ctx, queuedJobs, stats, err)
+	}
+	results, err := batch.IngestDocuments(sourceCtx, docs)
+	if err != nil {
+		if heartbeatErr := firstHeartbeatLoopErr(heartbeatErrs); heartbeatErr != nil {
+			runErr = heartbeatErr
+			return r.finishWebhookBatchWithError(ctx, queuedJobs, stats, heartbeatErr)
+		}
+		runErr = err
+		return r.finishWebhookBatchWithError(ctx, queuedJobs, stats, err)
+	}
+	if len(results) != len(docs) {
+		err := fmt.Errorf("batch ingest returned %d results for %d webhook inputs", len(results), len(docs))
+		runErr = err
+		return r.finishWebhookBatchWithError(ctx, queuedJobs, stats, err)
+	}
+	if heartbeatErr := firstHeartbeatLoopErr(heartbeatErrs); heartbeatErr != nil {
+		runErr = heartbeatErr
+		return r.finishWebhookBatchWithError(ctx, queuedJobs, stats, heartbeatErr)
+	}
+	out := make([]queuedJobResult, 0, len(queuedJobs))
+	for index, queuedJob := range queuedJobs {
+		stats[index].DocumentsChanged = 1
+		stats[index].ChunksWritten = results[index].Chunks
+		stats[index].ClaimsWritten = results[index].Claims
+		out = append(out, r.finishQueuedJob(ctx, queuedJob, stats[index], nil))
+	}
+	span.SetAttributes(
+		attribute.Int("abra.webhook.jobs", len(queuedJobs)),
+		attribute.Int("abra.webhook.documents_changed", len(results)),
+	)
+	return out
+}
+
+func (r *Runner) finishWebhookBatchWithError(ctx context.Context, queuedJobs []QueuedIngestionJob, stats []SourceStats, err error) []queuedJobResult {
+	out := make([]queuedJobResult, 0, len(queuedJobs))
+	for index, queuedJob := range queuedJobs {
+		out = append(out, r.finishQueuedJob(ctx, queuedJob, stats[index], err))
+	}
+	return out
 }
 
 func (r *Runner) runWebhookDocument(ctx context.Context, jobID string) (SourceStats, error) {
@@ -425,6 +538,11 @@ func (r *Runner) runSource(ctx context.Context, source SourceConfig, jobID strin
 		attribute.Int("abra.source.files_skipped_generated", stats.FilesSkippedGenerated),
 	)
 	changedInputs := make([]IngestDocumentInput, 0, minInt(len(docs), r.options.MaxChangedDocumentsPerSource))
+	states, err := r.documentStates(sourceCtx, docs)
+	if err != nil {
+		runErr = err
+		return stats, err
+	}
 	for _, doc := range docs {
 		if err := sourceCtx.Err(); err != nil {
 			if heartbeatErr := heartbeatLoopErr(heartbeatErrs); heartbeatErr != nil {
@@ -438,11 +556,7 @@ func (r *Runner) runSource(ctx context.Context, source SourceConfig, jobID strin
 			runErr = err
 			return stats, err
 		}
-		state, err := r.store.DocumentState(sourceCtx, doc)
-		if err != nil {
-			runErr = err
-			return stats, fmt.Errorf("read document state for %s: %w", doc.SourceURL, err)
-		}
+		state := states[documentStateKey(doc)]
 		if unchanged(doc, state) {
 			stats.DocumentsSkipped++
 			continue
@@ -604,6 +718,37 @@ func heartbeatLoopErr(errs <-chan error) error {
 	default:
 		return nil
 	}
+}
+
+func firstHeartbeatLoopErr(errs []<-chan error) error {
+	for _, item := range errs {
+		if err := heartbeatLoopErr(item); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *Runner) documentStates(ctx context.Context, docs []ingest.Document) (map[string]DocumentState, error) {
+	if len(docs) == 0 {
+		return map[string]DocumentState{}, nil
+	}
+	if batchStore, ok := r.store.(BatchDocumentStateStore); ok {
+		return batchStore.DocumentStates(ctx, docs)
+	}
+	states := make(map[string]DocumentState, len(docs))
+	for _, doc := range docs {
+		state, err := r.store.DocumentState(ctx, doc)
+		if err != nil {
+			return nil, fmt.Errorf("read document state for %s: %w", doc.SourceURL, err)
+		}
+		states[documentStateKey(doc)] = state
+	}
+	return states, nil
+}
+
+func documentStateKey(doc ingest.Document) string {
+	return string(doc.SourceType) + "\x00" + doc.SourceURL + "\x00" + doc.Scope
 }
 
 func unchanged(doc ingest.Document, state DocumentState) bool {

@@ -27,19 +27,20 @@ For production hosts, install from a pinned release and require both checksum an
 GitHub Artifact Attestation verification:
 
 ```sh
-curl -fsSL https://github.com/hermawan22/abra/releases/download/vX.Y.Z/install.sh \
-  | ABRA_VERSION=vX.Y.Z ABRA_VERIFY_ATTESTATION=1 sh
+curl -fsSLO https://github.com/hermawan22/abra/releases/download/vX.Y.Z/install.sh
+gh attestation verify --repo hermawan22/abra install.sh
+ABRA_VERSION=vX.Y.Z ABRA_VERIFY_ATTESTATION=1 sh install.sh
 ```
 
 The installer verifies release archives against `SHA256SUMS` before installing.
 With `ABRA_VERIFY_ATTESTATION=1`, it also requires GitHub CLI (`gh`) and
 verifies artifact provenance for both the platform archive and `SHA256SUMS`.
-The release also publishes and attests `install.sh`; operators who need
-installer-script provenance before execution should download it first, run
-`gh attestation verify --repo hermawan22/abra install.sh`, then execute it with
-`ABRA_VERIFY_ATTESTATION=1`. Do not use `ABRA_ALLOW_SOURCE_BUILD=1` for
-production installation or release verification; source builds are a developer
-fallback and are not release artifacts.
+The release also publishes and attests `install.sh`; production operators should
+verify that script before executing it. The latest-release curl pipe documented
+for quickstarts is convenience only, not the hardened production path. Do not
+use `ABRA_ALLOW_SOURCE_BUILD=1` for production installation or release
+verification; source builds are a developer fallback and are not release
+artifacts.
 
 ## Reporting Issues
 

@@ -24,6 +24,7 @@ type ProviderError struct {
 	BatchSize   int
 	BatchTokens int
 	Message     string
+	Hint        string
 	Err         error
 }
 
@@ -87,6 +88,9 @@ func (e *ProviderError) Error() string {
 	if e.Message != "" {
 		parts = append(parts, "message="+e.Message)
 	}
+	if e.Hint != "" {
+		parts = append(parts, "hint="+e.Hint)
+	}
 	if e.Err != nil {
 		parts = append(parts, "cause="+redactProviderErrorText(e.Err.Error()))
 	}
@@ -110,7 +114,7 @@ func (e *ProviderError) HTTPStatus() int {
 		return http.StatusGatewayTimeout
 	case "provider_unreachable", "provider_unavailable":
 		return http.StatusServiceUnavailable
-	case "invalid_request", "invalid_response", "dimension_mismatch":
+	case "context_overflow", "invalid_request", "invalid_response", "dimension_mismatch":
 		return http.StatusBadRequest
 	default:
 		if e.Status >= 400 && e.Status < 500 {
@@ -132,19 +136,61 @@ func ProviderErrorInfo(err error) (*ProviderError, bool) {
 }
 
 func classifyHTTPStatus(status int) (string, bool) {
+	return classifyHTTPStatusWithBody(status, "")
+}
+
+func classifyHTTPStatusWithBody(status int, body string) (string, bool) {
 	switch {
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
 		return "auth_failed", false
 	case status == http.StatusTooManyRequests:
 		return "rate_limited", true
+	case status == http.StatusRequestTimeout || status == http.StatusGatewayTimeout:
+		return "provider_timeout", true
 	case retryableProviderStatus(status):
 		return "provider_unavailable", true
 	case status == http.StatusBadRequest:
+		if looksLikeContextOverflow(body) {
+			return "context_overflow", true
+		}
 		return "invalid_request", false
 	case status >= 400 && status < 500:
 		return "invalid_request", false
 	default:
 		return "provider_error", false
+	}
+}
+
+func looksLikeContextOverflow(body string) bool {
+	text := strings.ToLower(body)
+	if text == "" {
+		return false
+	}
+	if strings.Contains(text, "n_ctx") {
+		return true
+	}
+	hasContext := strings.Contains(text, "context") || strings.Contains(text, "n_ctx") || strings.Contains(text, "ctx")
+	hasToken := strings.Contains(text, "token") || strings.Contains(text, "prompt")
+	hasOverflow := strings.Contains(text, "exceed") || strings.Contains(text, "too long") || strings.Contains(text, "maximum") || strings.Contains(text, "max context") || strings.Contains(text, "available context")
+	return hasContext && (hasToken || hasOverflow) && hasOverflow
+}
+
+func providerErrorHint(code string) string {
+	switch code {
+	case "context_overflow":
+		return "Reduce embedding batch size or token limits, or split the source text into smaller chunks before retrying."
+	case "provider_timeout":
+		return "Reduce embedding batch size or provider concurrency, check provider capacity, then retry."
+	case "provider_unreachable", "provider_unavailable":
+		return "Check provider readiness and network reachability, then retry."
+	case "rate_limited":
+		return "Reduce provider concurrency or request rate, then retry after the provider limit resets."
+	case "auth_failed":
+		return "Check the embedding API key, model, and provider configuration, then retry."
+	case "invalid_response":
+		return "Check that the configured provider returns OpenAI-compatible embedding responses."
+	default:
+		return ""
 	}
 }
 

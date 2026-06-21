@@ -83,8 +83,16 @@ func (r *Runner) runMCPSource(ctx context.Context, source SourceConfig, jobID st
 		return SourceStats{}, err
 	}
 	stats := SourceStats{DocumentsSeen: len(docs)}
-	changedInputs := make([]IngestDocumentInput, 0, minInt(len(docs), r.options.MaxChangedDocumentsPerSource))
+	ingestDocs := make([]ingest.Document, 0, len(docs))
 	for _, doc := range docs {
+		ingestDocs = append(ingestDocs, doc.ingestDocument(source))
+	}
+	states, err := r.documentStates(sourceCtx, ingestDocs)
+	if err != nil {
+		return stats, err
+	}
+	changedInputs := make([]IngestDocumentInput, 0, minInt(len(docs), r.options.MaxChangedDocumentsPerSource))
+	for index, doc := range docs {
 		if err := sourceCtx.Err(); err != nil {
 			if heartbeatErr := heartbeatLoopErr(heartbeatErrs); heartbeatErr != nil {
 				return stats, heartbeatErr
@@ -94,11 +102,9 @@ func (r *Runner) runMCPSource(ctx context.Context, source SourceConfig, jobID st
 		if err := r.heartbeatJob(sourceCtx, jobID); err != nil {
 			return stats, err
 		}
-		state, err := r.store.DocumentState(sourceCtx, doc.ingestDocument(source))
-		if err != nil {
-			return stats, fmt.Errorf("read document state for %s: %w", doc.SourceURL, err)
-		}
-		if unchanged(doc.ingestDocument(source), state) {
+		ingestDoc := ingestDocs[index]
+		state := states[documentStateKey(ingestDoc)]
+		if unchanged(ingestDoc, state) {
 			stats.DocumentsSkipped++
 			continue
 		}

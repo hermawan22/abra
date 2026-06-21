@@ -502,14 +502,25 @@ func friendlyProviderError(err error) error {
 			status := intValue(detail["status_code"])
 			message := stringValue(detail["message"], "")
 			retryable := boolValue(detail["retryable"], false)
-			hint := "Run `abra models status`; if it is not ready, run `abra models up`, then retry ingest."
-			if code == "auth_failed" {
+			hint := stringValue(detail["hint"], "")
+			if hint == "" {
+				hint = "Run `abra models status`; if it is not ready, run `abra models up`, then retry ingest."
+			}
+			switch code {
+			case "auth_failed":
 				hint = "Check the embedding API key/model config, then retry ingest."
+			case "context_overflow":
+				hint = "Abra retries smaller embedding batches automatically. If it still fails, lower ABRA_EMBEDDING_BATCH_MAX_ITEMS/ABRA_EMBEDDING_BATCH_MAX_TOKENS or split very large files before ingest."
+			case "provider_timeout":
+				hint = "Run `abra models status`; if the model is healthy, retry with a longer ABRA_CLI_TIMEOUT or lower ABRA_EMBEDDING_BATCH_MAX_ITEMS/ABRA_EMBEDDING_BATCH_MAX_TOKENS."
 			}
 			return fmt.Errorf("embedding provider error (%s, status=%d, retryable=%v): %s %s Original error: %w", code, status, retryable, message, hint, err)
 		}
 	}
 	text := strings.ToLower(err.Error())
+	if strings.Contains(text, "context deadline exceeded") || strings.Contains(text, "client.timeout exceeded") {
+		return fmt.Errorf("embedding request timed out. Run `abra models status`; if the local model is healthy, retry with a longer ABRA_CLI_TIMEOUT or lower ABRA_EMBEDDING_BATCH_MAX_ITEMS/ABRA_EMBEDDING_BATCH_MAX_TOKENS. Original error: %w", err)
+	}
 	if strings.Contains(text, "/embeddings") || strings.Contains(text, "embedding") || strings.Contains(text, "host.docker.internal:8080") || strings.Contains(text, "connection refused") {
 		return fmt.Errorf("embedding provider is not ready. Run `abra models status`; if it is not ready, run `abra models up`, then retry ingest. If the stack is down, run `abra up`. Original error: %w", err)
 	}
