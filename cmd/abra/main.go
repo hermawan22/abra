@@ -4857,7 +4857,8 @@ defaults to preference-like user turns; use --all-turns for full episodic captur
 
 Lists raw episodic observations for a scope.
 The propose subcommand creates a pending learning proposal targeting the
-observation. Accepted proposals still return an apply plan; they do not auto-write claims.
+observation. Accepted proposals do not auto-write claims; apply them explicitly
+through POST /learning/proposals/:proposalId/apply or MCP apply_learning_proposal.
 `
 	case "think":
 		return `Usage:
