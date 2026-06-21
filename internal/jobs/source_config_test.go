@@ -14,17 +14,19 @@ func TestSourceConfigIngestSpecFromConfig(t *testing.T) {
 		SourceType: ingest.SourceTypeLocalRepo,
 		Name:       "Docs",
 		Config: map[string]any{
-			"root":           "/repo",
-			"include":        []any{"README.md", "docs/**/*.md"},
-			"exclude":        "private/**,vendor/**",
-			"include_code":   true,
-			"code_include":   []any{"src/**/*.ts", "src/**/*.tsx"},
-			"code_exclude":   "src/**/*.test.tsx",
-			"repository_url": "https://gitlab.example.com/platform/frontend.git",
-			"branch":         "main",
-			"commit":         "abc1234",
-			"provider":       "gitlab",
-			"project_path":   "platform/frontend",
+			"root":              "/repo",
+			"include":           []any{"README.md", "docs/**/*.md"},
+			"exclude":           "private/**,vendor/**",
+			"include_code":      true,
+			"code_include":      []any{"src/**/*.ts", "src/**/*.tsx"},
+			"code_exclude":      "src/**/*.test.tsx",
+			"max_file_bytes":    12345,
+			"include_generated": true,
+			"repository_url":    "https://gitlab.example.com/platform/frontend.git",
+			"branch":            "main",
+			"commit":            "abc1234",
+			"provider":          "gitlab",
+			"project_path":      "platform/frontend",
 		},
 		Metadata: map[string]any{"owner": "frontend"},
 	}
@@ -48,6 +50,9 @@ func TestSourceConfigIngestSpecFromConfig(t *testing.T) {
 	if len(spec.CodeExclude) != 1 || spec.CodeExclude[0] != "src/**/*.test.tsx" {
 		t.Fatalf("code exclude = %#v", spec.CodeExclude)
 	}
+	if spec.MaxFileBytes != 12345 || !spec.IncludeGenerated {
+		t.Fatalf("file policy = max %d include generated %v", spec.MaxFileBytes, spec.IncludeGenerated)
+	}
 	if spec.Metadata["source_config_id"] != "docs" || spec.Metadata["owner"] != "frontend" {
 		t.Fatalf("metadata = %#v", spec.Metadata)
 	}
@@ -57,6 +62,26 @@ func TestSourceConfigIngestSpecFromConfig(t *testing.T) {
 		spec.GitProvider != "gitlab" ||
 		spec.GitProjectPath != "platform/frontend" {
 		t.Fatalf("git overlay = %+v", spec)
+	}
+}
+
+func TestSourceConfigIngestSpecSupportsSkipGeneratedFalse(t *testing.T) {
+	source := SourceConfig{
+		ID:         "docs",
+		Scope:      "team:example",
+		SourceType: ingest.SourceTypeLocalRepo,
+		Config: map[string]any{
+			"root":                 "/repo",
+			"skip_generated_files": false,
+		},
+	}
+
+	spec, err := source.IngestSpec()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !spec.IncludeGenerated {
+		t.Fatalf("include generated = %v", spec.IncludeGenerated)
 	}
 }
 

@@ -142,6 +142,115 @@ func TestLocalRepoMarkdownIngestorCanIncludeCode(t *testing.T) {
 	}
 }
 
+func TestLocalRepoMarkdownIngestorSkipsLargeFilesWithStats(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "README.md", "# Root\n\nUse source-backed claims.")
+	writeFile(t, root, "docs/huge.md", "# Huge\n\n"+strings.Repeat("x", 128))
+
+	ingestor, err := NewLocalRepoMarkdownIngestor(SourceSpec{
+		ID:           "repo-docs",
+		Type:         SourceTypeLocalRepo,
+		Root:         root,
+		Scope:        "repo:app",
+		Include:      []string{"**/*.md"},
+		MaxFileBytes: 80,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := ingestor.IngestWithStats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Documents) != 1 || result.Documents[0].Path != "README.md" {
+		t.Fatalf("documents = %+v", result.Documents)
+	}
+	if !hasSkipped(result.Skipped, "docs/huge.md", "too_large") {
+		t.Fatalf("skipped = %+v", result.Skipped)
+	}
+}
+
+func TestLocalRepoMarkdownIngestorSkipsBinaryAndGeneratedFilesWithStats(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "src/app.ts", "export const app = true\n")
+	writeFile(t, root, "src/generated/client.ts", "export const generated = true\n")
+	writeFile(t, root, "src/schema.pb.go", "package pb\n")
+	writeFile(t, root, "src/app.min.js", "function a(){}\n")
+	binaryPath := filepath.Join(root, "src", "binary.ts")
+	if err := os.WriteFile(binaryPath, []byte{0x00, 0x01, 0x02}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ingestor, err := NewLocalRepoMarkdownIngestor(SourceSpec{
+		ID:          "repo-code",
+		Type:        SourceTypeLocalRepo,
+		Root:        root,
+		Scope:       "repo:app",
+		Include:     []string{"README.md"},
+		IncludeCode: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := ingestor.IngestWithStats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Documents) != 1 || result.Documents[0].Path != "src/app.ts" {
+		t.Fatalf("documents = %+v", result.Documents)
+	}
+	for _, want := range []struct {
+		path   string
+		reason string
+	}{
+		{"src/binary.ts", "binary"},
+		{"src/generated/client.ts", "generated"},
+		{"src/schema.pb.go", "generated"},
+		{"src/app.min.js", "generated"},
+	} {
+		if !hasSkipped(result.Skipped, want.path, want.reason) {
+			t.Fatalf("missing skipped %s/%s in %+v", want.path, want.reason, result.Skipped)
+		}
+	}
+}
+
+func TestLocalRepoMarkdownIngestorCanIncludeGeneratedFiles(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "src/generated/client.ts", "export const generated = true\n")
+
+	ingestor, err := NewLocalRepoMarkdownIngestor(SourceSpec{
+		ID:               "repo-code",
+		Type:             SourceTypeLocalRepo,
+		Root:             root,
+		Scope:            "repo:app",
+		Include:          []string{"README.md"},
+		IncludeCode:      true,
+		IncludeGenerated: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := ingestor.IngestWithStats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Documents) != 1 || result.Documents[0].Path != "src/generated/client.ts" {
+		t.Fatalf("documents = %+v skipped=%+v", result.Documents, result.Skipped)
+	}
+}
+
+func hasSkipped(skipped []SkippedFile, path, reason string) bool {
+	for _, file := range skipped {
+		if file.Path == path && file.Reason == reason {
+			return true
+		}
+	}
+	return false
+}
+
 func writeFile(t *testing.T, root, rel, content string) {
 	t.Helper()
 	path := filepath.Join(root, rel)

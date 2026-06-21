@@ -364,6 +364,11 @@ Use `WORKER_CONCURRENCY` to run multiple queued ingestion jobs in one worker pro
 When `--code` is enabled and no `--code-include` is supplied, Abra includes supported
 Go, JavaScript, TypeScript, and React code files repo-wide while skipping common
 dependency, build, cache, and vendor directories.
+Matched files larger than `--max-file-bytes` are skipped before their content is
+read; the default is `1048576` bytes. Binary-looking files and generated,
+minified, protobuf, and lock files are skipped by default. Use
+`--include-generated` only for trusted sources where generated artifacts are the
+actual source of truth.
 For event-based ingestion, send normalized documents to `POST /ingest/webhooks`
 from your connector or automation. The core OSS worker schedules `local_repo`,
 `git_repo`, and markdown source configs. Other source systems should use a thin

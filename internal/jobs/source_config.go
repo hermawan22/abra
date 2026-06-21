@@ -58,22 +58,24 @@ func (s SourceConfig) IngestSpec() (ingest.SourceSpec, error) {
 	}
 
 	spec := ingest.SourceSpec{
-		ID:             s.ID,
-		Type:           s.SourceType,
-		Root:           root,
-		Scope:          s.Scope,
-		Include:        stringSlice(s.Config["include"]),
-		Exclude:        stringSlice(s.Config["exclude"]),
-		IncludeCode:    boolValue(s.Config["include_code"]),
-		CodeInclude:    stringSlice(s.Config["code_include"]),
-		CodeExclude:    stringSlice(s.Config["code_exclude"]),
-		GitRemoteURL:   remoteURL,
-		GitRef:         firstString(s.Config, "git_ref", "ref", "branch"),
-		GitRevision:    firstString(s.Config, "git_revision", "revision", "commit", "sha"),
-		GitProvider:    firstString(s.Config, "git_provider", "provider"),
-		GitProjectPath: firstString(s.Config, "git_project_path", "project_path", "repo_path"),
-		GitDepth:       intValue(s.Config["git_depth"], 1),
-		Metadata:       sourceSpecMetadata(s),
+		ID:               s.ID,
+		Type:             s.SourceType,
+		Root:             root,
+		Scope:            s.Scope,
+		Include:          stringSlice(s.Config["include"]),
+		Exclude:          stringSlice(s.Config["exclude"]),
+		IncludeCode:      boolValue(s.Config["include_code"]),
+		CodeInclude:      stringSlice(s.Config["code_include"]),
+		CodeExclude:      stringSlice(s.Config["code_exclude"]),
+		MaxFileBytes:     int64(intValue(s.Config["max_file_bytes"], int(ingest.DefaultMaxFileBytes))),
+		IncludeGenerated: includeGeneratedFiles(s.Config),
+		GitRemoteURL:     remoteURL,
+		GitRef:           firstString(s.Config, "git_ref", "ref", "branch"),
+		GitRevision:      firstString(s.Config, "git_revision", "revision", "commit", "sha"),
+		GitProvider:      firstString(s.Config, "git_provider", "provider"),
+		GitProjectPath:   firstString(s.Config, "git_project_path", "project_path", "repo_path"),
+		GitDepth:         intValue(s.Config["git_depth"], 1),
+		Metadata:         sourceSpecMetadata(s),
 	}
 	if len(spec.Include) == 0 {
 		spec.Include = stringSlice(s.Config["includes"])
@@ -88,6 +90,16 @@ func (s SourceConfig) IngestSpec() (ingest.SourceSpec, error) {
 		spec.CodeExclude = stringSlice(s.Config["code_excludes"])
 	}
 	return spec, nil
+}
+
+func includeGeneratedFiles(config map[string]any) bool {
+	if boolValue(config["include_generated"]) {
+		return true
+	}
+	if value, ok := config["skip_generated_files"]; ok {
+		return !boolValue(value)
+	}
+	return false
 }
 
 func (s SourceConfig) root() (string, error) {

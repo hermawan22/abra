@@ -85,24 +85,30 @@ type Runner struct {
 }
 
 type RunStats struct {
-	Sources           int
-	SourcesSucceeded  int
-	SourcesFailed     int
-	DocumentsSeen     int
-	DocumentsChanged  int
-	DocumentsSkipped  int
-	DocumentsDeferred int
-	ChunksWritten     int
-	ClaimsWritten     int
+	Sources               int
+	SourcesSucceeded      int
+	SourcesFailed         int
+	DocumentsSeen         int
+	DocumentsChanged      int
+	DocumentsSkipped      int
+	DocumentsDeferred     int
+	FilesSkippedLarge     int
+	FilesSkippedBinary    int
+	FilesSkippedGenerated int
+	ChunksWritten         int
+	ClaimsWritten         int
 }
 
 type SourceStats struct {
-	DocumentsSeen     int
-	DocumentsChanged  int
-	DocumentsSkipped  int
-	DocumentsDeferred int
-	ChunksWritten     int
-	ClaimsWritten     int
+	DocumentsSeen         int
+	DocumentsChanged      int
+	DocumentsSkipped      int
+	DocumentsDeferred     int
+	FilesSkippedLarge     int
+	FilesSkippedBinary    int
+	FilesSkippedGenerated int
+	ChunksWritten         int
+	ClaimsWritten         int
 }
 
 type QueuedIngestionJob struct {
@@ -175,6 +181,9 @@ func (r *Runner) RunOnce(ctx context.Context) (RunStats, error) {
 		stats.DocumentsChanged += result.Stats.DocumentsChanged
 		stats.DocumentsSkipped += result.Stats.DocumentsSkipped
 		stats.DocumentsDeferred += result.Stats.DocumentsDeferred
+		stats.FilesSkippedLarge += result.Stats.FilesSkippedLarge
+		stats.FilesSkippedBinary += result.Stats.FilesSkippedBinary
+		stats.FilesSkippedGenerated += result.Stats.FilesSkippedGenerated
 		stats.ChunksWritten += result.Stats.ChunksWritten
 		stats.ClaimsWritten += result.Stats.ClaimsWritten
 		if result.Succeeded {
@@ -193,6 +202,9 @@ func (r *Runner) RunOnce(ctx context.Context) (RunStats, error) {
 		attribute.Int("abra.worker.documents_changed", stats.DocumentsChanged),
 		attribute.Int("abra.worker.documents_skipped", stats.DocumentsSkipped),
 		attribute.Int("abra.worker.documents_deferred", stats.DocumentsDeferred),
+		attribute.Int("abra.worker.files_skipped_large", stats.FilesSkippedLarge),
+		attribute.Int("abra.worker.files_skipped_binary", stats.FilesSkippedBinary),
+		attribute.Int("abra.worker.files_skipped_generated", stats.FilesSkippedGenerated),
 		attribute.Int("abra.worker.chunks_written", stats.ChunksWritten),
 		attribute.Int("abra.worker.claims_written", stats.ClaimsWritten),
 	)
@@ -384,7 +396,7 @@ func (r *Runner) runSource(ctx context.Context, source SourceConfig, jobID strin
 		runErr = err
 		return SourceStats{}, err
 	}
-	docs, err := localIngestor.Ingest(sourceCtx)
+	result, err := localIngestor.IngestWithStats(sourceCtx)
 	if err != nil {
 		if heartbeatErr := heartbeatLoopErr(heartbeatErrs); heartbeatErr != nil {
 			runErr = heartbeatErr
@@ -393,9 +405,16 @@ func (r *Runner) runSource(ctx context.Context, source SourceConfig, jobID strin
 		runErr = err
 		return SourceStats{}, err
 	}
+	docs := result.Documents
 
 	stats := SourceStats{DocumentsSeen: len(docs)}
+	applySkippedFileStats(&stats, result.Skipped)
 	span.SetAttributes(attribute.Int("abra.source.documents_seen", len(docs)))
+	span.SetAttributes(
+		attribute.Int("abra.source.files_skipped_large", stats.FilesSkippedLarge),
+		attribute.Int("abra.source.files_skipped_binary", stats.FilesSkippedBinary),
+		attribute.Int("abra.source.files_skipped_generated", stats.FilesSkippedGenerated),
+	)
 	for _, doc := range docs {
 		if err := sourceCtx.Err(); err != nil {
 			if heartbeatErr := heartbeatLoopErr(heartbeatErrs); heartbeatErr != nil {
@@ -447,10 +466,26 @@ func (r *Runner) runSource(ctx context.Context, source SourceConfig, jobID strin
 		attribute.Int("abra.source.documents_changed", stats.DocumentsChanged),
 		attribute.Int("abra.source.documents_skipped", stats.DocumentsSkipped),
 		attribute.Int("abra.source.documents_deferred", stats.DocumentsDeferred),
+		attribute.Int("abra.source.files_skipped_large", stats.FilesSkippedLarge),
+		attribute.Int("abra.source.files_skipped_binary", stats.FilesSkippedBinary),
+		attribute.Int("abra.source.files_skipped_generated", stats.FilesSkippedGenerated),
 		attribute.Int("abra.source.chunks_written", stats.ChunksWritten),
 		attribute.Int("abra.source.claims_written", stats.ClaimsWritten),
 	)
 	return stats, nil
+}
+
+func applySkippedFileStats(stats *SourceStats, skipped []ingest.SkippedFile) {
+	for _, file := range skipped {
+		switch file.Reason {
+		case "too_large":
+			stats.FilesSkippedLarge++
+		case "binary":
+			stats.FilesSkippedBinary++
+		case "generated":
+			stats.FilesSkippedGenerated++
+		}
+	}
 }
 
 func (r *Runner) startHeartbeatLoop(ctx context.Context, jobID string, cancel context.CancelFunc) <-chan error {

@@ -368,8 +368,11 @@ func (r *Repository) FinishIngestionJob(ctx context.Context, jobID string, lease
 			  AND lease_owner = $8
 			RETURNING status
 		`, jobID, stats.DocumentsSeen, stats.DocumentsChanged, stats.ChunksWritten, stats.ClaimsWritten, runErr.Error(), jsonb(map[string]any{
-			"documents_skipped":  stats.DocumentsSkipped,
-			"documents_deferred": stats.DocumentsDeferred,
+			"documents_skipped":       stats.DocumentsSkipped,
+			"documents_deferred":      stats.DocumentsDeferred,
+			"files_skipped_large":     stats.FilesSkippedLarge,
+			"files_skipped_binary":    stats.FilesSkippedBinary,
+			"files_skipped_generated": stats.FilesSkippedGenerated,
 		}), leaseOwner).Scan(&status)
 		if err == pgx.ErrNoRows {
 			return r.jobStatus(ctx, jobID)
@@ -395,8 +398,11 @@ func (r *Repository) FinishIngestionJob(ctx context.Context, jobID string, lease
 		  AND lease_owner = $7
 		RETURNING status
 	`, jobID, stats.DocumentsSeen, stats.DocumentsChanged, stats.ChunksWritten, stats.ClaimsWritten, jsonb(map[string]any{
-		"documents_skipped":  stats.DocumentsSkipped,
-		"documents_deferred": stats.DocumentsDeferred,
+		"documents_skipped":       stats.DocumentsSkipped,
+		"documents_deferred":      stats.DocumentsDeferred,
+		"files_skipped_large":     stats.FilesSkippedLarge,
+		"files_skipped_binary":    stats.FilesSkippedBinary,
+		"files_skipped_generated": stats.FilesSkippedGenerated,
 	}), leaseOwner).Scan(&status)
 	if err == pgx.ErrNoRows {
 		return r.jobStatus(ctx, jobID)
@@ -448,12 +454,15 @@ func (r *Repository) MarkSourceSuccess(ctx context.Context, sourceID string, sta
 		    metadata = metadata || $2::jsonb
 		WHERE id = $1
 	`, sourceID, jsonb(map[string]any{
-		"last_worker_documents_seen":     stats.DocumentsSeen,
-		"last_worker_documents_changed":  stats.DocumentsChanged,
-		"last_worker_documents_skipped":  stats.DocumentsSkipped,
-		"last_worker_documents_deferred": stats.DocumentsDeferred,
-		"last_worker_chunks_written":     stats.ChunksWritten,
-		"last_worker_claims_written":     stats.ClaimsWritten,
+		"last_worker_documents_seen":          stats.DocumentsSeen,
+		"last_worker_documents_changed":       stats.DocumentsChanged,
+		"last_worker_documents_skipped":       stats.DocumentsSkipped,
+		"last_worker_documents_deferred":      stats.DocumentsDeferred,
+		"last_worker_files_skipped_large":     stats.FilesSkippedLarge,
+		"last_worker_files_skipped_binary":    stats.FilesSkippedBinary,
+		"last_worker_files_skipped_generated": stats.FilesSkippedGenerated,
+		"last_worker_chunks_written":          stats.ChunksWritten,
+		"last_worker_claims_written":          stats.ClaimsWritten,
 	}))
 	return err
 }

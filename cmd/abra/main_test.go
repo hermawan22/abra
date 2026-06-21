@@ -2486,6 +2486,8 @@ func TestLocalPathShortcutQueuesTrackedJobWithTrackedFlag(t *testing.T) {
 		"ingest",
 		root,
 		"--code",
+		"--max-file-bytes", "123",
+		"--include-generated",
 		"--tracked",
 		"--base-url", server.URL,
 		"--token", "test-token",
@@ -2504,12 +2506,76 @@ func TestLocalPathShortcutQueuesTrackedJobWithTrackedFlag(t *testing.T) {
 	if config["root"] != root || config["include_code"] != true {
 		t.Fatalf("config = %#v", config)
 	}
+	if config["max_file_bytes"] != float64(123) || config["include_generated"] != true {
+		t.Fatalf("file policy config = %#v", config)
+	}
 	if jobRequest["source_config_id"] != "source-local" || jobRequest["trigger_type"] != "manual" {
 		t.Fatalf("job request = %#v", jobRequest)
 	}
 	for _, unexpected := range paths {
 		if unexpected == "/ingest/documents" {
 			t.Fatalf("tracked shortcut should not direct-ingest documents: paths=%v", paths)
+		}
+	}
+}
+
+func TestLocalPathIngestReportsPreReadSkippedFilesJSON(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "README.md"), "# Local Brain\n\nAgents should use Abra.")
+	mustWrite(t, filepath.Join(root, "src", "huge.ts"), strings.Repeat("x", 128))
+	mustWrite(t, filepath.Join(root, "src", "generated", "client.ts"), "export const generated = true\n")
+	if err := os.WriteFile(filepath.Join(root, "src", "binary.ts"), []byte{0x00, 0x01}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var requests []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ingest/documents" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		requests = append(requests, body)
+		_ = json.NewEncoder(w).Encode(map[string]any{"document_id": "doc"})
+	}))
+	defer server.Close()
+
+	var runErr error
+	output := captureStdout(t, func() {
+		runErr = run(context.Background(), []string{
+			"ingest",
+			root,
+			"--code",
+			"--json",
+			"--max-file-bytes", "80",
+			"--base-url", server.URL,
+			"--token", "test-token",
+		})
+	})
+	if runErr != nil {
+		t.Fatalf("shortcut ingest error = %v", runErr)
+	}
+	if len(requests) != 1 || requests[0]["title"] != "Local Brain" {
+		t.Fatalf("requests = %#v", requests)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
+		t.Fatalf("decode output: %v\n%s", err, output)
+	}
+	skipped, _ := payload["skipped_files"].([]any)
+	if len(skipped) != 3 {
+		t.Fatalf("skipped_files = %#v", payload["skipped_files"])
+	}
+	reasons := map[string]bool{}
+	for _, item := range skipped {
+		entry, _ := item.(map[string]any)
+		reasons[stringValue(entry["reason"], "")] = true
+	}
+	for _, want := range []string{"too_large", "binary", "generated"} {
+		if !reasons[want] {
+			t.Fatalf("missing reason %s in %#v", want, skipped)
 		}
 	}
 }

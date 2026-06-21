@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -81,6 +82,49 @@ func TestRunnerIngestsOnlyChangedDocuments(t *testing.T) {
 	}
 	if !store.success {
 		t.Fatal("source success was not recorded")
+	}
+}
+
+func TestRunnerCountsPreReadSkippedFilesByReason(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, root, "src/app.ts", "export const app = true\n")
+	writeTestFile(t, root, "src/huge.ts", strings.Repeat("x", 128))
+	writeTestFile(t, root, "src/generated/client.ts", "export const generated = true\n")
+	if err := os.WriteFile(filepath.Join(root, "src", "binary.ts"), []byte{0x00, 0x01}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := &fakeStore{
+		sources: []SourceConfig{{
+			ID:         "code",
+			Scope:      "repo:app",
+			SourceType: ingest.SourceTypeLocalRepo,
+			Name:       "Code",
+			Config: map[string]any{
+				"root":           root,
+				"include":        []any{"README.md"},
+				"include_code":   true,
+				"max_file_bytes": 64,
+			},
+		}},
+	}
+	brain := &fakeIngestor{}
+	runner := NewRunner(store, brain, Options{
+		MaxSourcesPerRun:             10,
+		MaxChangedDocumentsPerSource: 10,
+		SourceTimeout:                time.Second,
+	})
+
+	stats, err := runner.RunOnce(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.DocumentsSeen != 1 || stats.DocumentsChanged != 1 ||
+		stats.FilesSkippedLarge != 1 || stats.FilesSkippedBinary != 1 || stats.FilesSkippedGenerated != 1 {
+		t.Fatalf("stats = %+v", stats)
+	}
+	if len(brain.inputs) != 1 || brain.inputs[0].Title != "src/app.ts" {
+		t.Fatalf("inputs = %+v", brain.inputs)
 	}
 }
 

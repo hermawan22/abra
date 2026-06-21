@@ -1388,6 +1388,12 @@ func localPathIngest(ctx context.Context, args cliArgs) error {
 		IncludeCode: boolFlag(args, "code"),
 		CodeInclude: csv(flag(args, "code-include", "")),
 		CodeExclude: csv(flag(args, "code-exclude", "")),
+		MaxFileBytes: int64(intFlag(
+			args,
+			"max-file-bytes",
+			int(ingestpkg.DefaultMaxFileBytes),
+		)),
+		IncludeGenerated: boolFlag(args, "include-generated"),
 		Metadata: map[string]string{
 			"created_by":      flag(args, "created-by", "abra-cli"),
 			"ingest_channel":  "cli-local",
@@ -1402,11 +1408,15 @@ func localPathIngest(ctx context.Context, args cliArgs) error {
 	if err != nil {
 		return err
 	}
-	documents, err := ingestor.Ingest(ctx)
+	ingestResult, err := ingestor.IngestWithStats(ctx)
 	if err != nil {
 		return err
 	}
+	documents := ingestResult.Documents
 	if len(documents) == 0 {
+		if len(ingestResult.Skipped) > 0 {
+			return fmt.Errorf("no ingestable files found; skipped %d file(s) before read (raise --max-file-bytes or pass --include-generated when appropriate)", len(ingestResult.Skipped))
+		}
 		return errors.New("no matching files found; adjust --include, add --code, or check --path")
 	}
 	results := make([]map[string]any, 0, len(documents))
@@ -1457,7 +1467,7 @@ func localPathIngest(ctx context.Context, args cliArgs) error {
 		return fmt.Errorf("no non-empty matching files found; skipped %d empty file(s)", skippedEmpty)
 	}
 	if boolFlag(args, "json") {
-		if err := printJSON(map[string]any{"scope": scope, "documents": results, "failures": failures, "skipped_empty": skippedEmpty}); err != nil {
+		if err := printJSON(map[string]any{"scope": scope, "documents": results, "failures": failures, "skipped_empty": skippedEmpty, "skipped_files": skippedFilesForJSON(ingestResult.Skipped)}); err != nil {
 			return err
 		}
 		if len(failures) > 0 {
@@ -1468,6 +1478,16 @@ func localPathIngest(ctx context.Context, args cliArgs) error {
 	fmt.Printf("Ingested files: %d\n", len(results))
 	if skippedEmpty > 0 {
 		fmt.Printf("Skipped empty files: %d\n", skippedEmpty)
+	}
+	if len(ingestResult.Skipped) > 0 {
+		fmt.Printf("Skipped files before read: %d\n", len(ingestResult.Skipped))
+		for i, skipped := range ingestResult.Skipped {
+			if i >= 5 {
+				fmt.Printf("- ... %d more skipped file(s)\n", len(ingestResult.Skipped)-i)
+				break
+			}
+			fmt.Printf("- %s: %s (%d bytes)\n", skipped.Path, skipped.Reason, skipped.Bytes)
+		}
 	}
 	if len(failures) > 0 {
 		fmt.Printf("Failed files: %d\n", len(failures))
@@ -1485,6 +1505,18 @@ func localPathIngest(ctx context.Context, args cliArgs) error {
 		return fmt.Errorf("ingest completed with %d failure(s)", len(failures))
 	}
 	return nil
+}
+
+func skippedFilesForJSON(skipped []ingestpkg.SkippedFile) []map[string]any {
+	out := make([]map[string]any, 0, len(skipped))
+	for _, file := range skipped {
+		out = append(out, map[string]any{
+			"path":   file.Path,
+			"reason": file.Reason,
+			"bytes":  file.Bytes,
+		})
+	}
+	return out
 }
 
 func watch(ctx context.Context, args cliArgs) error {
@@ -1553,6 +1585,12 @@ func sourceIngest(ctx context.Context, args cliArgs) error {
 		if codeExclude := csv(flag(args, "code-exclude", "")); len(codeExclude) > 0 {
 			config["code_exclude"] = codeExclude
 		}
+	}
+	if maxFileBytes := intFlag(args, "max-file-bytes", 0); maxFileBytes > 0 {
+		config["max_file_bytes"] = maxFileBytes
+	}
+	if boolFlag(args, "include-generated") {
+		config["include_generated"] = true
 	}
 	name := flag(args, "name", "")
 	if name == "" {
@@ -3474,6 +3512,11 @@ Source ingestion flags:
   --include        comma-separated document globs, default **/*.md
   --exclude        comma-separated exclude globs
   --code           also ingest code intelligence from supported code files
+  --code-include   comma-separated code globs for --code
+  --code-exclude   comma-separated code exclude globs for --code
+  --max-file-bytes skip matched files larger than this before reading, default 1048576
+  --include-generated
+                  include generated/minified/lock files that are skipped by default
   --wait           wait for the queued worker job when using --git or watch
   --tracked        register a local path source and queue a worker job; path must be worker-visible
   --no-wait        return immediately after queueing a tracked local path ingestion job

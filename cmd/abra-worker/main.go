@@ -158,6 +158,11 @@ func run(ctx context.Context, cfg config.Config, db *store.Store, runner *jobs.R
 			attribute.Int("abra.worker.sources_failed", stats.SourcesFailed),
 			attribute.Int("abra.worker.documents_seen", stats.DocumentsSeen),
 			attribute.Int("abra.worker.documents_changed", stats.DocumentsChanged),
+			attribute.Int("abra.worker.documents_skipped", stats.DocumentsSkipped),
+			attribute.Int("abra.worker.documents_deferred", stats.DocumentsDeferred),
+			attribute.Int("abra.worker.files_skipped_large", stats.FilesSkippedLarge),
+			attribute.Int("abra.worker.files_skipped_binary", stats.FilesSkippedBinary),
+			attribute.Int("abra.worker.files_skipped_generated", stats.FilesSkippedGenerated),
 			attribute.Int("abra.worker.chunks_written", stats.ChunksWritten),
 			attribute.Int("abra.worker.claims_written", stats.ClaimsWritten),
 		)
@@ -170,6 +175,9 @@ func run(ctx context.Context, cfg config.Config, db *store.Store, runner *jobs.R
 			"documents_changed", stats.DocumentsChanged,
 			"documents_skipped", stats.DocumentsSkipped,
 			"documents_deferred", stats.DocumentsDeferred,
+			"files_skipped_large", stats.FilesSkippedLarge,
+			"files_skipped_binary", stats.FilesSkippedBinary,
+			"files_skipped_generated", stats.FilesSkippedGenerated,
 			"chunks_written", stats.ChunksWritten,
 			"claims_written", stats.ClaimsWritten,
 		)

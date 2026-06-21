@@ -20,22 +20,24 @@ const (
 
 // SourceSpec is the durable configuration for a knowledge source.
 type SourceSpec struct {
-	ID             string
-	Type           SourceType
-	Root           string
-	Scope          string
-	Include        []string
-	Exclude        []string
-	IncludeCode    bool
-	CodeInclude    []string
-	CodeExclude    []string
-	GitRemoteURL   string
-	GitRef         string
-	GitRevision    string
-	GitProvider    string
-	GitProjectPath string
-	GitDepth       int
-	Metadata       map[string]string
+	ID               string
+	Type             SourceType
+	Root             string
+	Scope            string
+	Include          []string
+	Exclude          []string
+	IncludeCode      bool
+	CodeInclude      []string
+	CodeExclude      []string
+	MaxFileBytes     int64
+	IncludeGenerated bool
+	GitRemoteURL     string
+	GitRef           string
+	GitRevision      string
+	GitProvider      string
+	GitProjectPath   string
+	GitDepth         int
+	Metadata         map[string]string
 }
 
 // Validate checks connector-neutral registry constraints.

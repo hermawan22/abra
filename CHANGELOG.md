@@ -48,6 +48,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Add hot query embedding caching for recall and working-memory paths, and make full release dogfood/performance gates stable on the default local Qwen embedding runner.
 - Add staged install-script verification, installer asset publishing, and pre-upload attestation verification to the release workflow so CLI archives must pass the same installer path users run with `curl | sh`.
 - Add an npm pack allowlist gate so the developer npm package can only contain `LICENSE`, `README.md`, and `package.json`.
+- Add local repo ingestion file guardrails that skip oversized, binary-looking, generated, minified, protobuf, and lock files before reading content.
 
 ### Changed
 
@@ -94,6 +95,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Make source-built CLIs report the tracked runtime version by default and make installers warn when `PATH` resolves to a different `abra` binary.
 - Make `abra setup` defer project-scoped ingest, verify, and think commands to the scope printed after `cd /path/to/project`.
 - Make `abra agents init` default to Codex instructions and make agent context verification compose as `codex`.
+- Make direct and tracked local ingestion expose configurable `max_file_bytes` / `--max-file-bytes` and generated-file override controls.
 - Improve chunk splitting and embedding batch token estimation for oversized paragraphs, minified JSON, and dense code.
 - Expand default `--code` ingestion includes to supported code files repo-wide instead of only `src` JavaScript/TypeScript paths.
 - Gate low-confidence retrieval on lexical and semantic relevance signal instead of allowing boosted rank alone to make weak matches look strong, while preserving moderate rank-only compatibility paths.
