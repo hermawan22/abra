@@ -5,7 +5,9 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -47,6 +49,28 @@ type cliArgs struct {
 	Flags   map[string]string
 	Bools   map[string]bool
 	Rest    []string
+}
+
+type connectorManifest struct {
+	ID                 string            `json:"id"`
+	Name               string            `json:"name"`
+	Scope              string            `json:"scope"`
+	MCPURL             string            `json:"mcp_url"`
+	ServerURL          string            `json:"server_url"`
+	URL                string            `json:"url"`
+	Tool               string            `json:"tool"`
+	Arguments          map[string]any    `json:"arguments"`
+	ConnectorKind      string            `json:"connector_kind"`
+	DocumentSourceType string            `json:"document_source_type"`
+	BearerTokenEnv     string            `json:"bearer_token_env"`
+	HeaderEnv          map[string]string `json:"header_env"`
+	Status             string            `json:"status"`
+	Authority          string            `json:"authority"`
+	AuthorityScore     *float64          `json:"authority_score"`
+	FreshnessSeconds   int               `json:"freshness_seconds"`
+	Schedule           string            `json:"schedule"`
+	VerifyQuery        string            `json:"verify_query"`
+	Metadata           map[string]any    `json:"metadata"`
 }
 
 type contextConfig struct {
@@ -114,10 +138,14 @@ func run(ctx context.Context, argv []string) error {
 		return ingestCommand(ctx, args)
 	case "watch", "source":
 		return watch(ctx, args)
+	case "connectors", "connector":
+		return connectorsCommand(ctx, args)
 	case "sources":
 		return listSources(ctx, args)
 	case "jobs":
 		return listJobs(ctx, args)
+	case "approvals", "approval":
+		return approvalsCommand(ctx, args)
 	case "observe":
 		return observe(ctx, args)
 	case "observations", "episodes":
@@ -483,6 +511,7 @@ func configModelLocalNeural(args cliArgs, label string) error {
 		}
 		apiKey = strings.TrimSpace(string(bytes))
 	}
+	rerankerProvider := flag(args, "reranker-provider", "local")
 	if err := updateEnvValues(args, map[string]string{
 		"EMBEDDING_PROVIDER":                   "local",
 		"EMBEDDING_BASE_URL":                   containerReachableBaseURL(flag(args, "base-url", defaultEmbeddingBaseURL)),
@@ -493,10 +522,10 @@ func configModelLocalNeural(args cliArgs, label string) error {
 		"ABRA_EMBEDDING_BATCH_MAX_ITEMS":       flag(args, "embedding-batch-max-items", "6"),
 		"ABRA_EMBEDDING_BATCH_MAX_TOKENS":      flag(args, "embedding-batch-max-tokens", "3000"),
 		"ABRA_AI_PROVIDER_CONCURRENCY":         flag(args, "provider-concurrency", "1"),
-		"RERANKER_PROVIDER":                    flag(args, "reranker-provider", ""),
-		"RERANKER_BASE_URL":                    flag(args, "reranker-base-url", ""),
+		"RERANKER_PROVIDER":                    rerankerProvider,
+		"RERANKER_BASE_URL":                    containerReachableBaseURL(flag(args, "reranker-base-url", defaultRerankerBaseURLForProvider(rerankerProvider))),
 		"RERANKER_API_KEY":                     apiKey,
-		"RERANKER_MODEL":                       flag(args, "reranker-model", ""),
+		"RERANKER_MODEL":                       flag(args, "reranker-model", defaultRerankerModelForProvider(rerankerProvider)),
 		"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION": "false",
 		"ABRA_LOCAL_EMBEDDING_IMAGE":           flag(args, "runner-image", ""),
 		"ABRA_LOCAL_EMBEDDING_PULL_POLICY":     localRunnerPullPolicy(flag(args, "pull-policy", "missing")),
@@ -508,7 +537,7 @@ func configModelLocalNeural(args cliArgs, label string) error {
 		return err
 	}
 	fmt.Println("Model config updated: " + label)
-	fmt.Println("Run `abra up` to start the default local Qwen embedding runner and stack, or use `abra models up` only to manage the runner directly.")
+	fmt.Println("Run `abra up` to start the default local Qwen model runners and stack, or use `abra models up` only to manage the runners directly.")
 	printRestartHint(args)
 	return nil
 }
@@ -1894,6 +1923,11 @@ func watch(ctx context.Context, args cliArgs) error {
 }
 
 func sourceIngest(ctx context.Context, args cliArgs) error {
+	var err error
+	args, err = applyConnectorManifest(args)
+	if err != nil {
+		return err
+	}
 	sourceType := "local_repo"
 	sourceURL := ""
 	scopeHint := "."
@@ -1985,6 +2019,7 @@ func sourceIngest(ctx context.Context, args cliArgs) error {
 		}
 	}
 	body := map[string]any{
+		"id":              flag(args, "id", ""),
 		"name":            name,
 		"source_type":     sourceType,
 		"scope":           scope,
@@ -1998,6 +2033,13 @@ func sourceIngest(ctx context.Context, args cliArgs) error {
 			"created_by": "abra-cli",
 		},
 		"created_by": flag(args, "created-by", "abra-cli"),
+	}
+	if metadataJSON := flag(args, "metadata-json", ""); metadataJSON != "" {
+		metadata, err := parseJSONObjectFlag(metadataJSON, "metadata-json")
+		if err != nil {
+			return err
+		}
+		body["metadata"] = mergeAnyMaps(body["metadata"].(map[string]any), metadata)
 	}
 	if freshnessSeconds := intFlag(args, "freshness-seconds", 0); freshnessSeconds > 0 {
 		body["freshness_policy"] = map[string]any{"max_age_seconds": freshnessSeconds}
@@ -2016,20 +2058,28 @@ func sourceIngest(ctx context.Context, args cliArgs) error {
 	if sourceID == "" {
 		return errors.New("source config response did not include source_config_id")
 	}
-	job, err := postJSON(ctx, args, "/ingestion/jobs", map[string]any{
-		"source_config_id": sourceID,
-		"trigger_type":     flag(args, "trigger", "manual"),
-		"created_by":       flag(args, "created-by", "abra-cli"),
-		"approval_id":      flag(args, "approval-id", ""),
-		"max_attempts":     intFlag(args, "max-attempts", 3),
-		"metadata":         map[string]any{"channel": "cli"},
-	})
-	if err != nil {
-		return err
+	status := flag(args, "status", "active")
+	shouldQueue := status == "active" || status == "error"
+	if !shouldQueue && (boolFlag(args, "wait") || boolFlag(args, "verify")) {
+		return fmt.Errorf("--wait/--verify require an active connector source; current status is %q", status)
 	}
+	job := map[string]any{}
 	jobID := ""
-	if ingestionJob, _ := job["ingestion_job"].(map[string]any); ingestionJob != nil {
-		jobID = stringValue(ingestionJob["id"], "")
+	if shouldQueue {
+		job, err = postJSON(ctx, args, "/ingestion/jobs", map[string]any{
+			"source_config_id": sourceID,
+			"trigger_type":     flag(args, "trigger", "manual"),
+			"created_by":       flag(args, "created-by", "abra-cli"),
+			"approval_id":      flag(args, "approval-id", ""),
+			"max_attempts":     intFlag(args, "max-attempts", 3),
+			"metadata":         map[string]any{"channel": "cli"},
+		})
+		if err != nil {
+			return err
+		}
+		if ingestionJob, _ := job["ingestion_job"].(map[string]any); ingestionJob != nil {
+			jobID = stringValue(ingestionJob["id"], "")
+		}
 	}
 	var waitedJob map[string]any
 	if boolFlag(args, "json") {
@@ -2043,20 +2093,318 @@ func sourceIngest(ctx context.Context, args cliArgs) error {
 		if waitedJob != nil {
 			payload["waited_job"] = waitedJob
 		}
+		if boolFlag(args, "verify") {
+			verification, err := verifySourceRecallPayload(ctx, args, scope, sourceID, firstNonEmpty(flag(args, "verify-query", ""), name, sourceURL))
+			if err != nil {
+				return err
+			}
+			payload["verification"] = verification
+		}
 		return printJSON(payload)
 	}
 	fmt.Println("Source configured: " + sourceID)
 	fmt.Println("scope: " + scope)
 	if jobID != "" {
 		fmt.Println("Job queued: " + jobID)
+	} else if !shouldQueue {
+		fmt.Println("Job skipped: source status is " + status)
 	}
 	fmt.Println("Check jobs: abra jobs --scope " + scope)
 	if boolFlag(args, "wait") {
 		_, err := waitForSourceJob(ctx, args, scope, sourceID, jobID)
-		return err
+		if err != nil {
+			return err
+		}
+	}
+	if boolFlag(args, "verify") {
+		return verifySourceRecall(ctx, args, scope, sourceID, firstNonEmpty(flag(args, "verify-query", ""), name, sourceURL))
 	}
 	if sourceType == "local_repo" {
 		fmt.Println("Tip: local tracked sources require the worker to see the same path. Use `abra ingest . --code` for direct local ingestion.")
+	}
+	return nil
+}
+
+func connectorsCommand(ctx context.Context, args cliArgs) error {
+	action := "list"
+	if len(args.Rest) > 0 {
+		action = strings.ToLower(strings.TrimSpace(args.Rest[0]))
+		args.Rest = args.Rest[1:]
+	}
+	switch action {
+	case "list", "ls":
+		return listConnectors(ctx, args)
+	case "mcp":
+		return connectorMCP(ctx, args)
+	case "webhook":
+		return connectorWebhook(ctx, args)
+	default:
+		return fmt.Errorf("unknown connectors action %q\n\n%s", action, commandUsage("connectors"))
+	}
+}
+
+func connectorMCP(ctx context.Context, args cliArgs) error {
+	var err error
+	args, err = applyConnectorManifest(args)
+	if err != nil {
+		return err
+	}
+	action := "register"
+	if len(args.Rest) > 0 {
+		switch strings.ToLower(strings.TrimSpace(args.Rest[0])) {
+		case "inspect", "tools", "discover":
+			action = "inspect"
+			args.Rest = args.Rest[1:]
+		case "validate", "dry-run":
+			action = "validate"
+			args.Rest = args.Rest[1:]
+		case "register", "create", "add":
+			action = "register"
+			args.Rest = args.Rest[1:]
+		}
+	}
+	args.Flags["type"] = "mcp"
+	if flag(args, "mcp-url", "") == "" && flag(args, "url", "") == "" {
+		if len(args.Rest) == 0 {
+			return errors.New("connectors mcp requires --mcp-url <url> or a positional MCP HTTP URL")
+		}
+		args.Flags["mcp-url"] = args.Rest[0]
+		args.Rest = args.Rest[1:]
+	}
+	if action == "inspect" {
+		return inspectMCPConnector(ctx, args)
+	}
+	if action == "validate" {
+		args.Bools["validate"] = true
+	}
+	return sourceIngest(ctx, args)
+}
+
+func applyConnectorManifest(args cliArgs) (cliArgs, error) {
+	path := firstNonEmpty(flag(args, "manifest", ""), flag(args, "connector-manifest", ""))
+	if path == "" {
+		return args, nil
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return args, err
+	}
+	var manifest connectorManifest
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		return args, fmt.Errorf("parse connector manifest %s: %w", path, err)
+	}
+	setFlagDefault := func(name, value string) {
+		if strings.TrimSpace(value) != "" && flag(args, name, "") == "" {
+			args.Flags[name] = value
+		}
+	}
+	setFlagDefault("id", manifest.ID)
+	setFlagDefault("name", manifest.Name)
+	setFlagDefault("scope", manifest.Scope)
+	setFlagDefault("mcp-url", firstNonEmpty(manifest.MCPURL, manifest.ServerURL, manifest.URL))
+	setFlagDefault("tool", manifest.Tool)
+	setFlagDefault("connector", manifest.ConnectorKind)
+	setFlagDefault("document-source-type", manifest.DocumentSourceType)
+	setFlagDefault("bearer-token-env", manifest.BearerTokenEnv)
+	setFlagDefault("status", manifest.Status)
+	setFlagDefault("authority", manifest.Authority)
+	setFlagDefault("schedule", manifest.Schedule)
+	setFlagDefault("verify-query", manifest.VerifyQuery)
+	if manifest.AuthorityScore != nil && flag(args, "authority-score", "") == "" {
+		args.Flags["authority-score"] = strconv.FormatFloat(*manifest.AuthorityScore, 'f', -1, 64)
+	}
+	if manifest.FreshnessSeconds > 0 && flag(args, "freshness-seconds", "") == "" {
+		args.Flags["freshness-seconds"] = strconv.Itoa(manifest.FreshnessSeconds)
+	}
+	if len(manifest.Arguments) > 0 && flag(args, "arguments-json", "") == "" && flag(args, "args-json", "") == "" {
+		encoded, err := json.Marshal(manifest.Arguments)
+		if err != nil {
+			return args, err
+		}
+		args.Flags["arguments-json"] = string(encoded)
+	}
+	if len(manifest.HeaderEnv) > 0 && flag(args, "header-env", "") == "" {
+		parts := make([]string, 0, len(manifest.HeaderEnv))
+		for header, envName := range manifest.HeaderEnv {
+			parts = append(parts, header+"="+envName)
+		}
+		args.Flags["header-env"] = strings.Join(parts, ",")
+	}
+	if len(manifest.Metadata) > 0 && flag(args, "metadata-json", "") == "" {
+		encoded, err := json.Marshal(manifest.Metadata)
+		if err != nil {
+			return args, err
+		}
+		args.Flags["metadata-json"] = string(encoded)
+	}
+	return args, nil
+}
+
+func inspectMCPConnector(ctx context.Context, args cliArgs) error {
+	sourceURL := firstNonEmpty(flag(args, "mcp-url", ""), flag(args, "url", ""))
+	scope := scopeOrDefault(args, sourceURL)
+	config := map[string]any{"server_url": sourceURL}
+	if envName := flag(args, "bearer-token-env", ""); envName != "" {
+		config["bearer_token_env"] = envName
+	}
+	if headerEnv, err := parseHeaderEnvFlag(flag(args, "header-env", "")); err != nil {
+		return err
+	} else if len(headerEnv) > 0 {
+		config["header_env"] = headerEnv
+	}
+	tools, err := jobspkg.ListMCPTools(ctx, jobspkg.SourceConfig{
+		ID:            firstNonEmpty(flag(args, "id", ""), "cli-inspect"),
+		Scope:         scope,
+		SourceType:    ingestpkg.SourceTypeMCP,
+		Name:          firstNonEmpty(flag(args, "name", ""), "mcp-inspect"),
+		BaseURL:       sourceURL,
+		ConnectorKind: flag(args, "connector", "mcp"),
+		Config:        config,
+	})
+	if err != nil {
+		return err
+	}
+	if boolFlag(args, "json") {
+		return printJSON(map[string]any{"status": "ok", "tools": tools, "count": len(tools)})
+	}
+	fmt.Printf("MCP tools: %d\n", len(tools))
+	for _, tool := range tools {
+		fmt.Printf("- %s", tool.Name)
+		if tool.Description != "" {
+			fmt.Print("  " + tool.Description)
+		}
+		fmt.Println()
+	}
+	return nil
+}
+
+func connectorWebhook(ctx context.Context, args cliArgs) error {
+	action := "sample"
+	if len(args.Rest) > 0 {
+		action = strings.ToLower(strings.TrimSpace(args.Rest[0]))
+		args.Rest = args.Rest[1:]
+	}
+	body, err := connectorWebhookPayload(args)
+	if err != nil {
+		return err
+	}
+	switch action {
+	case "sample":
+		if secret := connectorWebhookSecret(args); secret != "" {
+			return printJSON(map[string]any{"body": body, "signature": webhookSignature(secret, body)})
+		}
+		fmt.Println(string(body))
+		return nil
+	case "sign":
+		secret := connectorWebhookSecret(args)
+		if secret == "" {
+			return errors.New("connectors webhook sign requires --secret or --secret-env")
+		}
+		fmt.Println(webhookSignature(secret, body))
+		return nil
+	case "test":
+		return postConnectorWebhook(ctx, args, body)
+	default:
+		return fmt.Errorf("unknown connectors webhook action %q\n\n%s", action, commandUsage("connectors"))
+	}
+}
+
+func connectorWebhookPayload(args cliArgs) ([]byte, error) {
+	if raw := flag(args, "payload-json", ""); raw != "" {
+		var value any
+		if err := json.Unmarshal([]byte(raw), &value); err != nil {
+			return nil, fmt.Errorf("parse payload-json: %w", err)
+		}
+		return json.Marshal(value)
+	}
+	body := map[string]any{
+		"connector_kind":  flag(args, "connector", "generic"),
+		"event_type":      flag(args, "event-type", "manual_test"),
+		"delivery_id":     firstNonEmpty(flag(args, "delivery-id", ""), "cli-"+timestamp()),
+		"scope":           scopeOrDefault(args, "."),
+		"source_type":     flag(args, "source-type", flag(args, "connector", "generic")),
+		"source_url":      firstNonEmpty(flag(args, "source-url", ""), "https://example.invalid/abra-connector-test"),
+		"source_id":       flag(args, "source-id", "abra-connector-test"),
+		"title":           flag(args, "title", "Abra connector webhook test"),
+		"content":         flag(args, "content", "Abra connector webhook test document."),
+		"authority":       flag(args, "authority", "manual-unverified"),
+		"authority_score": floatFlag(args, "authority-score", 0.35),
+		"metadata": map[string]any{
+			"channel": "cli",
+		},
+	}
+	if metadataJSON := flag(args, "metadata-json", ""); metadataJSON != "" {
+		metadata, err := parseJSONObjectFlag(metadataJSON, "metadata-json")
+		if err != nil {
+			return nil, err
+		}
+		body["metadata"] = mergeAnyMaps(body["metadata"].(map[string]any), metadata)
+	}
+	return json.Marshal(body)
+}
+
+func connectorWebhookSecret(args cliArgs) string {
+	if secret := flag(args, "secret", ""); secret != "" {
+		return secret
+	}
+	if envName := flag(args, "secret-env", ""); envName != "" {
+		return strings.TrimSpace(os.Getenv(envName))
+	}
+	return ""
+}
+
+func webhookSignature(secret string, body []byte) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write(body)
+	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
+}
+
+func postConnectorWebhook(ctx context.Context, args cliArgs, body []byte) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(cfg(args).BaseURL, "/")+"/ingest/webhooks", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("authorization", "Bearer "+cfg(args).Token)
+	if secret := connectorWebhookSecret(args); secret != "" {
+		req.Header.Set("x-abra-signature", webhookSignature(secret, body))
+	}
+	result, err := doJSON(req, cliTimeout(args, defaultHTTPTimeout))
+	if err != nil {
+		return err
+	}
+	if boolFlag(args, "json") {
+		return printJSON(result)
+	}
+	fmt.Printf("Webhook accepted: accepted=%v delivery_id=%s\n", result["accepted"], stringValue(result["delivery_id"], ""))
+	return nil
+}
+
+func listConnectors(ctx context.Context, args cliArgs) error {
+	path := "/sources/configs?limit=" + strconv.Itoa(intFlag(args, "limit", 50))
+	if scope := flag(args, "scope", os.Getenv("ABRA_SCOPE")); scope != "" {
+		path += "&scope=" + urlQueryEscape(scope)
+	}
+	result, _, err := getJSON(ctx, args, path)
+	if err != nil {
+		return err
+	}
+	if boolFlag(args, "json") {
+		return printJSON(result)
+	}
+	items, _ := result["source_configs"].([]any)
+	fmt.Printf("Connectors: %d\n", len(items))
+	for _, raw := range items {
+		item, _ := raw.(map[string]any)
+		sourceType := stringValue(item["source_type"], "")
+		connectorKind := stringValue(item["connector_kind"], defaultConnectorKind(sourceType))
+		fmt.Printf("- %s  %s  %s  %s  %s\n",
+			stringValue(item["id"], ""),
+			stringValue(item["status"], ""),
+			connectorKind,
+			sourceType,
+			stringValue(item["name"], ""),
+		)
 	}
 	return nil
 }
@@ -2354,6 +2702,150 @@ func listJobs(ctx context.Context, args cliArgs) error {
 	return nil
 }
 
+func approvalsCommand(ctx context.Context, args cliArgs) error {
+	action := "list"
+	if len(args.Rest) > 0 {
+		action = strings.ToLower(strings.TrimSpace(args.Rest[0]))
+		args.Rest = args.Rest[1:]
+	}
+	switch action {
+	case "list", "ls":
+		return listApprovals(ctx, args)
+	case "request", "create":
+		return requestApproval(ctx, args)
+	case "approve":
+		return decideApproval(ctx, args, "approve")
+	case "reject":
+		return decideApproval(ctx, args, "reject")
+	default:
+		return fmt.Errorf("unknown approvals action %q\n\n%s", action, commandUsage("approvals"))
+	}
+}
+
+func listApprovals(ctx context.Context, args cliArgs) error {
+	path := "/approvals?limit=" + strconv.Itoa(intFlag(args, "limit", 50))
+	if scope := flag(args, "scope", os.Getenv("ABRA_SCOPE")); scope != "" {
+		path += "&scope=" + urlQueryEscape(scope)
+	}
+	if status := flag(args, "status", ""); status != "" {
+		path += "&status=" + urlQueryEscape(status)
+	}
+	result, _, err := getJSON(ctx, args, path)
+	if err != nil {
+		return err
+	}
+	if boolFlag(args, "json") {
+		return printJSON(result)
+	}
+	items, _ := result["approvals"].([]any)
+	fmt.Printf("Approvals: %d\n", len(items))
+	for _, raw := range items {
+		item, _ := raw.(map[string]any)
+		fmt.Printf("- %s  %s  %s  %s  %s/%s\n",
+			stringValue(item["id"], ""),
+			stringValue(item["status"], ""),
+			stringValue(item["action"], ""),
+			stringValue(item["scope"], ""),
+			stringValue(item["target_type"], ""),
+			stringValue(item["target_id"], ""),
+		)
+	}
+	return nil
+}
+
+func requestApproval(ctx context.Context, args cliArgs) error {
+	action := firstNonEmpty(flag(args, "action", ""), flag(args, "approval-action", ""))
+	if action == "" && len(args.Rest) > 0 {
+		action = strings.TrimSpace(args.Rest[0])
+		args.Rest = args.Rest[1:]
+	}
+	if action == "" {
+		return errors.New("approvals request requires --action, for example: abra approvals request --scope repo:demo --action agent_write")
+	}
+	scope := scopeOrDefault(args, ".")
+	body := map[string]any{
+		"action":      action,
+		"scope":       scope,
+		"target_type": flag(args, "target-type", ""),
+		"target_id":   flag(args, "target-id", ""),
+		"reason":      flag(args, "reason", ""),
+		"expires_at":  flag(args, "expires-at", ""),
+		"metadata":    map[string]any{"channel": "cli", "command": "approvals request"},
+	}
+	if requestedBy := strings.TrimSpace(flag(args, "requested-by", "")); requestedBy != "" {
+		body["requested_by"] = requestedBy
+	}
+	if payloadJSON := flag(args, "payload-json", ""); payloadJSON != "" {
+		payload, err := parseJSONObjectFlag(payloadJSON, "payload-json")
+		if err != nil {
+			return err
+		}
+		body["payload"] = payload
+	}
+	if metadataJSON := flag(args, "metadata-json", ""); metadataJSON != "" {
+		metadata, err := parseJSONObjectFlag(metadataJSON, "metadata-json")
+		if err != nil {
+			return err
+		}
+		body["metadata"] = mergeAnyMaps(body["metadata"].(map[string]any), metadata)
+	}
+	result, err := postJSON(ctx, args, "/approvals", body)
+	if err != nil {
+		return err
+	}
+	if boolFlag(args, "json") {
+		return printJSON(result)
+	}
+	approval, _ := result["approval"].(map[string]any)
+	id := stringValue(approval["id"], "unknown")
+	fmt.Println("Approval requested: " + id)
+	fmt.Println("scope: " + stringValue(approval["scope"], scope))
+	fmt.Println("action: " + stringValue(approval["action"], action))
+	fmt.Println("status: " + stringValue(approval["status"], "pending"))
+	fmt.Println("Use: abra approvals approve " + id)
+	return nil
+}
+
+func decideApproval(ctx context.Context, args cliArgs, action string) error {
+	approvalID := firstNonEmpty(flag(args, "approval-id", ""), flag(args, "id", ""))
+	if approvalID == "" && len(args.Rest) > 0 {
+		approvalID = strings.TrimSpace(args.Rest[0])
+		args.Rest = args.Rest[1:]
+	}
+	if approvalID == "" {
+		return fmt.Errorf("approvals %s requires an approval id, for example: abra approvals %s approval-123", action, action)
+	}
+	decisionReason := firstNonEmpty(flag(args, "decision-reason", ""), flag(args, "reason", ""))
+	body := map[string]any{
+		"decision_reason": decisionReason,
+		"metadata":        map[string]any{"channel": "cli", "command": "approvals " + action},
+	}
+	if decidedBy := strings.TrimSpace(flag(args, "decided-by", "")); decidedBy != "" {
+		body["decided_by"] = decidedBy
+	}
+	if metadataJSON := flag(args, "metadata-json", ""); metadataJSON != "" {
+		metadata, err := parseJSONObjectFlag(metadataJSON, "metadata-json")
+		if err != nil {
+			return err
+		}
+		body["metadata"] = mergeAnyMaps(body["metadata"].(map[string]any), metadata)
+	}
+	result, err := postJSON(ctx, args, "/approvals/"+url.PathEscape(approvalID)+"/"+action, body)
+	if err != nil {
+		return err
+	}
+	if boolFlag(args, "json") {
+		return printJSON(result)
+	}
+	approval, _ := result["approval"].(map[string]any)
+	status := stringValue(approval["status"], "")
+	if status == "" {
+		status = action + "d"
+	}
+	fmt.Printf("Approval %s: %s\n", status, approvalID)
+	return nil
+}
+
 func validateMCPSource(ctx context.Context, args cliArgs, scope, sourceURL string, config map[string]any) error {
 	source := jobspkg.SourceConfig{
 		ID:             "cli-dry-run",
@@ -2370,20 +2862,30 @@ func validateMCPSource(ctx context.Context, args cliArgs, scope, sourceURL strin
 	timeout := cliTimeout(args, defaultHTTPTimeout)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	docs, err := jobspkg.ValidateMCPSource(ctx, source)
+	report, err := jobspkg.ValidateMCPSourceReport(ctx, source)
 	if err != nil {
 		return err
 	}
 	if boolFlag(args, "json") {
-		return printJSON(map[string]any{"status": "ok", "documents": docs, "count": len(docs)})
+		return printJSON(report)
 	}
-	fmt.Printf("MCP source valid: %d document(s)\n", len(docs))
-	for i, doc := range docs {
+	fmt.Printf("MCP source valid: %d document(s)\n", report.Count)
+	for i, doc := range report.Documents {
 		if i >= 5 {
-			fmt.Printf("- ... %d more document(s)\n", len(docs)-i)
+			fmt.Printf("- ... %d more document(s)\n", len(report.Documents)-i)
 			break
 		}
 		fmt.Printf("- %s  %s  %s  bytes=%d\n", doc.Scope, doc.SourceType, doc.Title, doc.ContentBytes)
+	}
+	for _, warning := range report.Warnings {
+		fmt.Printf("warning: %s", warning.Code)
+		if warning.SourceURL != "" {
+			fmt.Print(" " + warning.SourceURL)
+		}
+		if warning.Message != "" {
+			fmt.Print(" - " + warning.Message)
+		}
+		fmt.Println()
 	}
 	return nil
 }
@@ -3831,6 +4333,7 @@ func installCodexMCP(ctx context.Context, args cliArgs) error {
 	fmt.Println("  url:       " + strings.TrimRight(cfg(args).BaseURL, "/") + "/mcp")
 	fmt.Println("  token env: " + tokenEnv)
 	fmt.Printf("  endpoint:  validated (%d tools)\n", toolCount)
+	fmt.Println("Codex MCP config was updated by the CLI; no manual Codex config editing is required.")
 	if launchctlWarning != "" {
 		fmt.Println("Warning: could not set macOS launch environment: " + launchctlWarning)
 		fmt.Println("Set " + tokenEnv + " in the shell that starts Codex, then retry.")
@@ -4008,6 +4511,28 @@ type httpStatusError struct {
 }
 
 func (e *httpStatusError) Error() string {
+	if stringValue(e.Payload["error"], "") == "approval_required" {
+		if approval, _ := e.Payload["approval"].(map[string]any); approval != nil {
+			action := stringValue(approval["action"], "")
+			scope := stringValue(approval["scope"], "")
+			targetType := stringValue(approval["target_type"], "")
+			targetID := stringValue(approval["target_id"], "")
+			parts := []string{"approval required"}
+			if detail := stringValue(e.Payload["detail"], ""); detail != "" {
+				parts = append(parts, "detail: "+detail)
+			}
+			request := "abra approvals request --scope " + shellQuote(scope) + " --action " + shellQuote(action)
+			if targetType != "" {
+				request += " --target-type " + shellQuote(targetType)
+			}
+			if targetID != "" {
+				request += " --target-id " + shellQuote(targetID)
+			}
+			parts = append(parts, "request: "+request)
+			parts = append(parts, "after approval, retry the original command with --approval-id <approval-id>")
+			return strings.Join(parts, "\n")
+		}
+	}
 	return fmt.Sprintf("http %d: %s", e.Code, e.Body)
 }
 
@@ -4683,6 +5208,17 @@ func parseJSONObjectFlag(raw, flagName string) (map[string]any, error) {
 	return value, nil
 }
 
+func mergeAnyMaps(base, override map[string]any) map[string]any {
+	out := map[string]any{}
+	for key, value := range base {
+		out[key] = value
+	}
+	for key, value := range override {
+		out[key] = value
+	}
+	return out
+}
+
 func parseHeaderEnvFlag(raw string) (map[string]string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -4932,6 +5468,48 @@ func waitForSourceJob(ctx context.Context, args cliArgs, scope, sourceID, jobID 
 	return nil, errors.New("job did not finish within " + timeout.String() + "; run `abra jobs --scope " + scope + "`")
 }
 
+func verifySourceRecall(ctx context.Context, args cliArgs, scope, sourceID, query string) error {
+	payload, err := verifySourceRecallPayload(ctx, args, scope, sourceID, query)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Recall verified: query=%q claims=%v documents=%v source=%s\n",
+		stringValue(payload["query"], query),
+		payload["claims"],
+		payload["supporting_documents"],
+		sourceID,
+	)
+	return nil
+}
+
+func verifySourceRecallPayload(ctx context.Context, args cliArgs, scope, sourceID, query string) (map[string]any, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, errors.New("--verify requires --verify-query when the source name is empty")
+	}
+	result, err := postJSON(ctx, args, "/recall", map[string]any{
+		"query":              query,
+		"scope":              scope,
+		"limit":              intFlag(args, "verify-limit", 5),
+		"include_unverified": boolFlag(args, "include-unverified"),
+	})
+	if err != nil {
+		return nil, err
+	}
+	claims := lenSlice(result["claims"])
+	docs := lenSlice(result["supporting_documents"])
+	if claims == 0 && docs == 0 {
+		return nil, fmt.Errorf("recall verification returned no source-backed context for query %q in scope %s; inspect `abra sources logs %s` and try a more specific --verify-query", query, scope, sourceID)
+	}
+	return map[string]any{
+		"query":                query,
+		"scope":                scope,
+		"source_config_id":     sourceID,
+		"claims":               claims,
+		"supporting_documents": docs,
+	}, nil
+}
+
 func matchingIngestionJob(jobs []any, jobID string) map[string]any {
 	for _, raw := range jobs {
 		job, _ := raw.(map[string]any)
@@ -5079,6 +5657,16 @@ Usage:
   abra watch git --scope repo:demo --git https://github.com/owner/repo.git [--ref main] [--freshness-seconds 3600] [--wait]
   abra source mcp --scope team:platform --mcp-url https://mcp.example/mcp --tool export_documents --dry-run
   abra source mcp --scope team:platform --mcp-url https://mcp.example/mcp --tool export_documents [--header-env Header=ENV] [--schedule "@every 10m"] [--wait]
+  abra connectors [--scope repo:demo]
+  abra connectors mcp inspect --scope team:platform --mcp-url https://mcp.example/mcp
+  abra connectors mcp validate --scope team:platform --mcp-url https://mcp.example/mcp --tool export_documents
+  abra connectors mcp register --scope team:platform --mcp-url https://mcp.example/mcp --tool export_documents [--wait] [--verify]
+  abra connectors webhook sample --scope team:platform --connector confluence
+  abra connectors webhook test --scope team:platform --connector confluence [--secret-env ABRA_WEBHOOK_SECRET]
+  abra approvals [--scope repo:demo] [--status pending]
+  abra approvals request --scope repo:demo --action agent_write [--target-type document] [--target-id doc...] [--reason "..."]
+  abra approvals approve <approval-id> [--reason "..."]
+  abra approvals reject <approval-id> [--reason "..."]
   abra sources [--scope repo:demo]
   abra jobs [--scope repo:demo]
   abra observe "Agents should rerun release checks before tagging" [--scope repo:demo] [--propose]
@@ -5098,6 +5686,7 @@ Common flags:
 
 First run:
   abra setup
+  abra doctor
   cd /path/to/project
   abra scope
   abra agents bootstrap --agent codex
@@ -5163,10 +5752,14 @@ Source ingestion flags:
 
 Config edits the Abra runtime env file used by abra up. It intentionally only
 exposes core runtime settings needed for local operation and embedding/reranker connection.
+Use these commands, or abra setup, to connect Abra to the embedding model used
+for retrieval and working memory; common local/OpenAI-compatible paths do not
+require manual env file editing.
 Use --embedding-batch-max-items and --embedding-batch-max-tokens to tune provider
 request size when a local model times out or a scaled compatible provider can
 handle larger batches.
 After changing model config, restart with: abra down && abra up
+Check readiness with: abra doctor
 After changing embedding providers, re-ingest important sources for reliable vector recall.
 `
 	case "models", "model":
@@ -5176,7 +5769,7 @@ After changing embedding providers, re-ingest important sources for reliable vec
   abra models logs
   abra models down
 
-Starts and manages the built-in local embedding runner for the default local
+Starts and manages the built-in local embedding and reranker runners for the default local
 Qwen3 setup. Abra keeps the binary lightweight: model weights stay in Docker's
 model cache, while the CLI owns startup, health checks, and lifecycle.
 
@@ -5192,6 +5785,7 @@ Operational flags:
   --base-url       local OpenAI-compatible base URL
   --port           host port for the embedding server, default 8080
   --publish-addr   host address to publish on, default 127.0.0.1
+  --reranker-port  host port for the reranker server, default 8081
 `
 	case "ui", "dashboard":
 		return `Usage:
@@ -5220,6 +5814,26 @@ or @every <N><s|m|h|d> worker refresh cadence. Manual sync still bypasses the
 due check.
 Use --wait-timeout or ABRA_CLI_WAIT_TIMEOUT for slow local model or large repo runs.
 `
+	case "connectors", "connector":
+		return `Usage:
+  abra connectors [--scope repo:demo] [--limit 50] [--json]
+  abra connectors list [--scope repo:demo] [--limit 50] [--json]
+  abra connectors mcp inspect --scope team:platform --mcp-url https://mcp.example/mcp [--bearer-token-env TOKEN_ENV] [--header-env Header=ENV]
+  abra connectors mcp validate --scope team:platform --mcp-url https://mcp.example/mcp --tool export_documents [--manifest connector.json] [--arguments-json '{"space":"ENG"}'] [--document-source-type confluence] [--bearer-token-env TOKEN_ENV] [--header-env Header=ENV]
+  abra connectors mcp register --scope team:platform --mcp-url https://mcp.example/mcp --tool export_documents [--manifest connector.json] [--arguments-json '{"space":"ENG"}'] [--document-source-type confluence] [--bearer-token-env TOKEN_ENV] [--header-env Header=ENV] [--schedule "@every 10m"] [--wait] [--verify] [--verify-query "runbook"]
+  abra connectors webhook sample --scope team:platform --connector confluence [--secret-env ABRA_WEBHOOK_SECRET]
+  abra connectors webhook sign --payload-json '{"scope":"team:platform",...}' --secret-env ABRA_WEBHOOK_SECRET
+  abra connectors webhook test --scope team:platform --connector confluence [--secret-env ABRA_WEBHOOK_SECRET] [--json]
+
+Lightweight connector onboarding commands backed by existing source configs.
+MCP inspect calls upstream tools/list so operators can find export tool names.
+MCP validate calls the upstream MCP tool and exits without registering.
+MCP register creates the MCP source config and queues the initial ingestion job.
+Use --manifest connector.json to keep URL, tool, env refs, schedule, authority,
+and verification query in one declarative file that maps to source_configs.
+Webhook sample/sign/test help overlay connectors verify signed push ingestion.
+Existing abra source mcp commands continue to work unchanged.
+`
 	case "sources":
 		return `Usage:
   abra sources [--scope repo:demo] [--limit 50] [--json]
@@ -5238,6 +5852,17 @@ Resume and backfill may require approval when enforcement is active.
   abra jobs --scope repo:demo [--source-config-id source...] [--limit 20] [--json]
 
 Lists worker ingestion jobs for a scope.
+`
+	case "approvals", "approval":
+		return `Usage:
+  abra approvals [--scope repo:demo] [--status pending] [--limit 50] [--json]
+  abra approvals request --scope repo:demo --action agent_write [--target-type document] [--target-id doc...] [--reason "..."] [--payload-json '{}'] [--metadata-json '{}'] [--json]
+  abra approvals approve <approval-id> [--reason "..."] [--decided-by operator] [--metadata-json '{}'] [--json]
+  abra approvals reject <approval-id> [--reason "..."] [--decided-by operator] [--metadata-json '{}'] [--json]
+
+Creates, lists, approves, or rejects bounded operator approval requests for
+production approval enforcement. Use the returned approval id with commands
+that accept --approval-id.
 `
 	case "observe":
 		return `Usage:
@@ -5337,8 +5962,19 @@ shell token env, and Codex Desktop launch env without printing token values.
 server using the Codex CLI, stores the bearer-token env var name, validates the
 Abra MCP endpoint, and sets the token for the current macOS launch environment
 when available. Fully quit and reopen Codex Desktop after installing or changing
-the token env. Run abra doctor when Codex cannot see Abra; it checks API/MCP
-readiness, model config/readiness, and the current shell token env.
+the token env. No manual Codex config editing is required for this common path.
+
+Common Codex path:
+  abra setup
+  abra doctor
+  cd /path/to/project
+  abra agents bootstrap --agent codex
+  fully quit and reopen Codex Desktop
+  abra agents ready . --scope <scope-from-abra-scope> --json
+
+Run abra mcp status when Codex cannot see Abra; it checks API/MCP readiness,
+Codex registration, token env, and launch environment. Run abra doctor for the
+full model/API/MCP preflight.
 `
 	case "doctor":
 		return `Usage:
@@ -5366,6 +6002,8 @@ chooses the embedding provider used for retrieval/vector search, and can start
 the local stack. This does not configure a chat model or LLM answer model. The
 default local provider uses the built-in Qwen/Qwen3-Embedding-0.6B runner,
 which abra up starts automatically and abra models up/status manages directly.
+Common local, OpenAI, and OpenAI-compatible embedding paths are configured with
+CLI commands only; no manual env file editing is required.
 
 If setup writes config but later commands cannot embed, run abra doctor first.
 For the default local provider, abra up starts the model runner automatically;
@@ -5384,7 +6022,7 @@ Common setup flags:
   --provider-concurrency provider call concurrency, default 1 for local and 4 for compatible
   --api-key             embedding provider API key
   --api-key-stdin       read embedding provider API key from stdin
-  --no-models           do not start the local embedding runner
+  --no-models           do not start the local model runners
   --skip-models         alias for --no-models
   --no-start            write config but do not start the Abra stack
   --skip-up             alias for --no-start
@@ -5397,9 +6035,9 @@ Common setup flags:
   abra install
 
 abra setup is the guided first-run path. abra up starts the default local Qwen
-embedding runner when the env uses EMBEDDING_PROVIDER=local, then starts the
+embedding and reranker runners when the env uses EMBEDDING_PROVIDER=local, then starts the
 local Docker Compose stack non-interactively: Postgres, migrations, API, and
-worker. Use --no-models when you intentionally manage the embedding endpoint
+worker. Use --no-models when you intentionally manage the model endpoints
 yourself. abra install is kept as a compatibility alias for abra setup; the curl
 installer is what installs the CLI binary.
 `
@@ -5507,9 +6145,9 @@ EMBEDDING_TIMEOUT=10m
 ABRA_AI_PROVIDER_CONCURRENCY=1
 ABRA_EMBEDDING_BATCH_MAX_ITEMS=6
 ABRA_EMBEDDING_BATCH_MAX_TOKENS=3000
-RERANKER_PROVIDER=
-RERANKER_BASE_URL=
-RERANKER_MODEL=
+RERANKER_PROVIDER=local
+RERANKER_BASE_URL=http://host.docker.internal:8081/v1
+RERANKER_MODEL=Qwen/Qwen3-Reranker-0.6B-GGUF:Q8_0
 ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=false
 ABRA_LOCAL_EMBEDDING_IMAGE=
 ABRA_LOCAL_EMBEDDING_PULL_POLICY=missing

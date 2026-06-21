@@ -34,6 +34,7 @@ func setup(ctx context.Context, args cliArgs) error {
 	reader := bufio.NewReader(os.Stdin)
 	fmt.Println("Abra setup")
 	fmt.Println("This will check prerequisites, create the runtime env, choose the embedding provider used for retrieval, and optionally start the local stack.")
+	fmt.Println("Common paths write config through CLI commands; no manual env or Codex config editing is required.")
 	fmt.Println()
 	printSetupPrerequisites()
 	fmt.Println("Env file: " + envPath(args))
@@ -62,7 +63,7 @@ func setup(ctx context.Context, args cliArgs) error {
 		startModels := "yes"
 		if interactive && !boolFlag(args, "yes") {
 			var err error
-			startModels, err = promptDefault(reader, "Start local Qwen embedding runner now?", "yes")
+			startModels, err = promptDefault(reader, "Start local Qwen embedding and reranker runners now?", "yes")
 			if err != nil {
 				return err
 			}
@@ -74,7 +75,7 @@ func setup(ctx context.Context, args cliArgs) error {
 			args.Bools["skip-models"] = true
 		} else {
 			fmt.Println("Skipped separate model start.")
-			fmt.Println("abra up starts it automatically for provider=local; use abra models up only to repair it directly.")
+			fmt.Println("abra up starts them automatically for provider=local; use abra models up only to repair them directly.")
 		}
 	}
 	if interactive && !boolFlag(args, "yes") {
@@ -193,7 +194,7 @@ func setupEmbeddingConfig(args cliArgs, reader *bufio.Reader, interactive bool) 
 	if mode == "" {
 		if interactive && !boolFlag(args, "yes") {
 			fmt.Println("Embedding provider (used for retrieval, not chat/LLM answers):")
-			fmt.Println("  1. local - built-in Qwen3 embedding runner")
+			fmt.Println("  1. local - built-in Qwen3 embedding and reranker runners")
 			fmt.Println("  2. compatible - custom OpenAI-compatible embedding endpoint")
 			fmt.Println("  3. openai - OpenAI text-embedding-3-small convenience alias")
 			choice, err := promptDefault(reader, "Choose embedding provider [1/2/3]", "1")
@@ -276,9 +277,9 @@ func setupLocalNeuralEmbeddings(args cliArgs, reader *bufio.Reader, interactive 
 	baseURL := containerReachableBaseURL(setupEmbeddingBaseURL(args, defaultEmbeddingBaseURL))
 	model := setupEmbeddingModel(args, defaultServedModelName)
 	dimensions := firstNonEmpty(flag(args, "dimensions", ""), "1024")
-	rerankerProvider := firstNonEmpty(flag(args, "reranker-provider", ""), "")
-	rerankerBaseURL := firstNonEmpty(flag(args, "reranker-base-url", ""), "")
-	rerankerModel := firstNonEmpty(flag(args, "reranker-model", ""), "")
+	rerankerProvider := firstNonEmpty(flag(args, "reranker-provider", ""), "local")
+	rerankerBaseURL := firstNonEmpty(flag(args, "reranker-base-url", ""), defaultRerankerBaseURLForProvider(rerankerProvider))
+	rerankerModel := firstNonEmpty(flag(args, "reranker-model", ""), defaultRerankerModelForProvider(rerankerProvider))
 	apiKey := flag(args, "api-key", "")
 	if apiKey == "" && boolFlag(args, "api-key-stdin") {
 		bytes, err := io.ReadAll(os.Stdin)
@@ -301,22 +302,25 @@ func setupLocalNeuralEmbeddings(args cliArgs, reader *bufio.Reader, interactive 
 		if err != nil {
 			return err
 		}
-		if strings.TrimSpace(rerankerProvider) != "" || strings.TrimSpace(rerankerBaseURL) != "" {
-			rerankerProvider, err = promptDefault(reader, "Reranker provider", rerankerProvider)
-			if err != nil {
-				return err
-			}
-			rerankerBaseURL, err = promptDefault(reader, "Reranker base URL", rerankerBaseURL)
-			if err != nil {
-				return err
-			}
-			rerankerModel, err = promptDefault(reader, "Reranker request model", rerankerModel)
-			if err != nil {
-				return err
-			}
+		rerankerProvider, err = promptDefault(reader, "Reranker provider", rerankerProvider)
+		if err != nil {
+			return err
+		}
+		rerankerBaseURL, err = promptDefault(reader, "Reranker base URL", rerankerBaseURL)
+		if err != nil {
+			return err
+		}
+		rerankerModel, err = promptDefault(reader, "Reranker request model", rerankerModel)
+		if err != nil {
+			return err
 		}
 	}
 	baseURL = containerReachableBaseURL(strings.TrimSpace(baseURL))
+	rerankerBaseURL = containerReachableBaseURL(strings.TrimSpace(rerankerBaseURL))
+	if isDisabledProviderName(rerankerProvider) {
+		rerankerBaseURL = ""
+		rerankerModel = ""
+	}
 	if err := updateEnvValues(args, map[string]string{
 		"EMBEDDING_PROVIDER":                   "local",
 		"EMBEDDING_BASE_URL":                   strings.TrimRight(strings.TrimSpace(baseURL), "/"),
@@ -336,8 +340,10 @@ func setupLocalNeuralEmbeddings(args cliArgs, reader *bufio.Reader, interactive 
 		return err
 	}
 	fmt.Println("Embedding: local neural default (Qwen3-compatible)")
-	fmt.Println("Local model runner: started automatically by abra up; inspect with abra models status")
+	fmt.Println("Reranker: local neural default (Qwen3-compatible)")
+	fmt.Println("Local model runners: started automatically by abra up; inspect with abra models status")
 	fmt.Println("Host endpoint: embedding http://127.0.0.1:8080/v1")
+	fmt.Println("Host endpoint: reranker  http://127.0.0.1:8081/v1")
 	fmt.Println("Compose endpoints are written as host.docker.internal so Abra containers can reach those host services.")
 	fmt.Println("After changing embedding providers, re-ingest important sources so vector recall uses the new embedding space.")
 	return nil
@@ -465,17 +471,20 @@ func printSetupNext(args cliArgs) {
 	label := setupProviderLabel(values)
 	fmt.Println("Next:")
 	fmt.Println("  abra up --env-file " + envPath(args))
+	fmt.Println("  abra doctor")
 	fmt.Println("  From a source checkout, use `go run ./cmd/abra <command>` instead of `abra <command>` until the release binary is installed.")
 	if !isLocalProviderName(provider) && provider != "" {
 		fmt.Println("  verify your " + label + " embedding endpoint is reachable from Abra")
 	}
+	fmt.Println("Codex MCP and repo onboarding:")
 	fmt.Println("  cd /path/to/project")
 	fmt.Println("  abra scope")
-	fmt.Println("  abra agents bootstrap --agent codex")
+	fmt.Println("  abra agents bootstrap --agent codex   # installs Codex MCP, ingests this repo, and verifies")
 	fmt.Println("  fully quit and reopen Codex Desktop")
 	fmt.Println("  abra agents ready . --scope <scope-from-abra-scope> --json")
 	fmt.Println(`  abra think "What should I know before changing this project?" --scope <scope-from-abra-scope>`)
 	fmt.Println("Manual alternative to bootstrap:")
+	fmt.Println("  abra mcp status")
 	fmt.Println("  abra agents init --agent codex")
 	fmt.Println("  abra agents verify . --scope <scope-from-abra-scope>")
 	fmt.Println("  abra ingest . --code --scope <scope-from-abra-scope>   # only if verify reports missing scope or empty memory")

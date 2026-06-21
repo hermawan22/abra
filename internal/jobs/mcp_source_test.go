@@ -87,6 +87,103 @@ func TestValidateMCPSourceCallsToolAndNormalizesStructuredDocuments(t *testing.T
 	}
 }
 
+func TestListMCPToolsCallsUpstreamToolsList(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if body["method"] != "tools/list" {
+			t.Fatalf("method = %v, want tools/list", body["method"])
+		}
+		writeMCPTestJSON(t, w, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      body["id"],
+			"result": map[string]any{
+				"tools": []map[string]any{{
+					"name":        "export_documents",
+					"description": "Export normalized documents.",
+					"inputSchema": map[string]any{"type": "object"},
+				}},
+			},
+		})
+	}))
+	defer server.Close()
+
+	tools, err := ListMCPTools(context.Background(), SourceConfig{
+		ID:         "mcp-confluence",
+		Scope:      "repo:abra",
+		SourceType: ingest.SourceTypeMCP,
+		BaseURL:    server.URL,
+		Config:     map[string]any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tools) != 1 || tools[0].Name != "export_documents" || tools[0].Description == "" {
+		t.Fatalf("tools = %#v", tools)
+	}
+}
+
+func TestValidateMCPSourceReportReturnsWarnings(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		writeMCPTestJSON(t, w, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      body["id"],
+			"result": map[string]any{
+				"structuredContent": map[string]any{
+					"documents": []map[string]any{
+						{
+							"scope":             "repo:other",
+							"source_url":        "https://wiki.example/pages/123",
+							"title":             "Platform Decision",
+							"content":           "Use Abra for governed agent memory.",
+							"source_updated_at": "not-a-date",
+						},
+						{
+							"source_url": "https://wiki.example/pages/123",
+							"title":      "Platform Decision Copy",
+							"content":    "Use Abra for governed agent memory.",
+						},
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	report, err := ValidateMCPSourceReport(context.Background(), SourceConfig{
+		ID:            "mcp-confluence",
+		Scope:         "repo:abra",
+		SourceType:    ingest.SourceTypeMCP,
+		BaseURL:       server.URL,
+		ConnectorKind: "confluence",
+		Config:        map[string]any{"tool": "export_documents"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "ok" || report.Count != 2 || len(report.Documents) != 2 {
+		t.Fatalf("report = %#v", report)
+	}
+	for _, want := range []string{"scope_mismatch", "invalid_source_updated_at", "duplicate_source_url", "missing_source_updated_at"} {
+		found := false
+		for _, warning := range report.Warnings {
+			if warning.Code == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("warnings missing %s: %#v", want, report.Warnings)
+		}
+	}
+}
+
 func TestValidateMCPSourceRejectsStructuredDocumentsMissingRequiredFields(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -259,6 +356,107 @@ func TestValidateMCPSourceRejectsMissingCredentialEnv(t *testing.T) {
 				t.Fatalf("error = %q, want substring %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestValidateMCPSourceRejectsOversizedResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(strings.Repeat("x", defaultMCPSourceMaxResponseBytes+1)))
+	}))
+	defer server.Close()
+
+	_, err := ValidateMCPSource(context.Background(), SourceConfig{
+		ID:            "mcp-confluence",
+		Scope:         "repo:abra",
+		SourceType:    ingest.SourceTypeMCP,
+		BaseURL:       server.URL,
+		ConnectorKind: "confluence",
+		Config:        map[string]any{"tool": "export_documents"},
+	})
+	if err == nil {
+		t.Fatal("expected oversized response error")
+	}
+	if !strings.Contains(err.Error(), "response exceeds") {
+		t.Fatalf("error = %q, want response exceeds", err)
+	}
+}
+
+func TestValidateMCPSourceRejectsTooManyDocuments(t *testing.T) {
+	documents := make([]map[string]any, 0, defaultMCPSourceMaxDocuments+1)
+	for index := 0; index < defaultMCPSourceMaxDocuments+1; index++ {
+		documents = append(documents, map[string]any{
+			"source_url": "https://wiki.example/pages/doc",
+			"title":      "Platform Decision",
+			"content":    "Use Abra for governed agent memory.",
+		})
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		writeMCPTestJSON(t, w, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      body["id"],
+			"result": map[string]any{
+				"structuredContent": map[string]any{"documents": documents},
+			},
+		})
+	}))
+	defer server.Close()
+
+	_, err := ValidateMCPSource(context.Background(), SourceConfig{
+		ID:            "mcp-confluence",
+		Scope:         "repo:abra",
+		SourceType:    ingest.SourceTypeMCP,
+		BaseURL:       server.URL,
+		ConnectorKind: "confluence",
+		Config:        map[string]any{"tool": "export_documents"},
+	})
+	if err == nil {
+		t.Fatal("expected document limit error")
+	}
+	if !strings.Contains(err.Error(), "returned 51 documents; limit is 50") {
+		t.Fatalf("error = %q, want document limit", err)
+	}
+}
+
+func TestValidateMCPSourceRejectsOversizedDocumentContent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		writeMCPTestJSON(t, w, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      body["id"],
+			"result": map[string]any{
+				"structuredContent": map[string]any{
+					"documents": []map[string]any{{
+						"source_url": "https://wiki.example/pages/large",
+						"title":      "Large Export",
+						"content":    strings.Repeat("x", defaultMCPSourceMaxDocumentContentBytes+1),
+					}},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	_, err := ValidateMCPSource(context.Background(), SourceConfig{
+		ID:            "mcp-confluence",
+		Scope:         "repo:abra",
+		SourceType:    ingest.SourceTypeMCP,
+		BaseURL:       server.URL,
+		ConnectorKind: "confluence",
+		Config:        map[string]any{"tool": "export_documents"},
+	})
+	if err == nil {
+		t.Fatal("expected content limit error")
+	}
+	if !strings.Contains(err.Error(), "content with") || !strings.Contains(err.Error(), "limit is") {
+		t.Fatalf("error = %q, want content limit", err)
 	}
 }
 

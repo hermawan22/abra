@@ -30,6 +30,8 @@ func (h *handler) createApproval(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAccess(w, r, authActionWrite, input.Scope) {
 		return
 	}
+	input.Metadata = approvalActorMetadata(input.Metadata, "client_requested_by", input.RequestedBy)
+	input.RequestedBy = authenticatedApprovalActor(r)
 	approval, err := h.db.CreateApprovalRequest(r.Context(), input)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -57,6 +59,8 @@ func (h *handler) decideApproval(w http.ResponseWriter, r *http.Request, approve
 	}
 	var input store.DecideApprovalRequestInput
 	_ = json.NewDecoder(r.Body).Decode(&input)
+	input.Metadata = approvalActorMetadata(input.Metadata, "client_decided_by", input.DecidedBy)
+	input.DecidedBy = authenticatedApprovalActor(r)
 	if approved {
 		approval, err = h.db.ApproveApprovalRequest(r.Context(), approval.ID, input)
 	} else {
@@ -67,4 +71,27 @@ func (h *handler) decideApproval(w http.ResponseWriter, r *http.Request, approve
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"approval": approval})
+}
+
+func authenticatedApprovalActor(r *http.Request) string {
+	principal := principalFromContext(r.Context())
+	if principal == nil || strings.TrimSpace(principal.token) == "" {
+		return "anonymous-dev"
+	}
+	ref := hashedRateLimitKey("api-key", principal.token)
+	const maxActorRef = len("api-key:sha256:") + 16
+	if len(ref) > maxActorRef {
+		return ref[:maxActorRef]
+	}
+	return ref
+}
+
+func approvalActorMetadata(metadata map[string]any, key, clientValue string) map[string]any {
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	if clientValue = strings.TrimSpace(clientValue); clientValue != "" {
+		metadata[key] = clientValue
+	}
+	return metadata
 }

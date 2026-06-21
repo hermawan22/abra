@@ -45,7 +45,7 @@ func newFakeDocker(t *testing.T) *fakeDocker {
 	if err := os.Chmod(filepath.Join(bin, "docker"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeFakeDockerState(t, state, fakeDockerState{Labels: map[string]string{}})
+	writeFakeDockerState(t, state, defaultEmbeddingContainer, fakeDockerState{Labels: map[string]string{}})
 	t.Setenv("ABRA_FAKE_DOCKER_STATE", state)
 	t.Setenv("ABRA_FAKE_DOCKER_LOG", log)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -53,11 +53,15 @@ func newFakeDocker(t *testing.T) *fakeDocker {
 }
 
 func (f *fakeDocker) seedContainer(image string, labels map[string]string) {
+	f.seedNamedContainer(defaultEmbeddingContainer, image, labels)
+}
+
+func (f *fakeDocker) seedNamedContainer(name, image string, labels map[string]string) {
 	f.t.Helper()
 	if labels == nil {
 		labels = map[string]string{}
 	}
-	writeFakeDockerState(f.t, f.state, fakeDockerState{
+	writeFakeDockerState(f.t, f.state, name, fakeDockerState{
 		Exists: true,
 		Image:  image,
 		Labels: labels,
@@ -68,7 +72,7 @@ func (f *fakeDocker) writeLogs(text string) {
 	f.t.Helper()
 	state := readFakeDockerState(f.t, f.state)
 	state.Logs = text
-	writeFakeDockerState(f.t, f.state, state)
+	writeFakeDockerState(f.t, f.state, defaultEmbeddingContainer, state)
 }
 
 func (f *fakeDocker) calls() []fakeDockerCall {
@@ -103,7 +107,17 @@ state="${ABRA_FAKE_DOCKER_STATE:?}"
 log="${ABRA_FAKE_DOCKER_LOG:?}"
 mkdir -p "$state" "$(dirname "$log")"
 printf '%s\t%s\n' "$PWD" "$*" >> "$log"
-exists="$(cat "$state/exists" 2>/dev/null || printf 0)"
+mkdir -p "$state/containers"
+container_dir() {
+  printf '%s/containers/%s' "$state" "$1"
+}
+container_exists() {
+  if [ -f "$(container_dir "$1")/exists" ]; then
+    cat "$(container_dir "$1")/exists"
+  else
+    printf 0
+  fi
+}
 cmd="${1:-}"
 if [ "$#" -gt 0 ]; then
   shift
@@ -111,27 +125,37 @@ fi
 case "$cmd" in
   container)
     sub="${1:-}"
-    if [ "$sub" != "inspect" ] || [ "$exists" != "1" ]; then
-      exit 1
+    if [ "$#" -gt 0 ]; then
+      shift
     fi
     format=""
     previous=""
+    name=""
     for arg in "$@"; do
       if [ "$previous" = "--format" ]; then
         format="$arg"
-        break
+        previous=""
+        continue
       fi
-      previous="$arg"
+      if [ "$arg" = "--format" ]; then
+        previous="--format"
+        continue
+      fi
+      name="$arg"
     done
+    if [ "$sub" != "inspect" ] || [ -z "$name" ] || [ "$(container_exists "$name")" != "1" ]; then
+      exit 1
+    fi
+    dir="$(container_dir "$name")"
     if [ "$format" = "{{.Config.Image}}" ]; then
-      cat "$state/image"
+      cat "$dir/image"
       printf '\n'
       exit 0
     fi
     case "$format" in
       *Config.Labels*)
         label="$(printf '%s\n' "$format" | sed -n 's/.*"\([^"]*\)".*/\1/p')"
-        value="$(grep -F "$label=" "$state/labels" 2>/dev/null | tail -n 1 | cut -d= -f2- || true)"
+        value="$(grep -F "$label=" "$dir/labels" 2>/dev/null | tail -n 1 | cut -d= -f2- || true)"
         if [ -n "$value" ]; then
           printf '%s\n' "$value"
         else
@@ -141,16 +165,20 @@ case "$cmd" in
     esac
     ;;
   run)
-    printf 1 > "$state/exists"
-    : > "$state/labels"
     image=""
+    name=""
+    labels_file="$(mktemp)"
     while [ "$#" -gt 0 ]; do
       case "$1" in
-        --name|--pull|-p|-v)
+        --name)
+          name="$2"
+          shift 2
+          ;;
+        --pull|-p|-v)
           shift 2
           ;;
         --label)
-          printf '%s\n' "$2" >> "$state/labels"
+          printf '%s\n' "$2" >> "$labels_file"
           shift 2
           ;;
         -d)
@@ -175,28 +203,56 @@ case "$cmd" in
     if [ -z "$image" ]; then
       exit 1
     fi
-    printf '%s' "$image" > "$state/image"
+    if [ -z "$name" ]; then
+      exit 1
+    fi
+    dir="$(container_dir "$name")"
+    mkdir -p "$dir"
+    printf 1 > "$dir/exists"
+    cp "$labels_file" "$dir/labels"
+    rm -f "$labels_file"
+    printf '%s' "$image" > "$dir/image"
+    : > "$dir/logs"
     printf 'fake-container-id\n'
     ;;
   start)
-    if [ "$exists" != "1" ]; then
+    name="${1:-}"
+    if [ "$(container_exists "$name")" != "1" ]; then
       exit 1
     fi
-    printf '%s\n' "${1:-}"
+    printf '%s\n' "$name"
     ;;
   rm)
-    printf 0 > "$state/exists"
     if [ "${1:-}" = "-f" ]; then
-      printf '%s\n' "${2:-}"
+      name="${2:-}"
     else
-      printf '%s\n' "${1:-}"
+      name="${1:-}"
     fi
+    if [ -n "$name" ]; then
+      dir="$(container_dir "$name")"
+      mkdir -p "$dir"
+      printf 0 > "$dir/exists"
+    fi
+    printf '%s\n' "$name"
     ;;
   logs)
-    if [ "$exists" != "1" ]; then
+    name=""
+    previous=""
+    for arg in "$@"; do
+      if [ "$previous" = "--tail" ]; then
+        previous=""
+        continue
+      fi
+      if [ "$arg" = "--tail" ]; then
+        previous="--tail"
+        continue
+      fi
+      name="$arg"
+    done
+    if [ -z "$name" ] || [ "$(container_exists "$name")" != "1" ]; then
       exit 1
     fi
-    cat "$state/logs" 2>/dev/null || true
+    cat "$(container_dir "$name")/logs" 2>/dev/null || true
     ;;
   *)
     exit 1
@@ -207,24 +263,25 @@ esac
 
 func readFakeDockerState(t *testing.T, path string) fakeDockerState {
 	t.Helper()
-	state, err := loadFakeDockerState(path)
+	state, err := loadFakeDockerState(path, defaultEmbeddingContainer)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return state
 }
 
-func loadFakeDockerState(path string) (fakeDockerState, error) {
-	exists, _ := os.ReadFile(filepath.Join(path, "exists"))
-	image, _ := os.ReadFile(filepath.Join(path, "image"))
-	logs, _ := os.ReadFile(filepath.Join(path, "logs"))
+func loadFakeDockerState(path, name string) (fakeDockerState, error) {
+	containerPath := filepath.Join(path, "containers", name)
+	exists, _ := os.ReadFile(filepath.Join(containerPath, "exists"))
+	image, _ := os.ReadFile(filepath.Join(containerPath, "image"))
+	logs, _ := os.ReadFile(filepath.Join(containerPath, "logs"))
 	state := fakeDockerState{
 		Exists: strings.TrimSpace(string(exists)) == "1",
 		Image:  strings.TrimSpace(string(image)),
 		Logs:   string(logs),
 		Labels: map[string]string{},
 	}
-	rawLabels, _ := os.ReadFile(filepath.Join(path, "labels"))
+	rawLabels, _ := os.ReadFile(filepath.Join(containerPath, "labels"))
 	for _, line := range strings.Split(string(rawLabels), "\n") {
 		key, value, ok := strings.Cut(line, "=")
 		if ok {
@@ -237,31 +294,32 @@ func loadFakeDockerState(path string) (fakeDockerState, error) {
 	return state, nil
 }
 
-func writeFakeDockerState(t *testing.T, path string, state fakeDockerState) {
+func writeFakeDockerState(t *testing.T, path, name string, state fakeDockerState) {
 	t.Helper()
-	if err := saveFakeDockerState(path, state); err != nil {
+	if err := saveFakeDockerState(path, name, state); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func saveFakeDockerState(path string, state fakeDockerState) error {
+func saveFakeDockerState(path, name string, state fakeDockerState) error {
 	if state.Labels == nil {
 		state.Labels = map[string]string{}
 	}
-	if err := os.MkdirAll(path, 0o755); err != nil {
+	containerPath := filepath.Join(path, "containers", name)
+	if err := os.MkdirAll(containerPath, 0o755); err != nil {
 		return err
 	}
 	exists := "0"
 	if state.Exists {
 		exists = "1"
 	}
-	if err := os.WriteFile(filepath.Join(path, "exists"), []byte(exists), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(containerPath, "exists"), []byte(exists), 0o644); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(path, "image"), []byte(state.Image), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(containerPath, "image"), []byte(state.Image), 0o644); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(path, "logs"), []byte(state.Logs), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(containerPath, "logs"), []byte(state.Logs), 0o644); err != nil {
 		return err
 	}
 	var labels strings.Builder
@@ -271,16 +329,30 @@ func saveFakeDockerState(path string, state fakeDockerState) error {
 		labels.WriteString(value)
 		labels.WriteString("\n")
 	}
-	return os.WriteFile(filepath.Join(path, "labels"), []byte(labels.String()), 0o644)
+	return os.WriteFile(filepath.Join(containerPath, "labels"), []byte(labels.String()), 0o644)
 }
 
 func newEmbeddingServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/v1/embeddings" {
-			t.Fatalf("embedding request = %s %s", r.Method, r.URL.Path)
+		if r.Method != http.MethodPost {
+			t.Fatalf("model request = %s %s", r.Method, r.URL.Path)
 		}
-		writeTestJSON(t, w, map[string]any{"data": []map[string]any{{"embedding": []float64{0.1}}}})
+		switch r.URL.Path {
+		case "/v1/embeddings":
+			writeTestJSON(t, w, map[string]any{"data": []map[string]any{{"embedding": []float64{0.1}}}})
+		case "/v1/rerank":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode rerank request: %v", err)
+			}
+			if _, ok := body["documents"]; !ok {
+				t.Fatalf("rerank request missing documents: %#v", body)
+			}
+			writeTestJSON(t, w, map[string]any{"results": []map[string]any{{"index": 0, "score": 1.0}}})
+		default:
+			t.Fatalf("model request = %s %s", r.Method, r.URL.Path)
+		}
 	}))
 }
 
@@ -296,6 +368,9 @@ func setupModelsLifecycleTest(t *testing.T) (string, *httptest.Server, *fakeDock
 		"EMBEDDING_MODEL=" + defaultServedModelName,
 		"EMBEDDING_DIMENSIONS=1024",
 		"EMBEDDING_TIMEOUT=10m",
+		"RERANKER_PROVIDER=local",
+		"RERANKER_BASE_URL=http://host.docker.internal:8081/v1",
+		"RERANKER_MODEL=" + defaultRerankerServedModelName,
 		"",
 	}, "\n"))
 	server := newEmbeddingServer(t)
@@ -313,17 +388,18 @@ func TestModelsUpCreatesContainerAndSyncsEnv(t *testing.T) {
 		runErr = run(context.Background(), []string{
 			"models", "up",
 			"--base-url", server.URL + "/v1",
+			"--reranker-base-url", server.URL + "/v1",
 			"--cache-dir", cacheDir,
 		})
 	})
 	if runErr != nil {
 		t.Fatalf("models up error = %v", runErr)
 	}
-	if !strings.Contains(output, "Local embeddings ready") {
+	if !strings.Contains(output, "Local embedding ready") || !strings.Contains(output, "Local reranker ready") {
 		t.Fatalf("models up output missing readiness:\n%s", output)
 	}
 	calls := docker.calls()
-	runCall := findFakeDockerCall(t, calls, "run")
+	runCall := findFakeDockerRunByName(t, calls, defaultEmbeddingContainer)
 	wantPort := portFromBaseURL(server.URL + "/v1")
 	for _, want := range []string{
 		"--name", defaultEmbeddingContainer,
@@ -342,6 +418,20 @@ func TestModelsUpCreatesContainerAndSyncsEnv(t *testing.T) {
 			t.Fatalf("docker run missing %q:\n%v", want, runCall.Args)
 		}
 	}
+	rerankRun := findFakeDockerRunByName(t, calls, defaultRerankerContainer)
+	for _, want := range []string{
+		"--name", defaultRerankerContainer,
+		"--label", localRerankerModelLabel + "=" + defaultRerankerModelID,
+		"-p", "127.0.0.1:" + wantPort + ":8080",
+		defaultTEIImage(),
+		"-hf", defaultRerankerModelID,
+		"--reranking",
+		"--pooling", "rank",
+	} {
+		if !slices.Contains(rerankRun.Args, want) {
+			t.Fatalf("docker reranker run missing %q:\n%v", want, rerankRun.Args)
+		}
+	}
 	values, err := readEnvValues(filepath.Join(home, "quickstart.env"))
 	if err != nil {
 		t.Fatal(err)
@@ -350,13 +440,21 @@ func TestModelsUpCreatesContainerAndSyncsEnv(t *testing.T) {
 	if values["EMBEDDING_BASE_URL"] != wantBaseURL {
 		t.Fatalf("base url = %q", values["EMBEDDING_BASE_URL"])
 	}
+	if values["RERANKER_BASE_URL"] != wantBaseURL {
+		t.Fatalf("reranker base url = %q", values["RERANKER_BASE_URL"])
+	}
+	if values["RERANKER_PROVIDER"] != "local" || values["RERANKER_MODEL"] != defaultRerankerServedModelName {
+		t.Fatalf("reranker config = provider %q model %q", values["RERANKER_PROVIDER"], values["RERANKER_MODEL"])
+	}
 }
 
 func TestModelsUpStartsExistingMatchingContainer(t *testing.T) {
 	_, server, docker := setupModelsLifecycleTest(t)
-	args := parseArgs([]string{"models", "up", "--base-url", server.URL + "/v1"})
+	args := parseArgs([]string{"models", "up", "--base-url", server.URL + "/v1", "--reranker-base-url", server.URL + "/v1"})
 	cfg := embeddingRunner(args)
 	docker.seedContainer(cfg.Image, map[string]string{localRunnerHashLabel: localRunnerConfigHash(cfg)})
+	rerankerCfg := rerankerRunner(args)
+	docker.seedNamedContainer(rerankerCfg.Container, rerankerCfg.Image, map[string]string{localRerankerRunnerHashLabel: localRunnerConfigHash(rerankerCfg)})
 
 	if err := modelsUp(context.Background(), args); err != nil {
 		t.Fatalf("models up error = %v", err)
@@ -369,13 +467,16 @@ func TestModelsUpStartsExistingMatchingContainer(t *testing.T) {
 	if !slices.Contains(start.Args, defaultEmbeddingContainer) {
 		t.Fatalf("docker start args = %v", start.Args)
 	}
+	if !hasFakeDockerStart(calls, defaultRerankerContainer) {
+		t.Fatalf("missing reranker start: %#v", calls)
+	}
 }
 
 func TestModelsUpRecreatesContainerWhenConfigHashDiffers(t *testing.T) {
 	_, server, docker := setupModelsLifecycleTest(t)
 	docker.seedContainer(defaultTEIImage(), map[string]string{localRunnerHashLabel: "stale"})
 
-	if err := run(context.Background(), []string{"models", "up", "--base-url", server.URL + "/v1"}); err != nil {
+	if err := run(context.Background(), []string{"models", "up", "--base-url", server.URL + "/v1", "--reranker-base-url", server.URL + "/v1"}); err != nil {
 		t.Fatalf("models up error = %v", err)
 	}
 	calls := docker.calls()
@@ -386,11 +487,43 @@ func TestModelsUpRecreatesContainerWhenConfigHashDiffers(t *testing.T) {
 	}
 }
 
+func TestModelsUpSkipsLocalRerankerForCustomRerankerProvider(t *testing.T) {
+	home, server, docker := setupModelsLifecycleTest(t)
+	envFile := filepath.Join(home, "quickstart.env")
+	mustWrite(t, envFile, strings.Join([]string{
+		"EMBEDDING_PROVIDER=local",
+		"EMBEDDING_BASE_URL=http://host.docker.internal:8080/v1",
+		"EMBEDDING_MODEL=" + defaultServedModelName,
+		"EMBEDDING_DIMENSIONS=1024",
+		"RERANKER_PROVIDER=compatible",
+		"RERANKER_BASE_URL=https://rerank.example/v1",
+		"RERANKER_MODEL=custom-reranker",
+		"",
+	}, "\n"))
+
+	if err := run(context.Background(), []string{"models", "up", "--base-url", server.URL + "/v1"}); err != nil {
+		t.Fatalf("models up error = %v", err)
+	}
+	calls := docker.calls()
+	if hasFakeDockerRun(calls, defaultRerankerContainer) {
+		t.Fatalf("custom reranker provider should not start local reranker: %#v", calls)
+	}
+	values, err := readEnvValues(envFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if values["RERANKER_PROVIDER"] != "compatible" || values["RERANKER_BASE_URL"] != "https://rerank.example/v1" || values["RERANKER_MODEL"] != "custom-reranker" {
+		t.Fatalf("custom reranker config was not preserved: %#v", values)
+	}
+}
+
 func TestModelsStatusJSONIncludesDockerConfigMatch(t *testing.T) {
 	_, server, docker := setupModelsLifecycleTest(t)
-	args := parseArgs([]string{"models", "status", "--json", "--base-url", server.URL + "/v1"})
+	args := parseArgs([]string{"models", "status", "--json", "--base-url", server.URL + "/v1", "--reranker-base-url", server.URL + "/v1"})
 	cfg := embeddingRunner(args)
 	docker.seedContainer(cfg.Image, map[string]string{localRunnerHashLabel: localRunnerConfigHash(cfg)})
+	rerankerCfg := rerankerRunner(args)
+	docker.seedNamedContainer(rerankerCfg.Container, rerankerCfg.Image, map[string]string{localRerankerRunnerHashLabel: localRunnerConfigHash(rerankerCfg)})
 
 	var statusErr error
 	output := captureStdout(t, func() {
@@ -405,6 +538,10 @@ func TestModelsStatusJSONIncludesDockerConfigMatch(t *testing.T) {
 	}
 	if status["ready"] != true || status["config_matches"] != true {
 		t.Fatalf("status = %#v", status)
+	}
+	rerankerStatus, ok := status["reranker"].(map[string]any)
+	if !ok || rerankerStatus["ready"] != true || rerankerStatus["config_matches"] != true {
+		t.Fatalf("reranker status = %#v", status["reranker"])
 	}
 	if status["expected_config_hash"] == "" || status["container_config_hash"] == "" {
 		t.Fatalf("missing config hashes: %#v", status)
@@ -473,6 +610,35 @@ func findFakeDockerCall(t *testing.T, calls []fakeDockerCall, command string) fa
 	}
 	t.Fatalf("missing docker %s call in %#v", command, calls)
 	return fakeDockerCall{}
+}
+
+func findFakeDockerRunByName(t *testing.T, calls []fakeDockerCall, name string) fakeDockerCall {
+	t.Helper()
+	for _, call := range calls {
+		if len(call.Args) > 2 && call.Args[0] == "run" && slices.Contains(call.Args, "--name") && slices.Contains(call.Args, name) {
+			return call
+		}
+	}
+	t.Fatalf("missing docker run for %s in %#v", name, calls)
+	return fakeDockerCall{}
+}
+
+func hasFakeDockerStart(calls []fakeDockerCall, name string) bool {
+	for _, call := range calls {
+		if len(call.Args) > 1 && call.Args[0] == "start" && call.Args[1] == name {
+			return true
+		}
+	}
+	return false
+}
+
+func hasFakeDockerRun(calls []fakeDockerCall, name string) bool {
+	for _, call := range calls {
+		if len(call.Args) > 2 && call.Args[0] == "run" && slices.Contains(call.Args, "--name") && slices.Contains(call.Args, name) {
+			return true
+		}
+	}
+	return false
 }
 
 func hasFakeDockerCall(calls []fakeDockerCall, command string) bool {

@@ -280,8 +280,51 @@ func TestOpenAICompatibleProviderReranks(t *testing.T) {
 	if requestBody["model"] != "rerank-model" {
 		t.Fatalf("model = %v", requestBody["model"])
 	}
+	if _, ok := requestBody["texts"]; !ok {
+		t.Fatalf("compatible rerank body missing texts: %#v", requestBody)
+	}
+	if _, ok := requestBody["documents"]; ok {
+		t.Fatalf("compatible rerank body should not include documents: %#v", requestBody)
+	}
 	if len(response.Results) != 2 || response.Results[0].Index != 1 {
 		t.Fatalf("results = %#v", response.Results)
+	}
+}
+
+func TestOpenAICompatibleProviderLocalRerankUsesDocuments(t *testing.T) {
+	var requestBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/rerank" {
+			t.Fatalf("path = %s, want /rerank", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_, _ = w.Write([]byte(`{"model":"rerank-model","results":[{"index":0,"score":0.91}]}`))
+	}))
+	defer server.Close()
+
+	provider, err := NewOpenAICompatibleProvider(OpenAICompatibleConfig{
+		Name:          "local",
+		BaseURL:       server.URL,
+		RerankerModel: "rerank-model",
+	}, server.Client())
+	if err != nil {
+		t.Fatalf("NewOpenAICompatibleProvider() error = %v", err)
+	}
+
+	if _, err := provider.Rerank(context.Background(), RerankRequest{
+		Query:     "abra memory",
+		Documents: []string{"doc one"},
+		TopN:      1,
+	}); err != nil {
+		t.Fatalf("Rerank() error = %v", err)
+	}
+	if _, ok := requestBody["documents"]; !ok {
+		t.Fatalf("local rerank body missing documents: %#v", requestBody)
+	}
+	if _, ok := requestBody["texts"]; ok {
+		t.Fatalf("local rerank body should not include texts: %#v", requestBody)
 	}
 }
 

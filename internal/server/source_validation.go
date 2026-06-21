@@ -60,7 +60,7 @@ func (h *handler) validateMCPSourceRecord(w http.ResponseWriter, r *http.Request
 	if sourceID == "" {
 		sourceID = "validation-" + sourceConfigApprovalTarget(input)
 	}
-	docs, err := jobs.ValidateMCPSource(r.Context(), jobs.SourceConfig{
+	report, err := jobs.ValidateMCPSourceReport(r.Context(), jobs.SourceConfig{
 		ID:             sourceID,
 		Scope:          input.Scope,
 		SourceType:     ingest.SourceTypeMCP,
@@ -75,5 +75,5 @@ func (h *handler) validateMCPSourceRecord(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		return nil, false, err
 	}
-	return map[string]any{"status": "ok", "documents": docs, "count": len(docs)}, true, nil
+	return map[string]any{"status": report.Status, "documents": report.Documents, "count": report.Count, "warnings": report.Warnings}, true, nil
 }

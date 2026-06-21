@@ -100,6 +100,49 @@ func TestSourceConfigLifecycleMCPToolsAreDiscoverable(t *testing.T) {
 	}
 }
 
+func TestConnectorSourceMCPAliasesAreDiscoverable(t *testing.T) {
+	for _, tc := range []struct {
+		alias     string
+		canonical string
+	}{
+		{"validate_connector_source", "validate_mcp_source"},
+		{"upsert_connector_source", "upsert_source_config"},
+		{"list_connector_sources", "list_source_configs"},
+		{"get_connector_source", "get_source_config"},
+		{"set_connector_source_status", "set_source_config_status"},
+		{"sync_connector_source", "enqueue_ingestion_job"},
+	} {
+		aliasTool := mcpTool(t, tc.alias)
+		description, _ := aliasTool["description"].(string)
+		if !strings.Contains(strings.ToLower(description), "connector") {
+			t.Fatalf("%s description = %q, want connector onboarding language", tc.alias, description)
+		}
+		if mcpToolTraceName(tc.alias) != tc.alias {
+			t.Fatalf("trace name for %s = %q", tc.alias, mcpToolTraceName(tc.alias))
+		}
+
+		aliasSchema := mcpToolSchema(t, tc.alias)
+		canonicalSchema := mcpToolSchema(t, tc.canonical)
+		aliasRequired := requiredSet(t, aliasSchema)
+		canonicalRequired := requiredSet(t, canonicalSchema)
+		for key := range canonicalRequired {
+			if !aliasRequired[key] {
+				t.Fatalf("%s required = %#v, missing canonical required field %s", tc.alias, aliasSchema["required"], key)
+			}
+		}
+	}
+
+	inspectTool := mcpTool(t, "inspect_connector_source")
+	description, _ := inspectTool["description"].(string)
+	if !strings.Contains(strings.ToLower(description), "tools/list") {
+		t.Fatalf("inspect_connector_source description = %q, want tools/list language", description)
+	}
+	inspectRequired := requiredSet(t, mcpToolSchema(t, "inspect_connector_source"))
+	if !inspectRequired["scope"] || inspectRequired["tool"] {
+		t.Fatalf("inspect_connector_source required = %#v, want scope without tool", mcpToolSchema(t, "inspect_connector_source")["required"])
+	}
+}
+
 func TestMCPAppliesRequestBodyLimit(t *testing.T) {
 	h := handler{cfg: config.Config{MaxRequestBodyBytes: 32}}
 	request := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewBufferString(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"padding":"`+strings.Repeat("x", 80)+`"}}`))
@@ -440,21 +483,23 @@ func TestWorkingMemoryComposeMCPHasReadOnlyDefaultAndPersistenceOptIn(t *testing
 
 func mcpToolSchema(t *testing.T, name string) map[string]any {
 	t.Helper()
-	var tool map[string]any
-	for _, candidate := range mcpTools() {
-		if candidate["name"] == name {
-			tool = candidate
-			break
-		}
-	}
-	if tool == nil {
-		t.Fatalf("%s tool not found", name)
-	}
+	tool := mcpTool(t, name)
 	schema, ok := tool["inputSchema"].(map[string]any)
 	if !ok {
 		t.Fatalf("inputSchema = %#v", tool["inputSchema"])
 	}
 	return schema
+}
+
+func mcpTool(t *testing.T, name string) map[string]any {
+	t.Helper()
+	for _, candidate := range mcpTools() {
+		if candidate["name"] == name {
+			return candidate
+		}
+	}
+	t.Fatalf("%s tool not found", name)
+	return nil
 }
 
 func requiredSet(t *testing.T, schema map[string]any) map[string]bool {

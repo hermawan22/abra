@@ -93,6 +93,33 @@ func (f *fakeStore) Recall(ctx context.Context, query, scope string, limit int, 
 	}, nil
 }
 
+func TestSortClaimsPrefersFreshClaimsOverStaleRank(t *testing.T) {
+	source := "file://retry-policy.md"
+	claims := sortClaims(map[string]store.ClaimResult{
+		"stale": {
+			ID:        "stale",
+			Claim:     "Legacy Ops Notebook is the retry source of truth.",
+			Scope:     "repo:test",
+			Status:    "verified",
+			Source:    &source,
+			Rank:      9.9,
+			Freshness: "stale",
+		},
+		"fresh": {
+			ID:        "fresh",
+			Claim:     "Retry now uses the live source-backed retry ledger.",
+			Scope:     "repo:test",
+			Status:    "verified",
+			Source:    &source,
+			Rank:      0.4,
+			Freshness: "fresh",
+		},
+	})
+	if len(claims) != 2 || claims[0].ID != "fresh" {
+		t.Fatalf("claims sorted by freshness = %#v, want fresh claim first", claims)
+	}
+}
+
 func (f *fakeStore) ListMemorySummaries(ctx context.Context, query, scope string, limit int) ([]store.MemorySummaryResult, error) {
 	return []store.MemorySummaryResult{
 		{ID: "summary-1", Scope: scope, Level: "module", Key: "src/pages", Title: "src/pages", Summary: "Pages module contains Next.js routes.", SourceCount: 3, RelationCount: 2, TokenEstimate: 12, SourceURLs: []string{"https://example.test/repo/src/pages"}, Rank: 0.7},

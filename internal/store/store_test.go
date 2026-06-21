@@ -385,18 +385,23 @@ func TestSearchClaimsQueryCanUseClaimSearchVector(t *testing.T) {
 }
 
 func TestHybridRecallQueriesUseVectorAndTextCandidates(t *testing.T) {
-	claims := hybridRecallClaimsSQL("status IN ('verified', 'inferred')", 1024)
+	claims := hybridRecallClaimsSQL("c.status IN ('verified', 'inferred')", 1024)
 	for _, fragment := range []string{
 		"WITH text_matches AS",
 		"vector_matches AS",
 		"embedding::vector(1024) <=> $5::vector(1024)",
-		"embedding_dimensions = $6",
+		"c.embedding_dimensions = $6",
 		"UNION",
+		"ranked_claims AS",
+		"LEFT JOIN documents d",
+		"LEFT JOIN source_configs sc",
+		"source_freshness.refresh_due",
 		"COALESCE(tm.text_score, 0) AS text_score",
 		"COALESCE(vm.vector_score, 0) AS vector_score",
 		"COALESCE(tm.text_score, 0)",
 		"COALESCE(vm.vector_score, 0) * 0.45",
-		"ORDER BY rank_score DESC",
+		"CASE freshness",
+		"rank_score DESC",
 	} {
 		if !strings.Contains(claims, fragment) {
 			t.Fatalf("hybrid claims query missing %q:\n%s", fragment, claims)

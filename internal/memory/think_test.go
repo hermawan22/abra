@@ -176,3 +176,49 @@ func TestBuildThinkResultPreservesComposeCitations(t *testing.T) {
 		t.Fatalf("answer did not preserve compose citation ref:\n%s", result.Answer)
 	}
 }
+
+func TestBuildThinkResultOmitsNonFreshFactsWhenFreshFactsExist(t *testing.T) {
+	source := "file://example-policy.md"
+	packet := ComposeResult{
+		Task:  "What is the current retry process?",
+		Scope: "repo:example",
+		Facts: []store.ClaimResult{
+			{
+				ID:        "claim-stale",
+				Claim:     "Legacy Operations Notebook is the retry source of truth.",
+				Scope:     "repo:example",
+				Status:    "verified",
+				Source:    &source,
+				Freshness: "stale",
+				Rank:      9.9,
+			},
+			{
+				ID:        "claim-fresh",
+				Claim:     "Retry now uses the live event replay workflow.",
+				Scope:     "repo:example",
+				Status:    "verified",
+				Source:    &source,
+				Freshness: "fresh",
+				Rank:      0.4,
+			},
+		},
+		MemoryHealth: store.MemoryHealthResult{Status: "healthy"},
+		Verification: VerificationReport{
+			Verdict:           "partial",
+			RetrievalCoverage: RetrievalCoverage{Complete: true},
+			StaleClaims:       []string{"claim-stale"},
+		},
+		AgentDecision: AgentDecision{Decision: "caution", ReviewRequired: true},
+	}
+
+	result := BuildThinkResult(packet)
+	if strings.Contains(result.Answer, "Legacy Operations Notebook") {
+		t.Fatalf("answer included stale historical claim:\n%s", result.Answer)
+	}
+	if !strings.Contains(result.Answer, "Retry now uses the live event replay workflow") {
+		t.Fatalf("answer missing fresh claim:\n%s", result.Answer)
+	}
+	if !strings.Contains(result.Answer, "non-fresh claim") {
+		t.Fatalf("answer should disclose omitted non-fresh claims:\n%s", result.Answer)
+	}
+}

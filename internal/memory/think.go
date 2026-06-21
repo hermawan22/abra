@@ -118,7 +118,8 @@ func thinkAnswer(packet ComposeResult, citationRefs map[string]string) string {
 		lines = append(lines, "Abra cannot answer this with source-backed memory yet.")
 	} else {
 		lines = append(lines, "Abra's governed answer:")
-		for i, fact := range packet.Facts {
+		answerFacts, omittedNonFreshFacts := primaryThinkFacts(packet.Facts)
+		for i, fact := range answerFacts {
 			if i >= 8 {
 				break
 			}
@@ -131,6 +132,9 @@ func thinkAnswer(packet ComposeResult, citationRefs map[string]string) string {
 				status += ", " + fact.Freshness
 			}
 			lines = append(lines, "- "+fact.Claim+formatThinkRef(ref)+" ("+status+").")
+		}
+		if omittedNonFreshFacts > 0 {
+			lines = append(lines, fmt.Sprintf("- %d non-fresh claim(s) were omitted from the primary answer; inspect gaps before reuse.", omittedNonFreshFacts))
 		}
 		if len(packet.Facts) == 0 && len(packet.SupportingDocuments) > 0 {
 			for i, doc := range packet.SupportingDocuments {
@@ -177,6 +181,32 @@ func thinkAnswer(packet ComposeResult, citationRefs map[string]string) string {
 		lines = append(lines, "Caveats: "+strings.Join(packet.Verification.Recommendations, "; ")+".")
 	}
 	return strings.Join(lines, "\n")
+}
+
+func primaryThinkFacts(facts []store.ClaimResult) ([]store.ClaimResult, int) {
+	hasFresh := false
+	for _, fact := range facts {
+		if strings.EqualFold(strings.TrimSpace(fact.Freshness), "fresh") {
+			hasFresh = true
+			break
+		}
+	}
+	if !hasFresh {
+		return facts, 0
+	}
+	out := make([]store.ClaimResult, 0, len(facts))
+	omitted := 0
+	for _, fact := range facts {
+		switch strings.ToLower(strings.TrimSpace(fact.Freshness)) {
+		case "fresh":
+			out = append(out, fact)
+		case "stale", "expired":
+			omitted++
+		default:
+			omitted++
+		}
+	}
+	return out, omitted
 }
 
 func formatThinkRef(ref string) string {

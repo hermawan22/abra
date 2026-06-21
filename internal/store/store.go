@@ -285,6 +285,7 @@ type DocumentRecord struct {
 	SourceUpdatedAt string
 	Authority       string
 	AuthorityScore  float64
+	FreshnessStatus string
 	Metadata        map[string]any
 }
 
@@ -747,16 +748,17 @@ func (s *Store) UpsertDocument(ctx context.Context, record DocumentRecord) (stri
 	if record.AuthorityScore == 0 {
 		record.AuthorityScore = 0.35
 	}
+	record.FreshnessStatus = normalizeFreshnessStatus(firstNonEmptyStoreString(record.FreshnessStatus, metadataString(record.Metadata, "freshness"), metadataString(record.Metadata, "freshness_status")))
 	metadata := jsonb(record.Metadata)
 	_, err := s.queryRunner().Exec(ctx, `
 		INSERT INTO documents (
 		  id, source_type, source_url, source_id, title, scope, content_checksum,
 		  source_updated_at, source_config_id, ingestion_job_id, authority,
-		  authority_score, metadata
+		  authority_score, freshness_status, metadata
 		)
 		VALUES (
 		  $1, $2, $3, NULLIF($4, ''), $5, $6, $7, NULLIF($8, '')::timestamptz,
-		  NULLIF($9, ''), NULLIF($10, ''), $11, $12, $13::jsonb
+		  NULLIF($9, ''), NULLIF($10, ''), $11, $12, $13, $14::jsonb
 		)
 		ON CONFLICT (source_type, source_url, scope)
 		DO UPDATE SET
@@ -768,9 +770,10 @@ func (s *Store) UpsertDocument(ctx context.Context, record DocumentRecord) (stri
 		  ingestion_job_id = EXCLUDED.ingestion_job_id,
 		  authority = EXCLUDED.authority,
 		  authority_score = EXCLUDED.authority_score,
+		  freshness_status = EXCLUDED.freshness_status,
 		  ingested_at = now(),
 		  metadata = EXCLUDED.metadata
-	`, id, record.SourceType, record.SourceURL, record.SourceID, record.Title, record.Scope, record.ContentChecksum, record.SourceUpdatedAt, record.SourceConfigID, record.IngestionJobID, record.Authority, record.AuthorityScore, metadata)
+	`, id, record.SourceType, record.SourceURL, record.SourceID, record.Title, record.Scope, record.ContentChecksum, record.SourceUpdatedAt, record.SourceConfigID, record.IngestionJobID, record.Authority, record.AuthorityScore, record.FreshnessStatus, metadata)
 	if err != nil {
 		return "", err
 	}
@@ -2919,6 +2922,28 @@ func metadataFloat(metadata map[string]any, key string) float64 {
 	}
 }
 
+func normalizeFreshnessStatus(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "fresh", "current", "active":
+		return "fresh"
+	case "stale", "historical", "history", "legacy":
+		return "stale"
+	case "expired":
+		return "expired"
+	default:
+		return "unknown"
+	}
+}
+
+func firstNonEmptyStoreString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
 func jsonb(value map[string]any) string {
 	if value == nil {
 		value = map[string]any{}
@@ -3034,35 +3059,36 @@ func (s *Store) Recall(ctx context.Context, query, scope string, limit int, incl
 		limit = 5
 	}
 	anyQuery := fullTextAnyQuery(query)
-	statusFilter := "status IN ('verified', 'inferred')"
+	statusFilter := "c.status IN ('verified', 'inferred')"
 	if includeUnverified {
-		statusFilter = "status NOT IN ('deprecated')"
+		statusFilter = "c.status NOT IN ('deprecated')"
 	}
 
 	claimsRows, err := s.pool.Query(ctx, fmt.Sprintf(`
+		WITH ranked_claims AS (
 		SELECT
-			id,
-			claim_text,
-			scope,
-			status,
-			source_url,
+			c.id,
+			c.claim_text,
+			c.scope,
+			c.status,
+			c.source_url,
 			LEAST(
 			  GREATEST(
-			    ts_rank_cd(search_vector, plainto_tsquery('simple', $1)),
-			    ts_rank_cd(search_vector, to_tsquery('simple', $4)) * 0.65
+			    ts_rank_cd(c.search_vector, plainto_tsquery('simple', $1)),
+			    ts_rank_cd(c.search_vector, to_tsquery('simple', $4)) * 0.65
 			  ),
 			  0.4
 			) AS text_score,
 			0::double precision AS vector_score,
 			LEAST(
 			  GREATEST(
-			    ts_rank_cd(search_vector, plainto_tsquery('simple', $1)),
-			    ts_rank_cd(search_vector, to_tsquery('simple', $4)) * 0.65
+			    ts_rank_cd(c.search_vector, plainto_tsquery('simple', $1)),
+			    ts_rank_cd(c.search_vector, to_tsquery('simple', $4)) * 0.65
 			  ),
 			  0.4
 			)
-			  + confidence
-			  + CASE authority
+			  + c.confidence
+			  + CASE c.authority
 				  WHEN 'official-doc' THEN 0.25
 				  WHEN 'adr' THEN 0.2
 				  WHEN 'team-convention' THEN 0.15
@@ -3070,19 +3096,78 @@ func (s *Store) Recall(ctx context.Context, query, scope string, limit int, incl
 				  ELSE 0
 				END AS rank_score,
 			CASE
-			  WHEN expires_at IS NOT NULL AND expires_at < now() THEN 'expired'
-			  WHEN last_verified_at IS NULL THEN 'unknown'
-			  WHEN last_verified_at < now() - interval '120 days' THEN 'stale'
+			  WHEN c.status = 'expired' OR (c.expires_at IS NOT NULL AND c.expires_at < now()) OR c.freshness_status = 'expired' OR d.freshness_status = 'expired' THEN 'expired'
+			  WHEN c.freshness_status = 'stale' OR d.freshness_status = 'stale' OR source_freshness.refresh_due THEN 'stale'
+			  WHEN c.last_verified_at IS NULL THEN 'unknown'
+			  WHEN c.last_verified_at < now() - interval '120 days' THEN 'stale'
 			  ELSE 'fresh'
-			END AS freshness
-		FROM claims
-		WHERE scope = $2
+			END AS freshness,
+			c.updated_at AS sort_updated_at
+		FROM claims c
+		LEFT JOIN documents d
+		  ON d.scope = c.scope
+		 AND COALESCE(d.source_type, '') = COALESCE(c.source_type, '')
+		 AND COALESCE(d.source_url, '') = COALESCE(c.source_url, '')
+		LEFT JOIN source_configs sc ON sc.id = c.source_config_id
+		LEFT JOIN LATERAL (
+		  SELECT
+		    sc.status = 'active'
+		    AND (
+		      (freshness.freshness_interval IS NOT NULL AND (
+		        (sc.last_success_at IS NULL AND sc.created_at < now() - freshness.freshness_interval)
+		        OR sc.last_success_at < now() - freshness.freshness_interval
+		      ))
+		      OR (freshness.schedule_interval IS NOT NULL AND (
+		        (sc.last_success_at IS NULL AND sc.created_at < now() - freshness.schedule_interval)
+		        OR sc.last_success_at < now() - freshness.schedule_interval
+		      ))
+		    ) AS refresh_due
+		  FROM (
+		    SELECT
+		      CASE
+		        WHEN sc.freshness_policy->>'max_age_seconds' ~ '^[1-9][0-9]*$'
+		          THEN make_interval(secs => (sc.freshness_policy->>'max_age_seconds')::int)
+		        WHEN sc.freshness_policy->>'max_age_minutes' ~ '^[1-9][0-9]*$'
+		          THEN make_interval(mins => (sc.freshness_policy->>'max_age_minutes')::int)
+		        WHEN sc.freshness_policy->>'max_age_hours' ~ '^[1-9][0-9]*$'
+		          THEN make_interval(hours => (sc.freshness_policy->>'max_age_hours')::int)
+		        WHEN sc.freshness_policy->>'max_age_days' ~ '^[1-9][0-9]*$'
+		          THEN make_interval(days => (sc.freshness_policy->>'max_age_days')::int)
+		        ELSE NULL
+		      END AS freshness_interval,
+		      CASE
+		        WHEN sc.schedule_cron = '@hourly' THEN interval '1 hour'
+		        WHEN sc.schedule_cron = '@daily' THEN interval '24 hours'
+		        WHEN sc.schedule_cron ~ '^@every[[:space:]]+[1-9][0-9]*[smhd]$' THEN
+		          CASE right(sc.schedule_cron, 1)
+		            WHEN 's' THEN make_interval(secs => regexp_replace(sc.schedule_cron, '[^0-9]', '', 'g')::int)
+		            WHEN 'm' THEN make_interval(mins => regexp_replace(sc.schedule_cron, '[^0-9]', '', 'g')::int)
+		            WHEN 'h' THEN make_interval(hours => regexp_replace(sc.schedule_cron, '[^0-9]', '', 'g')::int)
+		            WHEN 'd' THEN make_interval(days => regexp_replace(sc.schedule_cron, '[^0-9]', '', 'g')::int)
+		          END
+		        ELSE NULL
+		      END AS schedule_interval
+		  ) freshness
+		) source_freshness ON true
+		WHERE c.scope = $2
 		  AND %s
 		  AND (
-		    search_vector @@ plainto_tsquery('simple', $1)
-		    OR search_vector @@ to_tsquery('simple', $4)
+		    c.search_vector @@ plainto_tsquery('simple', $1)
+		    OR c.search_vector @@ to_tsquery('simple', $4)
 		  )
-		ORDER BY rank_score DESC
+		)
+		SELECT id, claim_text, scope, status, source_url, text_score, vector_score, rank_score, freshness
+		FROM ranked_claims
+		ORDER BY
+		  CASE freshness
+		    WHEN 'fresh' THEN 0
+		    WHEN 'unknown' THEN 1
+		    WHEN 'stale' THEN 2
+		    WHEN 'expired' THEN 3
+		    ELSE 1
+		  END ASC,
+		  rank_score DESC,
+		  sort_updated_at DESC
 		LIMIT $3
 	`, statusFilter), query, scope, limit, anyQuery)
 	if err != nil {
@@ -3168,9 +3253,9 @@ func (s *Store) RecallHybrid(ctx context.Context, query, scope string, limit int
 		limit = 5
 	}
 	anyQuery := fullTextAnyQuery(query)
-	statusFilter := "status IN ('verified', 'inferred')"
+	statusFilter := "c.status IN ('verified', 'inferred')"
 	if includeUnverified {
-		statusFilter = "status NOT IN ('deprecated')"
+		statusFilter = "c.status NOT IN ('deprecated')"
 	}
 	vector := vectorLiteral(queryEmbedding)
 
@@ -3299,32 +3384,32 @@ func hybridRecallClaimsSQL(statusFilter string, dimensions int) string {
 	return fmt.Sprintf(`
 		WITH text_matches AS (
 		  SELECT
-		    id,
+		    c.id,
 		    LEAST(
 		      GREATEST(
-		        ts_rank_cd(search_vector, plainto_tsquery('simple', $1)),
-		        ts_rank_cd(search_vector, to_tsquery('simple', $4)) * 0.65
+		        ts_rank_cd(c.search_vector, plainto_tsquery('simple', $1)),
+		        ts_rank_cd(c.search_vector, to_tsquery('simple', $4)) * 0.65
 		      ),
 		      0.4
 		    ) AS text_score
-		  FROM claims
-		  WHERE scope = $2
+		  FROM claims c
+		  WHERE c.scope = $2
 		    AND %s
 		    AND (
-		      search_vector @@ plainto_tsquery('simple', $1)
-		      OR search_vector @@ to_tsquery('simple', $4)
+		      c.search_vector @@ plainto_tsquery('simple', $1)
+		      OR c.search_vector @@ to_tsquery('simple', $4)
 		    )
 		  ORDER BY text_score DESC
 		  LIMIT GREATEST($3 * 3, 12)
 		),
 		vector_matches AS (
 		  SELECT
-		    id,
+		    c.id,
 		    GREATEST(0, 1 - (%s <=> %s)) AS vector_score
-		  FROM claims
-		  WHERE scope = $2
+		  FROM claims c
+		  WHERE c.scope = $2
 		    AND %s
-		    AND embedding_dimensions = $6
+		    AND c.embedding_dimensions = $6
 		  ORDER BY %s <=> %s
 		  LIMIT GREATEST($3 * 3, 12)
 		),
@@ -3332,8 +3417,9 @@ func hybridRecallClaimsSQL(statusFilter string, dimensions int) string {
 		  SELECT id FROM text_matches
 		  UNION
 		  SELECT id FROM vector_matches
-		)
-		SELECT
+		),
+		ranked_claims AS (
+		  SELECT
 			c.id,
 			c.claim_text,
 			c.scope,
@@ -3352,16 +3438,75 @@ func hybridRecallClaimsSQL(statusFilter string, dimensions int) string {
 				  ELSE 0
 				END AS rank_score,
 			CASE
-			  WHEN c.expires_at IS NOT NULL AND c.expires_at < now() THEN 'expired'
+			  WHEN c.status = 'expired' OR (c.expires_at IS NOT NULL AND c.expires_at < now()) OR c.freshness_status = 'expired' OR d.freshness_status = 'expired' THEN 'expired'
+			  WHEN c.freshness_status = 'stale' OR d.freshness_status = 'stale' OR source_freshness.refresh_due THEN 'stale'
 			  WHEN c.last_verified_at IS NULL THEN 'unknown'
 			  WHEN c.last_verified_at < now() - interval '120 days' THEN 'stale'
 			  ELSE 'fresh'
-			END AS freshness
-		FROM candidates candidate
-		JOIN claims c ON c.id = candidate.id
-		LEFT JOIN text_matches tm ON tm.id = c.id
-		LEFT JOIN vector_matches vm ON vm.id = c.id
-		ORDER BY rank_score DESC, c.updated_at DESC
+			END AS freshness,
+			c.updated_at AS sort_updated_at
+		  FROM candidates candidate
+		  JOIN claims c ON c.id = candidate.id
+		  LEFT JOIN text_matches tm ON tm.id = c.id
+		  LEFT JOIN vector_matches vm ON vm.id = c.id
+		  LEFT JOIN documents d
+		    ON d.scope = c.scope
+		   AND COALESCE(d.source_type, '') = COALESCE(c.source_type, '')
+		   AND COALESCE(d.source_url, '') = COALESCE(c.source_url, '')
+		  LEFT JOIN source_configs sc ON sc.id = c.source_config_id
+		  LEFT JOIN LATERAL (
+		    SELECT
+		      sc.status = 'active'
+		      AND (
+		        (freshness.freshness_interval IS NOT NULL AND (
+		          (sc.last_success_at IS NULL AND sc.created_at < now() - freshness.freshness_interval)
+		          OR sc.last_success_at < now() - freshness.freshness_interval
+		        ))
+		        OR (freshness.schedule_interval IS NOT NULL AND (
+		          (sc.last_success_at IS NULL AND sc.created_at < now() - freshness.schedule_interval)
+		          OR sc.last_success_at < now() - freshness.schedule_interval
+		        ))
+		      ) AS refresh_due
+		    FROM (
+		      SELECT
+		        CASE
+		          WHEN sc.freshness_policy->>'max_age_seconds' ~ '^[1-9][0-9]*$'
+		            THEN make_interval(secs => (sc.freshness_policy->>'max_age_seconds')::int)
+		          WHEN sc.freshness_policy->>'max_age_minutes' ~ '^[1-9][0-9]*$'
+		            THEN make_interval(mins => (sc.freshness_policy->>'max_age_minutes')::int)
+		          WHEN sc.freshness_policy->>'max_age_hours' ~ '^[1-9][0-9]*$'
+		            THEN make_interval(hours => (sc.freshness_policy->>'max_age_hours')::int)
+		          WHEN sc.freshness_policy->>'max_age_days' ~ '^[1-9][0-9]*$'
+		            THEN make_interval(days => (sc.freshness_policy->>'max_age_days')::int)
+		          ELSE NULL
+		        END AS freshness_interval,
+		        CASE
+		          WHEN sc.schedule_cron = '@hourly' THEN interval '1 hour'
+		          WHEN sc.schedule_cron = '@daily' THEN interval '24 hours'
+		          WHEN sc.schedule_cron ~ '^@every[[:space:]]+[1-9][0-9]*[smhd]$' THEN
+		            CASE right(sc.schedule_cron, 1)
+		              WHEN 's' THEN make_interval(secs => regexp_replace(sc.schedule_cron, '[^0-9]', '', 'g')::int)
+		              WHEN 'm' THEN make_interval(mins => regexp_replace(sc.schedule_cron, '[^0-9]', '', 'g')::int)
+		              WHEN 'h' THEN make_interval(hours => regexp_replace(sc.schedule_cron, '[^0-9]', '', 'g')::int)
+		              WHEN 'd' THEN make_interval(days => regexp_replace(sc.schedule_cron, '[^0-9]', '', 'g')::int)
+		            END
+		          ELSE NULL
+		        END AS schedule_interval
+		    ) freshness
+		  ) source_freshness ON true
+		)
+		SELECT id, claim_text, scope, status, source_url, text_score, vector_score, rank_score, freshness
+		FROM ranked_claims
+		ORDER BY
+		  CASE freshness
+		    WHEN 'fresh' THEN 0
+		    WHEN 'unknown' THEN 1
+		    WHEN 'stale' THEN 2
+		    WHEN 'expired' THEN 3
+		    ELSE 1
+		  END ASC,
+		  rank_score DESC,
+		  sort_updated_at DESC
 		LIMIT $3
 	`, statusFilter, embeddingExpr, queryExpr, statusFilter, embeddingExpr, queryExpr)
 }

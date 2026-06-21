@@ -1001,15 +1001,24 @@ Do not give autonomous agents all-scope `admin` credentials. Give them scoped wr
 
 ## Auto Ingestion
 
-The OSS surface is generic document ingestion through `POST /ingest/documents` or MCP `ingest_document`, batch ingestion through `POST /ingest/documents/batch` or MCP `ingest_documents`, signed connector batches through `POST /ingest/webhooks`, and scheduled source configs for `markdown`, `local_repo`, `git_repo`, and `mcp`. Production ingestion should run through scheduled sources, signed webhooks, or connector batch jobs outside the agent request path:
+The OSS surface is generic document ingestion through `POST /ingest/documents` or MCP `ingest_document`, batch ingestion through `POST /ingest/documents/batch` or MCP `ingest_documents`, signed connector batches through `POST /ingest/webhooks`, and scheduled source configs for `markdown`, `local_repo`, `git_repo`, and `mcp`. Connector onboarding is intentionally lightweight: Abra manages source configs, ingestion jobs, source authority, approval gates, audit history, validation, recall, and working-memory visibility; a user-owned MCP exporter or deployment overlay manages vendor OAuth, refresh tokens, cursors, webhook delivery state, source-specific ACL normalization, and retries. Production ingestion should run through scheduled sources, signed webhooks, or connector batch jobs outside the agent request path:
 
 - Schedule approved sources, or let connector overlays poll or subscribe to approved systems such as Confluence, Jira, Git repositories, runbooks, or decision logs.
 - Map every source to a stable `source_url`, `source_type`, `scope`, title, and authority level.
 - Re-ingest idempotently. When a source changes, missing claims and graph relations are deprecated, still-present claims and relations are reactivated, and source summaries are replaced.
 - Preserve ACL and scope metadata before records become available to agents.
-- Keep connector-specific auth, cursors, batch retry, and normalization in a private overlay, fork, or MCP source tool.
+- Keep connector-specific auth, cursors, batch retry, ACL normalization, and vendor API behavior in a private overlay, fork, or MCP source tool.
 
 Worker runs are written to `ingestion_jobs` and exposed through `GET /ingestion/jobs`. Signed webhook documents also create durable queued jobs so slow embedding providers do not block webhook responses. Operators and agent gateways can manually enqueue a source with `POST /ingestion/jobs` or MCP `enqueue_ingestion_job`; backfill triggers require `approval_id` when approval enforcement or stored agent policy requires review. They can list jobs with `list_ingestion_jobs`, retry failed/canceled jobs with `POST /ingestion/jobs/:jobId/retry` or MCP `retry_ingestion_job`, and cancel queued/retry jobs with `POST /ingestion/jobs/:jobId/cancel` or MCP `cancel_ingestion_job`. Source configs can be validated, written, and listed through both HTTP and MCP (`POST /sources/configs/validate`, `validate_mcp_source`, `upsert_source_config`, `list_source_configs`), and read directly over HTTP with `GET /sources/configs/:sourceConfigId`. Source configs also keep the latest success/error timestamps for quick operator checks over HTTP or MCP. Source config upserts write `source_config.upserted` audit events; pause/resume status changes write `source_config.status_changed` events so operators can review lifecycle changes through `GET /audit/events`.
+
+For MCP-backed connectors, the end-to-end flow is:
+
+1. Build a user-owned MCP tool that returns normalized Abra documents.
+2. Inspect the exporter when the tool name is unknown: `abra connectors mcp inspect --scope <scope> --mcp-url <url>` or MCP `inspect_connector_source`.
+3. Validate the tool without saving state: `abra connectors mcp validate --scope <scope> --mcp-url <url> --tool <tool>`, `POST /sources/configs/validate`, or MCP `validate_connector_source`.
+4. Register and enable it with `abra connectors mcp register ... --schedule ... --wait --verify`, HTTP `POST /sources/configs`, or MCP `upsert_connector_source` plus `sync_connector_source`.
+5. For repeated setup, keep URL, tool, env refs, authority, schedule, and verification query in a manifest such as `examples/connectors/mcp-confluence.connector.json`.
+6. Inspect ingestion with `abra sources status`, `abra sources logs`, `abra jobs`, or `GET /ingestion/jobs`, then verify recall or `working_memory_compose`.
 
 From the CLI, inspect connector health with `abra sources status <source-config-id>` and job history with `abra sources logs <source-config-id>`. Queue an existing source again with `abra sources sync <source-config-id> --scope <scope> --wait --wait-timeout 10m`, or record an explicit historical reprocess with `abra sources backfill <source-config-id> --scope <scope> --approval-id <approval-id> --wait --wait-timeout 10m`. Manual sync and backfill bypass source due checks so operators can force a refresh after an incident, source migration, credential rotation, or normalization change. Pause or resume a source without rewriting its connector config with `abra sources pause <source-config-id>` and `abra sources resume <source-config-id> --approval-id <approval-id>`; active source config writes and resume may require approval when enforcement is active.
 

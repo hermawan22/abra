@@ -448,10 +448,24 @@ curl -sS -H "$auth_header" \
 ```
 
 For worker-based source refreshes, use `abra ingest . --code --tracked`, `abra watch local --path . --wait --wait-timeout 10m`,
-`abra watch git --git https://github.com/owner/repo.git --wait --wait-timeout 10m`, or an MCP-backed source such as:
+`abra watch git --git https://github.com/owner/repo.git --wait --wait-timeout 10m`, or an MCP-backed source. Abra's built-in responsibility is lightweight: it stores source configs, validates normalized document exports, queues ingestion jobs, enforces approval and source-authority gates, and exposes health through CLI, HTTP, and MCP. The user-owned MCP exporter or deployment overlay remains responsible for vendor OAuth, refresh tokens, cursors, webhook delivery state, source-specific ACL normalization, and retries.
+
+A typical MCP connector onboarding flow is:
+
+1. Expose a user-owned MCP tool that reads the source system and returns normalized Abra documents.
+2. Inspect the upstream MCP server when the export tool name is not known yet:
 
 ```sh
-abra source mcp \
+abra connectors mcp inspect \
+  --scope team:platform \
+  --mcp-url https://mcp.example.internal/mcp \
+  --bearer-token-env CONFLUENCE_MCP_TOKEN
+```
+
+3. Dry-run the tool through Abra before saving anything:
+
+```sh
+abra connectors mcp validate \
   --scope team:platform \
   --mcp-url https://mcp.example.internal/mcp \
   --tool export_documents \
@@ -460,8 +474,12 @@ abra source mcp \
   --bearer-token-env CONFLUENCE_MCP_TOKEN \
   --header-env X-API-Key=CONFLUENCE_API_KEY \
   --dry-run
+```
 
-abra source mcp \
+4. Register the source config and queue the first ingestion job:
+
+```sh
+abra connectors mcp register \
   --scope team:platform \
   --mcp-url https://mcp.example.internal/mcp \
   --tool export_documents \
@@ -474,13 +492,35 @@ abra source mcp \
   --wait
 ```
 
+The same connector can be kept in a declarative manifest:
+
+```sh
+abra connectors mcp inspect --manifest examples/connectors/mcp-confluence.connector.json
+abra connectors mcp validate --manifest examples/connectors/mcp-confluence.connector.json
+abra connectors mcp register --manifest examples/connectors/mcp-confluence.connector.json --wait --verify
+```
+
+5. Inspect the saved source and its job history:
+
+```sh
+abra sources status <source-config-id>
+abra sources logs <source-config-id> --limit 20
+abra jobs --scope team:platform
+```
+
 The configured MCP tool must return normalized Abra documents as JSON, either as
 `structuredContent.documents` or as a JSON text content item containing
 `{"documents":[...]}`. `--dry-run` or `--validate` calls that upstream MCP tool
 and validates the returned documents without creating a source config or queueing
 an ingestion job. Use `--bearer-token-env` and `--header-env HEADER=ENV_NAME`
 to reference credentials from environment variables instead of writing secrets
-into source configs.
+into source configs. Equivalent server-side validation is available through
+`POST /sources/configs/validate` or MCP `validate_mcp_source`; source config
+writes can also use HTTP `POST /sources/configs` or MCP `upsert_source_config`.
+MCP clients can also use connector-named aliases such as
+`inspect_connector_source`, `validate_connector_source`,
+`upsert_connector_source`, and `sync_connector_source`.
+
 To run an existing source again without changing its config:
 
 ```sh
@@ -533,7 +573,19 @@ connector batch jobs. The core OSS worker schedules `local_repo`, `git_repo`,
 markdown, and `mcp` source configs. Other source systems should use a thin
 connector overlay that listens to source events and posts normalized documents
 to `POST /ingest/webhooks`, sends batches to `POST /ingest/documents/batch`, or
-exposes an MCP document-export tool that Abra can call.
+exposes an MCP document-export tool that Abra can call. Native Abra owns the
+ingestion job, source-config lifecycle, governance events, and validation
+surface after documents are normalized; overlays own vendor-specific auth,
+cursors, ACL mapping, webhook semantics, and source API behavior.
+
+For webhook-style overlays, generate and sign a sample payload without adding
+vendor code to Abra core:
+
+```sh
+abra connectors webhook sample --scope team:platform --connector confluence
+abra connectors webhook sign --payload-json '{"scope":"team:platform","source_type":"confluence","source_url":"https://wiki.example/doc","title":"Doc","content":"Body"}' --secret-env ABRA_WEBHOOK_SECRET
+abra connectors webhook test --scope team:platform --connector confluence --secret-env ABRA_WEBHOOK_SECRET
+```
 
 ## Self-Host Commands
 

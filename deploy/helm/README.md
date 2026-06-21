@@ -184,6 +184,19 @@ prometheusRule:
       enabled: true
       for: 10m
       severity: warning
+    aiProviderQueueing:
+      enabled: true
+      for: 10m
+      severity: warning
+      minWaitRate: 0.05
+    ingestionStaleRunningJobs:
+      enabled: true
+      for: 15m
+      severity: critical
+    ingestionFailedJobs:
+      enabled: true
+      for: 15m
+      severity: warning
 ```
 
 ## Rules

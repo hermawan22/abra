@@ -15,6 +15,7 @@ import (
 	"github.com/hermawan22/abra/internal/brain"
 	"github.com/hermawan22/abra/internal/config"
 	"github.com/hermawan22/abra/internal/ingest"
+	"github.com/hermawan22/abra/internal/jobs"
 	"github.com/hermawan22/abra/internal/memory"
 	"github.com/hermawan22/abra/internal/observability"
 	"github.com/hermawan22/abra/internal/policy"
@@ -1918,7 +1919,7 @@ func (h *handler) mcpToolCall(w http.ResponseWriter, r *http.Request, id any, pa
 			return
 		}
 		result, err = h.db.ListAgentProfiles(r.Context(), scope, stringArg(args, "status"), intArg(args, "limit", 50))
-	case "upsert_source_config":
+	case "upsert_source_config", "upsert_connector_source":
 		sourceConfig := store.SourceConfigRecord{
 			ID:              stringArg(args, "id"),
 			Scope:           stringArg(args, "scope"),
@@ -1980,45 +1981,8 @@ func (h *handler) mcpToolCall(w http.ResponseWriter, r *http.Request, id any, pa
 			break
 		}
 		result = map[string]any{"source_config_id": id, "status": "upserted"}
-	case "validate_mcp_source":
-		sourceConfig := store.SourceConfigRecord{
-			ID:              stringArg(args, "id"),
-			Scope:           stringArg(args, "scope"),
-			SourceType:      string(ingest.SourceTypeMCP),
-			Name:            firstNonEmpty(stringArg(args, "name"), "mcp-validation"),
-			BaseURL:         firstNonEmpty(stringArg(args, "base_url"), stringArg(args, "mcp_url"), stringArg(args, "server_url")),
-			ConnectorKind:   stringArg(args, "connector_kind"),
-			Authority:       stringArg(args, "authority"),
-			AuthorityScore:  floatArg(args, "authority_score", 0),
-			FreshnessPolicy: mapArg(args, "freshness_policy"),
-			ScheduleCron:    stringArg(args, "schedule_cron"),
-			Config:          mapArg(args, "config"),
-			Metadata:        mapArg(args, "metadata"),
-			CreatedBy:       stringArg(args, "created_by"),
-			ApprovalID:      stringArg(args, "approval_id"),
-		}
-		if sourceConfig.Config == nil {
-			sourceConfig.Config = map[string]any{}
-		}
-		serverURL, _ := sourceConfig.Config["server_url"].(string)
-		if sourceConfig.BaseURL != "" && strings.TrimSpace(serverURL) == "" {
-			sourceConfig.Config["server_url"] = sourceConfig.BaseURL
-		}
-		if tool := stringArg(args, "tool"); tool != "" {
-			sourceConfig.Config["tool"] = tool
-		}
-		if arguments := mapArg(args, "arguments"); len(arguments) > 0 {
-			sourceConfig.Config["arguments"] = arguments
-		}
-		if bearerTokenEnv := stringArg(args, "bearer_token_env"); bearerTokenEnv != "" {
-			sourceConfig.Config["bearer_token_env"] = bearerTokenEnv
-		}
-		if headerEnv := stringMapArg(args, "header_env"); len(headerEnv) > 0 {
-			sourceConfig.Config["header_env"] = headerEnv
-		}
-		if documentSourceType := stringArg(args, "document_source_type"); documentSourceType != "" {
-			sourceConfig.Config["document_source_type"] = documentSourceType
-		}
+	case "validate_mcp_source", "validate_connector_source":
+		sourceConfig := mcpConnectorSourceConfigFromArgs(args, true)
 		var ok bool
 		result, ok, err = h.validateMCPSourceRecord(w, r, sourceConfig)
 		if !ok {
@@ -2027,13 +1991,40 @@ func (h *handler) mcpToolCall(w http.ResponseWriter, r *http.Request, id any, pa
 		if err != nil {
 			break
 		}
-	case "list_source_configs":
+	case "inspect_connector_source":
+		sourceConfig := mcpConnectorSourceConfigFromArgs(args, false)
+		sourceConfig.Scope = strings.TrimSpace(sourceConfig.Scope)
+		if sourceConfig.Scope == "" {
+			err = fmt.Errorf("scope is required")
+			break
+		}
+		if !h.requireAccess(w, r, authActionWrite, sourceConfig.Scope) {
+			return
+		}
+		tools, listErr := jobs.ListMCPTools(r.Context(), jobs.SourceConfig{
+			ID:             firstNonEmpty(sourceConfig.ID, "connector-inspect"),
+			Scope:          sourceConfig.Scope,
+			SourceType:     ingest.SourceTypeMCP,
+			Name:           sourceConfig.Name,
+			BaseURL:        sourceConfig.BaseURL,
+			ConnectorKind:  sourceConfig.ConnectorKind,
+			Authority:      sourceConfig.Authority,
+			AuthorityScore: sourceConfig.AuthorityScore,
+			Config:         sourceConfig.Config,
+			Metadata:       sourceConfig.Metadata,
+		})
+		if listErr != nil {
+			err = listErr
+			break
+		}
+		result = map[string]any{"status": "ok", "tools": tools, "count": len(tools)}
+	case "list_source_configs", "list_connector_sources":
 		scope := stringArg(args, "scope")
 		if !h.requireAccess(w, r, authActionRead, scope) {
 			return
 		}
 		result, err = h.db.ListSourceConfigs(r.Context(), scope, intArg(args, "limit", 50))
-	case "get_source_config":
+	case "get_source_config", "get_connector_source":
 		sourceConfigID := stringArg(args, "source_config_id")
 		source, getErr := h.db.GetSourceConfig(r.Context(), sourceConfigID)
 		if getErr != nil {
@@ -2044,7 +2035,7 @@ func (h *handler) mcpToolCall(w http.ResponseWriter, r *http.Request, id any, pa
 			return
 		}
 		result = source
-	case "set_source_config_status":
+	case "set_source_config_status", "set_connector_source_status":
 		sourceConfigID := stringArg(args, "source_config_id")
 		status := stringArg(args, "status")
 		source, getErr := h.db.GetSourceConfig(r.Context(), sourceConfigID)
@@ -2091,7 +2082,7 @@ func (h *handler) mcpToolCall(w http.ResponseWriter, r *http.Request, id any, pa
 			break
 		}
 		result = updated
-	case "enqueue_ingestion_job":
+	case "enqueue_ingestion_job", "sync_connector_source":
 		sourceConfigID := stringArg(args, "source_config_id")
 		source, getErr := h.db.GetSourceConfig(r.Context(), sourceConfigID)
 		if getErr != nil {
@@ -2660,85 +2651,68 @@ func mcpTools() []map[string]any {
 		},
 		{
 			"name":        "upsert_source_config",
-			"description": "Create or update a source config. Core worker scheduling supports markdown, local_repo, git_repo, and mcp sources. The mcp source type calls a configured HTTP MCP tool that returns normalized Abra documents. Deployment overlays may store other source types and own their scheduling. Connector enablement and trusted authority changes may require approval when enforcement is active.",
-			"inputSchema": objectSchema([]string{"scope", "source_type", "name"}, map[string]any{
-				"id":               stringSchema(),
-				"scope":            stringSchema(),
-				"source_type":      stringSchema(),
-				"name":             stringSchema(),
-				"base_url":         stringSchema(),
-				"connector_kind":   stringSchema(),
-				"status":           map[string]any{"type": "string", "enum": []string{"active", "paused", "disabled", "deleted", "error"}},
-				"authority":        stringSchema(),
-				"authority_score":  map[string]any{"type": "number", "minimum": 0, "maximum": 1},
-				"freshness_policy": map[string]any{"type": "object"},
-				"schedule_cron":    stringSchema(),
-				"config":           map[string]any{"type": "object"},
-				"metadata":         map[string]any{"type": "object"},
-				"created_by":       stringSchema(),
-				"approval_id":      stringSchema(),
-			}),
+			"description": "Create or update a source config for connector onboarding or scheduled ingestion. Core worker scheduling supports markdown, local_repo, git_repo, and mcp sources. Use source_type=mcp to onboard an HTTP MCP connector tool that returns normalized Abra documents; set connector_kind to the product or system name. Deployment overlays may store other source types and own their scheduling. Connector enablement and trusted authority changes may require approval when enforcement is active.",
+			"inputSchema": sourceConfigSchema(),
+		},
+		{
+			"name":        "upsert_connector_source",
+			"description": "Connector-named alias for upsert_source_config. Create or update a connector-backed source config, usually with source_type=mcp, base_url, config.tool, connector_kind, authority, schedule_cron, and optional approval_id.",
+			"inputSchema": sourceConfigSchema(),
 		},
 		{
 			"name":        "validate_mcp_source",
-			"description": "Dry-run a user-owned HTTP MCP source tool and validate that it returns normalized Abra documents without creating a source config or queueing ingestion.",
-			"inputSchema": objectSchema([]string{"scope", "tool"}, map[string]any{
-				"id":                   stringSchema(),
-				"scope":                stringSchema(),
-				"name":                 stringSchema(),
-				"base_url":             stringSchema(),
-				"mcp_url":              stringSchema(),
-				"server_url":           stringSchema(),
-				"tool":                 stringSchema(),
-				"arguments":            map[string]any{"type": "object"},
-				"connector_kind":       stringSchema(),
-				"authority":            stringSchema(),
-				"authority_score":      map[string]any{"type": "number", "minimum": 0, "maximum": 1},
-				"document_source_type": stringSchema(),
-				"bearer_token_env":     stringSchema(),
-				"header_env":           map[string]any{"type": "object"},
-				"config":               map[string]any{"type": "object"},
-				"metadata":             map[string]any{"type": "object"},
-				"approval_id":          stringSchema(),
-			}),
+			"description": "Dry-run a user-owned HTTP MCP connector/source tool and validate that it returns normalized Abra documents without creating a source config or queueing ingestion. Accepts base_url, mcp_url, or server_url plus tool, arguments, bearer_token_env, header_env, connector_kind, and document_source_type.",
+			"inputSchema": validateMCPSourceSchema(),
+		},
+		{
+			"name":        "validate_connector_source",
+			"description": "Connector-named alias for validate_mcp_source. Use this before onboarding a connector to verify the HTTP MCP tool returns normalized Abra documents without saving config or queueing ingestion.",
+			"inputSchema": validateMCPSourceSchema(),
+		},
+		{
+			"name":        "inspect_connector_source",
+			"description": "Inspect a user-owned HTTP MCP connector by calling upstream tools/list. Use this to discover export tool names before validating or registering the connector. Does not save config or queue ingestion.",
+			"inputSchema": inspectConnectorSourceSchema(),
 		},
 		{
 			"name":        "list_source_configs",
-			"description": "List source configs for a scope.",
-			"inputSchema": objectSchema([]string{"scope"}, map[string]any{
-				"scope": stringSchema(),
-				"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100},
-			}),
+			"description": "List source configs and connector-backed sources for a scope.",
+			"inputSchema": listSourceConfigsSchema(),
+		},
+		{
+			"name":        "list_connector_sources",
+			"description": "Connector-named alias for list_source_configs. List connector/source configs for a scope before inspecting, enabling, pausing, or syncing them.",
+			"inputSchema": listSourceConfigsSchema(),
 		},
 		{
 			"name":        "get_source_config",
 			"description": "Read one source config by id, including status, authority, freshness policy, and latest success/error fields. Requires read access to the source scope.",
-			"inputSchema": objectSchema([]string{"source_config_id"}, map[string]any{
-				"source_config_id": stringSchema(),
-			}),
+			"inputSchema": sourceConfigIDSchema(),
+		},
+		{
+			"name":        "get_connector_source",
+			"description": "Connector-named alias for get_source_config. Read one connector/source config by id, including status, authority, freshness policy, and latest success/error fields.",
+			"inputSchema": sourceConfigIDSchema(),
 		},
 		{
 			"name":        "set_source_config_status",
 			"description": "Pause, resume, disable, or mark a source config status without rewriting connector config. Resuming to active is connector enablement and may require approval when enforcement is active.",
-			"inputSchema": objectSchema([]string{"source_config_id", "status"}, map[string]any{
-				"source_config_id": stringSchema(),
-				"status":           map[string]any{"type": "string", "enum": []string{"active", "paused", "disabled", "deleted", "error"}},
-				"created_by":       stringSchema(),
-				"approval_id":      stringSchema(),
-				"metadata":         map[string]any{"type": "object"},
-			}),
+			"inputSchema": sourceConfigStatusSchema(),
+		},
+		{
+			"name":        "set_connector_source_status",
+			"description": "Connector-named alias for set_source_config_status. Enable, pause, disable, delete, or mark a connector/source config error without rewriting connector settings.",
+			"inputSchema": sourceConfigStatusSchema(),
 		},
 		{
 			"name":        "enqueue_ingestion_job",
-			"description": "Queue an ingestion job for an active source config. Requires write access to the source scope.",
-			"inputSchema": objectSchema([]string{"source_config_id"}, map[string]any{
-				"source_config_id": stringSchema(),
-				"trigger_type":     map[string]any{"type": "string", "enum": []string{"manual", "schedule", "webhook", "backfill", "revalidate"}},
-				"created_by":       stringSchema(),
-				"approval_id":      stringSchema(),
-				"max_attempts":     map[string]any{"type": "integer", "minimum": 1, "maximum": 20},
-				"metadata":         map[string]any{"type": "object"},
-			}),
+			"description": "Queue an ingestion job for an active source config or connector. Requires write access to the source scope.",
+			"inputSchema": enqueueIngestionJobSchema(),
+		},
+		{
+			"name":        "sync_connector_source",
+			"description": "Connector-named alias for enqueue_ingestion_job. Queue a manual, scheduled, webhook, backfill, or revalidation sync for an active connector/source config.",
+			"inputSchema": enqueueIngestionJobSchema(),
 		},
 		{
 			"name":        "list_ingestion_jobs",
@@ -2837,11 +2811,149 @@ func mcpTools() []map[string]any {
 
 func mcpToolTraceName(name string) string {
 	switch name {
-	case "recall", "ingest_document", "ingest_documents", "remember_claim", "capture_observation", "capture_task_outcome", "list_observations", "challenge", "forget", "brain_sources", "brain_summaries", "brain_think", "memory_health", "discover_scopes", "rebuild_summaries", "policy_plan", "working_memory_compose", "list_conflicts", "resolve_conflict", "upsert_acl_policy", "list_acl_policies", "acl_decision", "upsert_agent_policy", "list_agent_policies", "agent_policy_decision", "upsert_agent_profile", "list_agent_profiles", "upsert_source_config", "validate_mcp_source", "list_source_configs", "get_source_config", "set_source_config_status", "enqueue_ingestion_job", "list_ingestion_jobs", "retry_ingestion_job", "cancel_ingestion_job", "propose_learning", "list_learning_proposals", "decide_learning_proposal", "apply_learning_proposal", "request_approval":
+	case "recall", "ingest_document", "ingest_documents", "remember_claim", "capture_observation", "capture_task_outcome", "list_observations", "challenge", "forget", "brain_sources", "brain_summaries", "brain_think", "memory_health", "discover_scopes", "rebuild_summaries", "policy_plan", "working_memory_compose", "list_conflicts", "resolve_conflict", "upsert_acl_policy", "list_acl_policies", "acl_decision", "upsert_agent_policy", "list_agent_policies", "agent_policy_decision", "upsert_agent_profile", "list_agent_profiles", "upsert_source_config", "upsert_connector_source", "validate_mcp_source", "validate_connector_source", "inspect_connector_source", "list_source_configs", "list_connector_sources", "get_source_config", "get_connector_source", "set_source_config_status", "set_connector_source_status", "enqueue_ingestion_job", "sync_connector_source", "list_ingestion_jobs", "retry_ingestion_job", "cancel_ingestion_job", "propose_learning", "list_learning_proposals", "decide_learning_proposal", "apply_learning_proposal", "request_approval":
 		return name
 	default:
 		return "unknown"
 	}
+}
+
+func mcpConnectorSourceConfigFromArgs(args map[string]any, requireTool bool) store.SourceConfigRecord {
+	sourceConfig := store.SourceConfigRecord{
+		ID:              stringArg(args, "id"),
+		Scope:           stringArg(args, "scope"),
+		SourceType:      string(ingest.SourceTypeMCP),
+		Name:            firstNonEmpty(stringArg(args, "name"), "mcp-connector"),
+		BaseURL:         firstNonEmpty(stringArg(args, "base_url"), stringArg(args, "mcp_url"), stringArg(args, "server_url")),
+		ConnectorKind:   stringArg(args, "connector_kind"),
+		Authority:       stringArg(args, "authority"),
+		AuthorityScore:  floatArg(args, "authority_score", 0),
+		FreshnessPolicy: mapArg(args, "freshness_policy"),
+		ScheduleCron:    stringArg(args, "schedule_cron"),
+		Config:          mapArg(args, "config"),
+		Metadata:        mapArg(args, "metadata"),
+		CreatedBy:       stringArg(args, "created_by"),
+		ApprovalID:      stringArg(args, "approval_id"),
+	}
+	if sourceConfig.Config == nil {
+		sourceConfig.Config = map[string]any{}
+	}
+	serverURL, _ := sourceConfig.Config["server_url"].(string)
+	if sourceConfig.BaseURL != "" && strings.TrimSpace(serverURL) == "" {
+		sourceConfig.Config["server_url"] = sourceConfig.BaseURL
+	}
+	if tool := stringArg(args, "tool"); tool != "" || requireTool {
+		sourceConfig.Config["tool"] = tool
+	}
+	if arguments := mapArg(args, "arguments"); len(arguments) > 0 {
+		sourceConfig.Config["arguments"] = arguments
+	}
+	if bearerTokenEnv := stringArg(args, "bearer_token_env"); bearerTokenEnv != "" {
+		sourceConfig.Config["bearer_token_env"] = bearerTokenEnv
+	}
+	if headerEnv := stringMapArg(args, "header_env"); len(headerEnv) > 0 {
+		sourceConfig.Config["header_env"] = headerEnv
+	}
+	if documentSourceType := stringArg(args, "document_source_type"); documentSourceType != "" {
+		sourceConfig.Config["document_source_type"] = documentSourceType
+	}
+	return sourceConfig
+}
+
+func sourceConfigSchema() map[string]any {
+	return objectSchema([]string{"scope", "source_type", "name"}, map[string]any{
+		"id":               stringSchema(),
+		"scope":            stringSchema(),
+		"source_type":      stringSchema(),
+		"name":             stringSchema(),
+		"base_url":         stringSchema(),
+		"connector_kind":   stringSchema(),
+		"status":           sourceConfigStatusProperty(),
+		"authority":        stringSchema(),
+		"authority_score":  map[string]any{"type": "number", "minimum": 0, "maximum": 1},
+		"freshness_policy": map[string]any{"type": "object"},
+		"schedule_cron":    stringSchema(),
+		"config":           map[string]any{"type": "object"},
+		"metadata":         map[string]any{"type": "object"},
+		"created_by":       stringSchema(),
+		"approval_id":      stringSchema(),
+	})
+}
+
+func validateMCPSourceSchema() map[string]any {
+	return objectSchema([]string{"scope", "tool"}, map[string]any{
+		"id":                   stringSchema(),
+		"scope":                stringSchema(),
+		"name":                 stringSchema(),
+		"base_url":             stringSchema(),
+		"mcp_url":              stringSchema(),
+		"server_url":           stringSchema(),
+		"tool":                 stringSchema(),
+		"arguments":            map[string]any{"type": "object"},
+		"connector_kind":       stringSchema(),
+		"authority":            stringSchema(),
+		"authority_score":      map[string]any{"type": "number", "minimum": 0, "maximum": 1},
+		"document_source_type": stringSchema(),
+		"bearer_token_env":     stringSchema(),
+		"header_env":           map[string]any{"type": "object"},
+		"config":               map[string]any{"type": "object"},
+		"metadata":             map[string]any{"type": "object"},
+		"approval_id":          stringSchema(),
+	})
+}
+
+func inspectConnectorSourceSchema() map[string]any {
+	return objectSchema([]string{"scope"}, map[string]any{
+		"id":               stringSchema(),
+		"scope":            stringSchema(),
+		"name":             stringSchema(),
+		"base_url":         stringSchema(),
+		"mcp_url":          stringSchema(),
+		"server_url":       stringSchema(),
+		"connector_kind":   stringSchema(),
+		"bearer_token_env": stringSchema(),
+		"header_env":       map[string]any{"type": "object"},
+		"config":           map[string]any{"type": "object"},
+		"metadata":         map[string]any{"type": "object"},
+	})
+}
+
+func listSourceConfigsSchema() map[string]any {
+	return objectSchema([]string{"scope"}, map[string]any{
+		"scope": stringSchema(),
+		"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100},
+	})
+}
+
+func sourceConfigIDSchema() map[string]any {
+	return objectSchema([]string{"source_config_id"}, map[string]any{
+		"source_config_id": stringSchema(),
+	})
+}
+
+func sourceConfigStatusSchema() map[string]any {
+	return objectSchema([]string{"source_config_id", "status"}, map[string]any{
+		"source_config_id": stringSchema(),
+		"status":           sourceConfigStatusProperty(),
+		"created_by":       stringSchema(),
+		"approval_id":      stringSchema(),
+		"metadata":         map[string]any{"type": "object"},
+	})
+}
+
+func enqueueIngestionJobSchema() map[string]any {
+	return objectSchema([]string{"source_config_id"}, map[string]any{
+		"source_config_id": stringSchema(),
+		"trigger_type":     map[string]any{"type": "string", "enum": []string{"manual", "schedule", "webhook", "backfill", "revalidate"}},
+		"created_by":       stringSchema(),
+		"approval_id":      stringSchema(),
+		"max_attempts":     map[string]any{"type": "integer", "minimum": 1, "maximum": 20},
+		"metadata":         map[string]any{"type": "object"},
+	})
+}
+
+func sourceConfigStatusProperty() map[string]any {
+	return map[string]any{"type": "string", "enum": []string{"active", "paused", "disabled", "deleted", "error"}}
 }
 
 func mcpIngestDocumentSuccess(index int, doc brain.IngestDocumentInput, ingested brain.IngestDocumentResult, includeStatus bool) map[string]any {

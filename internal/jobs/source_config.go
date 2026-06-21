@@ -84,6 +84,16 @@ func (s SourceConfig) MCPSourceSpec() (MCPSourceSpec, error) {
 }
 
 func (s MCPSourceSpec) Validate() error {
+	if err := s.ValidateServer(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(s.Tool) == "" {
+		return fmt.Errorf("source %q mcp tool is required", s.ID)
+	}
+	return nil
+}
+
+func (s MCPSourceSpec) ValidateServer() error {
 	if strings.TrimSpace(s.ID) == "" {
 		return fmt.Errorf("mcp source id is required")
 	}
@@ -99,9 +109,6 @@ func (s MCPSourceSpec) Validate() error {
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return fmt.Errorf("source %q mcp server_url must use http or https", s.ID)
-	}
-	if strings.TrimSpace(s.Tool) == "" {
-		return fmt.Errorf("source %q mcp tool is required", s.ID)
 	}
 	return nil
 }

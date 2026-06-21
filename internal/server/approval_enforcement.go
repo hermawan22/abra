@@ -155,10 +155,21 @@ func writePolicyDenied(w http.ResponseWriter, requirement approvalRequirement, d
 }
 
 func writeApprovalRequired(w http.ResponseWriter, requirement approvalRequirement, detail string) {
+	requestCommand := "abra approvals request --scope " + shellQuoteForResponse(requirement.Scope) + " --action " + shellQuoteForResponse(requirement.Action)
+	if requirement.TargetType != "" {
+		requestCommand += " --target-type " + shellQuoteForResponse(requirement.TargetType)
+	}
+	if requirement.TargetID != "" {
+		requestCommand += " --target-id " + shellQuoteForResponse(requirement.TargetID)
+	}
 	writeJSON(w, http.StatusConflict, map[string]any{
 		"error":   "approval_required",
 		"message": "create and approve an approval request, then retry the operation with approval_id",
 		"detail":  detail,
+		"next_steps": []string{
+			requestCommand,
+			"retry the original operation with approval_id after approval",
+		},
 		"approval": map[string]any{
 			"action":      requirement.Action,
 			"scope":       requirement.Scope,
@@ -166,6 +177,13 @@ func writeApprovalRequired(w http.ResponseWriter, requirement approvalRequiremen
 			"target_id":   requirement.TargetID,
 		},
 	})
+}
+
+func shellQuoteForResponse(value string) string {
+	if value == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func sourceAuthorityApprovalRequired(input store.SourceConfigRecord) bool {

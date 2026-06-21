@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { readFile } from "node:fs/promises";
+import { createServer } from "node:http";
 
 const baseUrl = (process.env.ABRA_BASE_URL || "http://127.0.0.1:18080").replace(/\/$/, "");
 const token = process.env.ABRA_API_TOKEN || "dev-token";
@@ -22,6 +23,17 @@ function requireTokenForRemoteBaseURL(rawBaseUrl) {
   if (!loopback && !process.env.ABRA_API_TOKEN && process.env.ABRA_ALLOW_DEV_TOKEN !== "1") {
     throw new Error("ABRA_API_TOKEN is required when ABRA_BASE_URL is not loopback. Set ABRA_ALLOW_DEV_TOKEN=1 only for isolated test environments.");
   }
+}
+
+function connectorFixtureHost(address) {
+  if (process.env.ABRA_GOLDEN_MCP_HOST) {
+    return process.env.ABRA_GOLDEN_MCP_HOST;
+  }
+  const apiHost = new URL(baseUrl).hostname;
+  if (["127.0.0.1", "localhost", "::1", "[::1]"].includes(apiHost)) {
+    return "host.docker.internal";
+  }
+  return address.address;
 }
 
 async function request(path, { method = "GET", body, expectStatus = 200 } = {}) {
@@ -50,14 +62,28 @@ function materialize(value) {
   return String(value || "").replaceAll("{{run_id}}", defaultScopeSuffix);
 }
 
-function scopedRecord(record) {
-  const out = structuredClone(record);
-  for (const key of ["scope", "source_url", "source_id", "expected_source_url", "expected_memory_source_url", "title", "query", "memory_task"]) {
-    if (out[key] !== undefined) {
-      out[key] = materialize(out[key]);
-    }
+function materializeValue(value) {
+  if (typeof value === "string") {
+    return materialize(value);
   }
-  return out;
+  if (Array.isArray(value)) {
+    return value.map((item) => materializeValue(item));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, materializeValue(item)]));
+  }
+  return value;
+}
+
+function scopedRecord(record) {
+  return materializeValue(structuredClone(record));
+}
+
+function valuesOf(value) {
+  if (value === undefined || value === null) {
+    return [];
+  }
+  return Array.isArray(value) ? value : [value];
 }
 
 async function readDataset(path) {
@@ -113,15 +139,21 @@ function hitRate(ranks, cutoff) {
 }
 
 function requireText(payload, contains, label) {
-  for (const value of contains || []) {
+  for (const value of valuesOf(contains)) {
     assert(textOf(payload).includes(String(value).toLowerCase()), `${label} missing expected text ${JSON.stringify(value)}`);
   }
 }
 
 function forbidText(payload, contains, label) {
-  for (const value of contains || []) {
+  for (const value of valuesOf(contains)) {
     assert(!textOf(payload).includes(String(value).toLowerCase()), `${label} included forbidden text ${JSON.stringify(value)}`);
   }
+}
+
+function citationsForSource(payload, sourceUrl) {
+  return (Array.isArray(payload.citations) ? payload.citations : []).filter(
+    (citation) => citation.source_url === sourceUrl || citation.url === sourceUrl
+  );
 }
 
 function sourceWasCited(payload, sourceUrl) {
@@ -129,13 +161,31 @@ function sourceWasCited(payload, sourceUrl) {
     (Array.isArray(payload.claims) && payload.claims.some((claim) => claim.source_url === sourceUrl)) ||
     (Array.isArray(payload.facts) && payload.facts.some((claim) => claim.source_url === sourceUrl)) ||
     (Array.isArray(payload.supporting_documents) && payload.supporting_documents.some((document) => document.source_url === sourceUrl)) ||
-    (Array.isArray(payload.evidence) && payload.evidence.some((item) => item.source_url === sourceUrl))
+    (Array.isArray(payload.evidence) && payload.evidence.some((item) => item.source_url === sourceUrl)) ||
+    citationsForSource(payload, sourceUrl).length > 0
   );
+}
+
+function citationRefsForSource(payload, sourceUrl) {
+  return citationsForSource(payload, sourceUrl).map((citation) => String(citation.ref || "")).filter(Boolean);
+}
+
+function answerCitesRef(answer, ref) {
+  return String(answer || "").includes(`[${ref}]`);
+}
+
+function gapCodes(payload) {
+  return Array.isArray(payload.gaps) ? payload.gaps.map((gap) => String(gap.code || "")) : [];
+}
+
+function allowedDecisionValues(item, specificField) {
+  return valuesOf(item[specificField] ?? item.expected_agent_decision).map(String);
 }
 
 const records = await readDataset(datasetPath);
 const documents = records.filter((record) => (record.type || "case") === "document");
 const cases = records.filter((record) => (record.type || "case") === "case");
+const connectorCases = records.filter((record) => record.type === "connector");
 
 await runCheck("runtime_ready", async () => {
   const ready = await request("/readyz");
@@ -181,13 +231,155 @@ await runCheck("seed_dataset_documents", async () => {
   return { seeded: results.length, documents: results };
 });
 
+function listen(server) {
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve(server.address());
+    });
+  });
+}
+
+function closeServer(server) {
+  return new Promise((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+}
+
+function readRequestJSON(req) {
+  return new Promise((resolve, reject) => {
+    let raw = "";
+    req.setEncoding("utf8");
+    req.on("data", (chunk) => {
+      raw += chunk;
+    });
+    req.on("end", () => {
+      try {
+        resolve(raw.trim() === "" ? {} : JSON.parse(raw));
+      } catch (error) {
+        reject(error);
+      }
+    });
+    req.on("error", reject);
+  });
+}
+
+function createConnectorFixtureServer(connector) {
+  const calls = [];
+  const documents = valuesOf(connector.documents).map((document) => materializeValue(document));
+  const server = createServer(async (req, res) => {
+    try {
+      const body = await readRequestJSON(req);
+      calls.push(body);
+      const tool = body && body.params && body.params.name;
+      if (connector.expected_tool && tool !== connector.expected_tool) {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ jsonrpc: "2.0", id: body.id, error: { code: -32602, message: `unexpected tool ${tool}` } }));
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: body.id,
+          result: {
+            structuredContent: { documents }
+          }
+        })
+      );
+    } catch (error) {
+      res.writeHead(500, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+    }
+  });
+  return { server, calls };
+}
+
+await runCheck("connector_control_plane", async () => {
+  if (connectorCases.length === 0) {
+    return { skipped: true, reason: "no connector records" };
+  }
+  const results = [];
+  for (const connector of connectorCases) {
+    assert(connector.id, "connector record missing id");
+    assert(connector.scope, `${connector.id} missing scope`);
+    assert(connector.expected_tool, `${connector.id} missing expected_tool`);
+    assert(connector.documents, `${connector.id} missing documents`);
+    const { server, calls } = createConnectorFixtureServer(connector);
+    const address = await listen(server);
+    const mcpUrl = `http://${connectorFixtureHost(address)}:${address.port}/mcp`;
+    try {
+      const sourceConfig = {
+        id: connector.source_config_id || `${connector.id}-source`,
+        scope: connector.scope,
+        source_type: "mcp",
+        name: connector.name || connector.id,
+        base_url: mcpUrl,
+        connector_kind: connector.connector_kind || "mcp",
+        status: connector.status || "paused",
+        authority: connector.authority || "connector-fixture",
+        authority_score: Number(connector.authority_score ?? 0.7),
+        schedule_cron: connector.schedule_cron || "",
+        config: {
+          tool: connector.expected_tool,
+          arguments: connector.arguments || {},
+          document_source_type: connector.document_source_type || connector.connector_kind || "mcp"
+        },
+        metadata: {
+          eval_dataset: "golden",
+          connector_model: "user_owned_mcp"
+        },
+        created_by: "golden-eval"
+      };
+      const validated = await request("/sources/configs/validate", {
+        method: "POST",
+        body: sourceConfig
+      });
+      assert(validated.status === "ok", `${connector.id} connector validation status = ${validated.status}`);
+      assert(validated.count === valuesOf(connector.documents).length, `${connector.id} connector validation count mismatch`);
+      requireText(validated, connector.expected_validate_contains, `${connector.id} connector validation`);
+      assert(calls.length >= 1, `${connector.id} did not call MCP fixture`);
+
+      const registered = await request("/sources/configs", {
+        method: "POST",
+        body: sourceConfig
+      });
+      assert(registered.source_config_id === sourceConfig.id, `${connector.id} registered source id mismatch`);
+      assert(registered.status === "upserted", `${connector.id} register status = ${registered.status}`);
+
+      const listed = await request(`/sources/configs?scope=${encodeURIComponent(connector.scope)}&limit=20`);
+      const configs = Array.isArray(listed.source_configs) ? listed.source_configs : [];
+      const stored = configs.find((item) => item.id === sourceConfig.id);
+      assert(stored, `${connector.id} registered connector source was not listable`);
+      assert(stored.status === sourceConfig.status, `${connector.id} source status = ${stored.status}`);
+      assert(stored.source_type === "mcp", `${connector.id} source type = ${stored.source_type}`);
+      assert(stored.connector_kind === sourceConfig.connector_kind, `${connector.id} connector kind mismatch`);
+      results.push({
+        id: connector.id,
+        source_config_id: sourceConfig.id,
+        status: stored.status,
+        validated_documents: validated.count,
+        mcp_calls: calls.length
+      });
+    } finally {
+      await closeServer(server);
+    }
+  }
+  return { connectors: results };
+});
+
 const recallRanks = [];
 let verifiedWithoutCitation = 0;
 let leakageCount = 0;
 let memoryCases = 0;
 let sourceBackedMemoryCases = 0;
 let trackedStaleMemoryMentions = 0;
+let thinkCases = 0;
+let thinkCitationHits = 0;
+let thinkForbiddenLeaks = 0;
 const decisions = {};
+const thinkDecisions = {};
 
 await runCheck("golden_cases", async () => {
   const results = [];
@@ -236,6 +428,10 @@ await runCheck("golden_cases", async () => {
     let memory = null;
     let memoryLatency = null;
     let staleMemoryMentioned = false;
+    let think = null;
+    let thinkLatency = null;
+    let thinkSourceCited = false;
+    let thinkHasCitationRef = false;
     if (item.memory_task) {
       memoryCases++;
       const before = Date.now();
@@ -274,7 +470,7 @@ await runCheck("golden_cases", async () => {
       assert(memory.stats.context_tokens === memory.context_window.estimated_tokens, `${item.id} memory packet missing context token stats`);
       decisions[memory.agent_decision.decision] = (decisions[memory.agent_decision.decision] || 0) + 1;
       if (item.expected_memory_contains) {
-        requireText(memory, Array.isArray(item.expected_memory_contains) ? item.expected_memory_contains : [item.expected_memory_contains], item.id);
+        requireText(memory, item.expected_memory_contains, item.id);
       }
       forbidText(memory, item.forbidden_memory_contains, item.id);
       if (item.expected_memory_source_url) {
@@ -285,18 +481,88 @@ await runCheck("golden_cases", async () => {
         );
       }
       staleMemoryMentioned =
-        Array.isArray(item.tracked_stale_memory_contains) &&
-        item.tracked_stale_memory_contains.some((value) => textOf(memory).includes(String(value).toLowerCase()));
+        valuesOf(item.tracked_stale_memory_contains).some((value) => textOf(memory).includes(String(value).toLowerCase()));
       if (staleMemoryMentioned) {
         trackedStaleMemoryMentions++;
       }
-      if (item.expected_agent_decision) {
-        const allowed = Array.isArray(item.expected_agent_decision)
-          ? item.expected_agent_decision
-          : [item.expected_agent_decision];
+      {
+        const allowed = allowedDecisionValues(item, "expected_memory_agent_decision");
+        if (allowed.length > 0) {
+          assert(
+            allowed.includes(memory.agent_decision.decision),
+            `${item.id} expected memory agent decision ${allowed.join("|")}, got ${memory.agent_decision.decision}`
+          );
+        }
+      }
+    }
+    if (
+      item.expected_think_contains ||
+      item.expected_think_source_url ||
+      item.forbidden_think_contains ||
+      item.expected_think_gap_codes ||
+      item.expected_think_agent_decision ||
+      item.expected_think_answer_decision_text
+    ) {
+      thinkCases++;
+      const before = Date.now();
+      think = await request("/brain/think", {
+        method: "POST",
+        body: {
+          question: item.think_question || item.query,
+          scope: item.scope,
+          agent: item.agent || "golden-eval",
+          limit,
+          max_queries: Number(item.max_queries || 6),
+          token_budget: Number(item.token_budget || 900),
+          include_unverified: item.include_unverified === true
+        }
+      });
+      thinkLatency = Date.now() - before;
+      assert(thinkLatency <= memoryMaxMs, `${item.id} brain_think latency ${thinkLatency}ms exceeded ${memoryMaxMs}ms`);
+      assert(think.answer && typeof think.answer === "string", `${item.id} brain_think missing answer`);
+      assert(Array.isArray(think.citations), `${item.id} brain_think missing citations array`);
+      assert(Array.isArray(think.gaps), `${item.id} brain_think missing gaps array`);
+      assert(think.agent_decision && think.agent_decision.decision, `${item.id} brain_think missing agent decision`);
+      assert(think.verification && think.verification.verdict, `${item.id} brain_think missing verification`);
+      thinkDecisions[think.agent_decision.decision] = (thinkDecisions[think.agent_decision.decision] || 0) + 1;
+      requireText(think.answer, item.expected_think_contains, `${item.id} brain_think answer`);
+      try {
+        forbidText(think.answer, item.forbidden_think_contains, `${item.id} brain_think answer`);
+      } catch (error) {
+        thinkForbiddenLeaks++;
+        throw error;
+      }
+      if (item.expected_think_source_url) {
+        thinkSourceCited = sourceWasCited(think, item.expected_think_source_url);
+        assert(thinkSourceCited, `${item.id} brain_think did not cite expected source ${item.expected_think_source_url}`);
+        const citedRefs = citationRefsForSource(think, item.expected_think_source_url);
         assert(
-          allowed.includes(memory.agent_decision.decision),
-          `${item.id} expected agent decision ${allowed.join("|")}, got ${memory.agent_decision.decision}`
+          citedRefs.some((ref) => answerCitesRef(think.answer, ref)),
+          `${item.id} brain_think answer did not include citation ref for ${item.expected_think_source_url}`
+        );
+        thinkCitationHits++;
+      }
+      thinkHasCitationRef = /\[C\d+\]/.test(think.answer);
+      assert(!item.expected_think_source_url || thinkHasCitationRef, `${item.id} brain_think answer did not include citation refs`);
+      if (item.expected_think_gap_codes) {
+        const actualGapCodes = gapCodes(think);
+        for (const expected of valuesOf(item.expected_think_gap_codes)) {
+          assert(actualGapCodes.includes(expected), `${item.id} brain_think missing expected gap code ${expected}`);
+        }
+      }
+      {
+        const allowed = allowedDecisionValues(item, "expected_think_agent_decision");
+        if (allowed.length > 0) {
+          assert(
+            allowed.includes(think.agent_decision.decision),
+            `${item.id} brain_think expected agent decision ${allowed.join("|")}, got ${think.agent_decision.decision}`
+          );
+        }
+      }
+      if (item.expected_think_answer_decision_text) {
+        assert(
+          String(think.answer).includes(`Decision gate: ${think.agent_decision.decision}.`),
+          `${item.id} brain_think answer missing decision gate text for ${think.agent_decision.decision}`
         );
       }
     }
@@ -309,7 +575,11 @@ await runCheck("golden_cases", async () => {
       memory_latency_ms: memoryLatency,
       agent_decision: memory ? memory.agent_decision.decision : undefined,
       memory_source_cited: item.expected_memory_source_url && memory ? sourceWasCited(memory, item.expected_memory_source_url) : undefined,
-      tracked_stale_memory_mentioned: staleMemoryMentioned || undefined
+      tracked_stale_memory_mentioned: staleMemoryMentioned || undefined,
+      think_latency_ms: thinkLatency,
+      think_agent_decision: think ? think.agent_decision.decision : undefined,
+      think_source_cited: item.expected_think_source_url && think ? thinkSourceCited : undefined,
+      think_answer_citation_ref: think ? thinkHasCitationRef : undefined
     });
   }
   assert(verifiedWithoutCitation === 0, `${verifiedWithoutCitation} verified claims were missing source_url`);
@@ -338,7 +608,11 @@ const summary = {
     memory_cases: memoryCases,
     source_backed_memory_cases: sourceBackedMemoryCases,
     tracked_stale_memory_mentions: trackedStaleMemoryMentions,
-    agent_decisions: decisions
+    think_cases: thinkCases,
+    think_citation_hits: thinkCitationHits,
+    think_forbidden_leaks: thinkForbiddenLeaks,
+    agent_decisions: decisions,
+    think_agent_decisions: thinkDecisions
   },
   artifacts
 };

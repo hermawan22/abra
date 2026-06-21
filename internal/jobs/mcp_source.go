@@ -5,12 +5,19 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/hermawan22/abra/internal/ingest"
+)
+
+const (
+	defaultMCPSourceMaxResponseBytes        = 25 << 20
+	defaultMCPSourceMaxDocuments            = 50
+	defaultMCPSourceMaxDocumentContentBytes = 5 << 20
 )
 
 type mcpDocument struct {
@@ -33,10 +40,38 @@ type MCPValidationDocument struct {
 	ContentBytes int    `json:"content_bytes"`
 }
 
+type MCPValidationWarning struct {
+	Index     int    `json:"index,omitempty"`
+	Code      string `json:"code"`
+	Message   string `json:"message"`
+	SourceURL string `json:"source_url,omitempty"`
+}
+
+type MCPValidationReport struct {
+	Status    string                  `json:"status"`
+	Count     int                     `json:"count"`
+	Documents []MCPValidationDocument `json:"documents"`
+	Warnings  []MCPValidationWarning  `json:"warnings,omitempty"`
+}
+
+type MCPToolInfo struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	InputSchema map[string]any `json:"inputSchema,omitempty"`
+}
+
 func ValidateMCPSource(ctx context.Context, source SourceConfig) ([]MCPValidationDocument, error) {
-	docs, err := fetchMCPDocuments(ctx, source)
+	report, err := ValidateMCPSourceReport(ctx, source)
 	if err != nil {
 		return nil, err
+	}
+	return report.Documents, nil
+}
+
+func ValidateMCPSourceReport(ctx context.Context, source SourceConfig) (MCPValidationReport, error) {
+	docs, err := fetchMCPDocuments(ctx, source)
+	if err != nil {
+		return MCPValidationReport{}, err
 	}
 	out := make([]MCPValidationDocument, 0, len(docs))
 	for _, doc := range docs {
@@ -49,7 +84,22 @@ func ValidateMCPSource(ctx context.Context, source SourceConfig) ([]MCPValidatio
 			ContentBytes: len([]byte(doc.Content)),
 		})
 	}
-	return out, nil
+	return MCPValidationReport{
+		Status:    "ok",
+		Count:     len(out),
+		Documents: out,
+		Warnings:  mcpValidationWarnings(docs, source),
+	}, nil
+}
+
+func ListMCPTools(ctx context.Context, source SourceConfig) ([]MCPToolInfo, error) {
+	var decoded struct {
+		Tools []MCPToolInfo `json:"tools"`
+	}
+	if err := callMCPJSONRPC(ctx, source, "tools/list", nil, &decoded, false); err != nil {
+		return nil, err
+	}
+	return decoded.Tools, nil
 }
 
 type mcpJSONRPCResponse struct {
@@ -134,64 +184,20 @@ func (r *Runner) runMCPSource(ctx context.Context, source SourceConfig, jobID st
 }
 
 func fetchMCPDocuments(ctx context.Context, source SourceConfig) ([]mcpDocument, error) {
-	spec, err := source.MCPSourceSpec()
+	var result mcpToolResult
+	spec, _ := source.MCPSourceSpec()
+	if err := callMCPJSONRPC(ctx, source, "tools/call", map[string]any{
+		"name":      spec.Tool,
+		"arguments": spec.Arguments,
+	}, &result, true); err != nil {
+		return nil, err
+	}
+	docs, err := mcpDocumentsFromResult(result, source)
 	if err != nil {
 		return nil, err
 	}
-	if err := spec.Validate(); err != nil {
-		return nil, err
-	}
-	body := map[string]any{
-		"jsonrpc": "2.0",
-		"id":      fmt.Sprintf("abra-%d", time.Now().UnixNano()),
-		"method":  "tools/call",
-		"params": map[string]any{
-			"name":      spec.Tool,
-			"arguments": spec.Arguments,
-		},
-	}
-	payload, err := json.Marshal(body)
-	if err != nil {
-		return nil, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, spec.ServerURL, bytes.NewReader(payload))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("content-type", "application/json")
-	req.Header.Set("accept", "application/json")
-	if spec.BearerTokenEnv != "" {
-		token := strings.TrimSpace(os.Getenv(spec.BearerTokenEnv))
-		if token == "" {
-			return nil, fmt.Errorf("mcp source %q bearer_token_env %q is empty", source.ID, spec.BearerTokenEnv)
-		}
-		req.Header.Set("authorization", "Bearer "+token)
-	}
-	for header, envName := range spec.HeaderEnv {
-		value := strings.TrimSpace(os.Getenv(envName))
-		if value == "" {
-			return nil, fmt.Errorf("mcp source %q header env %q for %q is empty", source.ID, envName, header)
-		}
-		req.Header.Set(header, value)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("call mcp source %q: %w", source.ID, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("call mcp source %q: status %d", source.ID, resp.StatusCode)
-	}
-	var decoded mcpJSONRPCResponse
-	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
-		return nil, fmt.Errorf("decode mcp source %q response: %w", source.ID, err)
-	}
-	if decoded.Error != nil {
-		return nil, fmt.Errorf("mcp source %q tool error %d: %s", source.ID, decoded.Error.Code, decoded.Error.Message)
-	}
-	docs, err := mcpDocumentsFromResult(decoded.Result, source)
-	if err != nil {
-		return nil, err
+	if len(docs) > defaultMCPSourceMaxDocuments {
+		return nil, fmt.Errorf("mcp source %q returned %d documents; limit is %d", source.ID, len(docs), defaultMCPSourceMaxDocuments)
 	}
 	for index := range docs {
 		docs[index] = normalizeMCPDocument(docs[index], source)
@@ -200,6 +206,87 @@ func fetchMCPDocuments(ctx context.Context, source SourceConfig) ([]mcpDocument,
 		}
 	}
 	return docs, nil
+}
+
+func callMCPJSONRPC(ctx context.Context, source SourceConfig, method string, params any, out any, requireTool bool) error {
+	spec, err := source.MCPSourceSpec()
+	if err != nil {
+		return err
+	}
+	if requireTool {
+		if err := spec.Validate(); err != nil {
+			return err
+		}
+	} else if err := spec.ValidateServer(); err != nil {
+		return err
+	}
+	body := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      fmt.Sprintf("abra-%d", time.Now().UnixNano()),
+		"method":  method,
+	}
+	if params != nil {
+		body["params"] = params
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, spec.ServerURL, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("accept", "application/json")
+	if spec.BearerTokenEnv != "" {
+		token := strings.TrimSpace(os.Getenv(spec.BearerTokenEnv))
+		if token == "" {
+			return fmt.Errorf("mcp source %q bearer_token_env %q is empty", source.ID, spec.BearerTokenEnv)
+		}
+		req.Header.Set("authorization", "Bearer "+token)
+	}
+	for header, envName := range spec.HeaderEnv {
+		value := strings.TrimSpace(os.Getenv(envName))
+		if value == "" {
+			return fmt.Errorf("mcp source %q header env %q for %q is empty", source.ID, envName, header)
+		}
+		req.Header.Set(header, value)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("call mcp source %q: %w", source.ID, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("call mcp source %q: status %d", source.ID, resp.StatusCode)
+	}
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, defaultMCPSourceMaxResponseBytes+1))
+	if err != nil {
+		return fmt.Errorf("read mcp source %q response: %w", source.ID, err)
+	}
+	if len(responseBody) > defaultMCPSourceMaxResponseBytes {
+		return fmt.Errorf("mcp source %q response exceeds %d bytes", source.ID, defaultMCPSourceMaxResponseBytes)
+	}
+	var decoded struct {
+		Result json.RawMessage `json:"result"`
+		Error  *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(responseBody, &decoded); err != nil {
+		return fmt.Errorf("decode mcp source %q response: %w", source.ID, err)
+	}
+	if decoded.Error != nil {
+		return fmt.Errorf("mcp source %q tool error %d: %s", source.ID, decoded.Error.Code, decoded.Error.Message)
+	}
+	if len(decoded.Result) == 0 {
+		return fmt.Errorf("mcp source %q response missing result", source.ID)
+	}
+	if err := json.Unmarshal(decoded.Result, out); err != nil {
+		return fmt.Errorf("decode mcp source %q result: %w", source.ID, err)
+	}
+	return nil
 }
 
 func mcpDocumentsFromResult(result mcpToolResult, source SourceConfig) ([]mcpDocument, error) {
@@ -288,7 +375,51 @@ func validateMCPDocument(doc mcpDocument, sourceID string) error {
 	if strings.TrimSpace(doc.Content) == "" {
 		return fmt.Errorf("mcp source %q returned document %q without content", sourceID, doc.SourceURL)
 	}
+	if len([]byte(doc.Content)) > defaultMCPSourceMaxDocumentContentBytes {
+		return fmt.Errorf("mcp source %q returned document %q content with %d bytes; limit is %d", sourceID, doc.SourceURL, len([]byte(doc.Content)), defaultMCPSourceMaxDocumentContentBytes)
+	}
 	return nil
+}
+
+func mcpValidationWarnings(docs []mcpDocument, source SourceConfig) []MCPValidationWarning {
+	warnings := []MCPValidationWarning{}
+	seenURLs := map[string]int{}
+	for index, doc := range docs {
+		if firstIndex, ok := seenURLs[doc.SourceURL]; ok {
+			warnings = append(warnings, MCPValidationWarning{
+				Index:     index,
+				Code:      "duplicate_source_url",
+				Message:   fmt.Sprintf("document source_url duplicates document %d", firstIndex),
+				SourceURL: doc.SourceURL,
+			})
+		} else {
+			seenURLs[doc.SourceURL] = index
+		}
+		if source.Scope != "" && doc.Scope != source.Scope {
+			warnings = append(warnings, MCPValidationWarning{
+				Index:     index,
+				Code:      "scope_mismatch",
+				Message:   fmt.Sprintf("document scope %q differs from source scope %q", doc.Scope, source.Scope),
+				SourceURL: doc.SourceURL,
+			})
+		}
+		if doc.SourceUpdatedAt == "" {
+			warnings = append(warnings, MCPValidationWarning{
+				Index:     index,
+				Code:      "missing_source_updated_at",
+				Message:   "document has no source_updated_at; incremental freshness may be weaker",
+				SourceURL: doc.SourceURL,
+			})
+		} else if _, err := time.Parse(time.RFC3339, doc.SourceUpdatedAt); err != nil {
+			warnings = append(warnings, MCPValidationWarning{
+				Index:     index,
+				Code:      "invalid_source_updated_at",
+				Message:   "source_updated_at should be RFC3339",
+				SourceURL: doc.SourceURL,
+			})
+		}
+	}
+	return warnings
 }
 
 func (d mcpDocument) ingestDocument(source SourceConfig) ingest.Document {

@@ -49,4 +49,36 @@ spec:
             summary: "Abra memory compose is failing"
             description: "At least one working-memory compose request failed recently."
         {{- end }}
+        {{- if .Values.prometheusRule.rules.aiProviderQueueing.enabled }}
+        - alert: AbraAIProviderQueueing
+          expr: |
+            sum(rate(abra_ai_provider_waits_total{abra_release="{{ .Release.Name }}",abra_service="{{ include "abra.fullname" . }}"}[5m]))
+            > {{ .Values.prometheusRule.rules.aiProviderQueueing.minWaitRate }}
+          for: {{ .Values.prometheusRule.rules.aiProviderQueueing.for }}
+          labels:
+            severity: {{ .Values.prometheusRule.rules.aiProviderQueueing.severity | quote }}
+          annotations:
+            summary: "Abra AI provider queueing is elevated"
+            description: "Embedding or rerank calls are waiting for provider concurrency slots. Check provider capacity, ABRA_AI_PROVIDER_CONCURRENCY, worker concurrency, and model endpoint latency."
+        {{- end }}
+        {{- if .Values.prometheusRule.rules.ingestionStaleRunningJobs.enabled }}
+        - alert: AbraIngestionStaleRunningJobs
+          expr: max(abra_working_memory_health_ingestion_stale_running_jobs{abra_release="{{ .Release.Name }}",abra_service="{{ include "abra.fullname" . }}"}) > 0
+          for: {{ .Values.prometheusRule.rules.ingestionStaleRunningJobs.for }}
+          labels:
+            severity: {{ .Values.prometheusRule.rules.ingestionStaleRunningJobs.severity | quote }}
+          annotations:
+            summary: "Abra ingestion has stale running jobs"
+            description: "Scoped memory health observed stale running ingestion jobs. Restart or inspect workers and retry affected jobs after the source or provider issue is fixed."
+        {{- end }}
+        {{- if .Values.prometheusRule.rules.ingestionFailedJobs.enabled }}
+        - alert: AbraIngestionFailedJobs
+          expr: max(abra_working_memory_health_ingestion_failed_jobs{abra_release="{{ .Release.Name }}",abra_service="{{ include "abra.fullname" . }}"}) > 0
+          for: {{ .Values.prometheusRule.rules.ingestionFailedJobs.for }}
+          labels:
+            severity: {{ .Values.prometheusRule.rules.ingestionFailedJobs.severity | quote }}
+          annotations:
+            summary: "Abra ingestion jobs are failing"
+            description: "Scoped memory health observed failed ingestion jobs. Inspect job errors before relying on memory freshness for autonomous agents."
+        {{- end }}
 {{- end }}

@@ -22,7 +22,7 @@ import (
 )
 
 func TestCommandHelpDoesNotRequireFlags(t *testing.T) {
-	for _, command := range []string{"config", "ingest", "setup", "models", "watch", "sources", "jobs", "observe", "observations", "scope", "agents", "mcp"} {
+	for _, command := range []string{"config", "ingest", "setup", "models", "watch", "connectors", "sources", "jobs", "observe", "observations", "scope", "agents", "mcp"} {
 		t.Run(command, func(t *testing.T) {
 			if err := run(context.Background(), []string{command, "--help"}); err != nil {
 				t.Fatalf("run(%s --help) error = %v", command, err)
@@ -307,7 +307,7 @@ func TestProposeObservationPostsLearningProposal(t *testing.T) {
 
 func TestSetupAndUpHelpMentionModelAutomation(t *testing.T) {
 	setupHelp := commandUsage("setup")
-	for _, want := range []string{"abra setup --yes", "abra setup --yes --no-models", "--skip-models", "not a chat model"} {
+	for _, want := range []string{"abra setup --yes", "abra setup --yes --no-models", "--skip-models", "not a chat model", "CLI commands only", "no manual env file editing"} {
 		if !strings.Contains(setupHelp, want) {
 			t.Fatalf("setup help missing %q:\n%s", want, setupHelp)
 		}
@@ -320,9 +320,40 @@ func TestSetupAndUpHelpMentionModelAutomation(t *testing.T) {
 	}
 }
 
+func TestConfigAndMCPHelpShowCLIOnlyOnboardingPath(t *testing.T) {
+	configHelp := commandUsage("config")
+	for _, want := range []string{
+		"connect Abra to the embedding model",
+		"common local/OpenAI-compatible paths do not",
+		"require manual env file editing",
+		"Check readiness with: abra doctor",
+	} {
+		if !strings.Contains(configHelp, want) {
+			t.Fatalf("config help missing %q:\n%s", want, configHelp)
+		}
+	}
+
+	mcpHelp := commandUsage("mcp")
+	for _, want := range []string{
+		"abra mcp status",
+		"No manual Codex config editing is required",
+		"Common Codex path:",
+		"abra setup",
+		"abra doctor",
+		"abra agents bootstrap --agent codex",
+		"abra agents ready . --scope <scope-from-abra-scope> --json",
+		"full model/API/MCP preflight",
+	} {
+		if !strings.Contains(mcpHelp, want) {
+			t.Fatalf("mcp help missing %q:\n%s", want, mcpHelp)
+		}
+	}
+}
+
 func TestTopLevelHelpShowsCodexOnboardingStatusFlow(t *testing.T) {
 	help := usage()
 	for _, want := range []string{
+		"abra doctor",
 		"cd /path/to/project",
 		"abra scope",
 		"abra agents bootstrap --agent codex",
@@ -799,6 +830,9 @@ func TestAgentsBootstrapInstallsCodexMCPBeforeFinalVerify(t *testing.T) {
 	}
 	if !strings.Contains(output, "Ready: server and Codex MCP config can use scope") {
 		t.Fatalf("bootstrap should finish with server/client ready output:\n%s", output)
+	}
+	if !strings.Contains(output, "Codex MCP config was updated by the CLI; no manual Codex config editing is required.") {
+		t.Fatalf("bootstrap should explain CLI-only Codex config install:\n%s", output)
 	}
 	logBytes, err := os.ReadFile(logPath)
 	if err != nil {
@@ -2393,19 +2427,25 @@ func TestSetupYesNoStartDefaultsLocalQwen(t *testing.T) {
 	if values["WORKER_INTERVAL"] != "30s" {
 		t.Fatalf("worker interval = %q", values["WORKER_INTERVAL"])
 	}
-	if values["RERANKER_PROVIDER"] != "" {
+	if values["RERANKER_PROVIDER"] != "local" {
 		t.Fatalf("reranker provider = %q", values["RERANKER_PROVIDER"])
 	}
-	if values["RERANKER_BASE_URL"] != "" {
+	if values["RERANKER_BASE_URL"] != "http://host.docker.internal:8081/v1" {
 		t.Fatalf("reranker base url = %q", values["RERANKER_BASE_URL"])
+	}
+	if values["RERANKER_MODEL"] != defaultRerankerServedModelName {
+		t.Fatalf("reranker model = %q", values["RERANKER_MODEL"])
 	}
 	for _, want := range []string{
 		"abra up --env-file",
+		"abra doctor",
 		"go run ./cmd/abra <command>",
+		"Codex MCP and repo onboarding:",
 		"cd /path/to/project",
-		"abra agents bootstrap --agent codex",
+		"abra agents bootstrap --agent codex   # installs Codex MCP, ingests this repo, and verifies",
 		"fully quit and reopen Codex Desktop",
 		"abra agents ready . --scope <scope-from-abra-scope> --json",
+		"abra mcp status",
 		"abra agents init --agent codex",
 		"abra agents verify",
 		"If Codex says Abra has no context",
@@ -3472,8 +3512,11 @@ func TestConfigModelLocalRestoresQwenDefaults(t *testing.T) {
 	if values["ABRA_AI_PROVIDER_CONCURRENCY"] != "1" {
 		t.Fatalf("provider concurrency = %q", values["ABRA_AI_PROVIDER_CONCURRENCY"])
 	}
-	if values["RERANKER_PROVIDER"] != "" || values["RERANKER_BASE_URL"] != "" {
+	if values["RERANKER_PROVIDER"] != "local" || values["RERANKER_BASE_URL"] != "http://host.docker.internal:8081/v1" {
 		t.Fatalf("reranker fields = provider %q base %q", values["RERANKER_PROVIDER"], values["RERANKER_BASE_URL"])
+	}
+	if values["RERANKER_MODEL"] != defaultRerankerServedModelName {
+		t.Fatalf("reranker model = %q", values["RERANKER_MODEL"])
 	}
 	if values["ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION"] != "false" {
 		t.Fatalf("local production guard = %q", values["ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION"])
@@ -4158,6 +4201,331 @@ func TestSourceMCPDryRunValidatesExportedDocuments(t *testing.T) {
 	}
 }
 
+func TestConnectorsListUsesSourceConfigs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sources/configs" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("scope") != "team:platform" || r.URL.Query().Get("limit") != "2" {
+			t.Fatalf("query = %s", r.URL.RawQuery)
+		}
+		writeTestJSON(t, w, map[string]any{
+			"source_configs": []map[string]any{{
+				"id":             "source-mcp",
+				"status":         "active",
+				"source_type":    "mcp",
+				"connector_kind": "mcp",
+				"name":           "wiki-mcp",
+			}},
+		})
+	}))
+	defer server.Close()
+
+	output := captureStdout(t, func() {
+		err := run(context.Background(), []string{
+			"connectors", "list",
+			"--scope", "team:platform",
+			"--limit", "2",
+			"--base-url", server.URL,
+			"--token", "test-token",
+		})
+		if err != nil {
+			t.Fatalf("connectors list error = %v", err)
+		}
+	})
+	if !strings.Contains(output, "Connectors: 1") || !strings.Contains(output, "source-mcp  active  mcp  mcp  wiki-mcp") {
+		t.Fatalf("output = %s", output)
+	}
+}
+
+func TestConnectorsMCPValidateUsesSourceMCPValidation(t *testing.T) {
+	var rpc map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/mcp" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&rpc); err != nil {
+			t.Fatalf("decode rpc body: %v", err)
+		}
+		writeTestJSON(t, w, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      rpc["id"],
+			"result": map[string]any{
+				"structuredContent": map[string]any{
+					"documents": []map[string]any{{
+						"source_type": "confluence",
+						"source_url":  "https://wiki.example/pages/1",
+						"title":       "Runbook",
+						"content":     "Agents should cite this runbook.",
+					}},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	output := captureStdout(t, func() {
+		err := run(context.Background(), []string{
+			"connectors", "mcp", "validate", server.URL + "/mcp",
+			"--scope", "team:platform",
+			"--tool", "export_documents",
+			"--document-source-type", "confluence",
+		})
+		if err != nil {
+			t.Fatalf("connectors mcp validate error = %v", err)
+		}
+	})
+	params, _ := rpc["params"].(map[string]any)
+	if rpc["method"] != "tools/call" || params["name"] != "export_documents" {
+		t.Fatalf("rpc = %#v", rpc)
+	}
+	if !strings.Contains(output, "MCP source valid: 1 document(s)") || !strings.Contains(output, "Runbook") {
+		t.Fatalf("output = %s", output)
+	}
+}
+
+func TestConnectorsMCPInspectListsUpstreamTools(t *testing.T) {
+	var rpc map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&rpc); err != nil {
+			t.Fatalf("decode rpc body: %v", err)
+		}
+		writeTestJSON(t, w, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      rpc["id"],
+			"result": map[string]any{
+				"tools": []map[string]any{{
+					"name":        "export_documents",
+					"description": "Export normalized documents",
+					"inputSchema": map[string]any{"type": "object"},
+				}},
+			},
+		})
+	}))
+	defer server.Close()
+
+	output := captureStdout(t, func() {
+		err := run(context.Background(), []string{
+			"connectors", "mcp", "inspect", server.URL + "/mcp",
+			"--scope", "team:platform",
+		})
+		if err != nil {
+			t.Fatalf("connectors mcp inspect error = %v", err)
+		}
+	})
+	if rpc["method"] != "tools/list" {
+		t.Fatalf("rpc = %#v", rpc)
+	}
+	if !strings.Contains(output, "MCP tools: 1") || !strings.Contains(output, "export_documents") {
+		t.Fatalf("output = %s", output)
+	}
+}
+
+func TestConnectorsMCPRegisterQueuesSourceConfig(t *testing.T) {
+	var sourceRequest map[string]any
+	var jobRequest map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/sources/configs":
+			if err := json.NewDecoder(r.Body).Decode(&sourceRequest); err != nil {
+				t.Fatalf("decode source body: %v", err)
+			}
+			writeTestJSON(t, w, map[string]any{"source_config_id": "source-mcp"})
+		case "/ingestion/jobs":
+			if err := json.NewDecoder(r.Body).Decode(&jobRequest); err != nil {
+				t.Fatalf("decode job body: %v", err)
+			}
+			writeTestJSON(t, w, map[string]any{
+				"ingestion_job": map[string]any{"id": "job-mcp", "status": "queued"},
+			})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	output := captureStdout(t, func() {
+		err := run(context.Background(), []string{
+			"connectors", "mcp", "register",
+			"--scope", "team:platform",
+			"--mcp-url", "https://mcp.example.local/mcp",
+			"--tool", "export_documents",
+			"--arguments-json", `{"space":"ENG"}`,
+			"--schedule", "@every 10m",
+			"--base-url", server.URL,
+			"--token", "test-token",
+		})
+		if err != nil {
+			t.Fatalf("connectors mcp register error = %v", err)
+		}
+	})
+	if sourceRequest["source_type"] != "mcp" || sourceRequest["connector_kind"] != "mcp" || sourceRequest["base_url"] != "https://mcp.example.local/mcp" {
+		t.Fatalf("source request = %#v", sourceRequest)
+	}
+	config, _ := sourceRequest["config"].(map[string]any)
+	args, _ := config["arguments"].(map[string]any)
+	if config["tool"] != "export_documents" || args["space"] != "ENG" || sourceRequest["schedule_cron"] != "@every 10m" {
+		t.Fatalf("source request = %#v", sourceRequest)
+	}
+	if jobRequest["source_config_id"] != "source-mcp" {
+		t.Fatalf("job request = %#v", jobRequest)
+	}
+	if !strings.Contains(output, "Source configured: source-mcp") || !strings.Contains(output, "Job queued: job-mcp") {
+		t.Fatalf("output = %s", output)
+	}
+}
+
+func TestConnectorsMCPRegisterUsesManifestAndVerify(t *testing.T) {
+	var sourceRequest map[string]any
+	var recallRequest map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/sources/configs":
+			if err := json.NewDecoder(r.Body).Decode(&sourceRequest); err != nil {
+				t.Fatalf("decode source body: %v", err)
+			}
+			writeTestJSON(t, w, map[string]any{"source_config_id": "source-manifest"})
+		case "/ingestion/jobs":
+			writeTestJSON(t, w, map[string]any{
+				"ingestion_job": map[string]any{"id": "job-manifest", "status": "queued"},
+			})
+		case "/recall":
+			if err := json.NewDecoder(r.Body).Decode(&recallRequest); err != nil {
+				t.Fatalf("decode recall body: %v", err)
+			}
+			writeTestJSON(t, w, map[string]any{
+				"claims": []map[string]any{{
+					"id":         "claim-1",
+					"claim_text": "Connector runbook is searchable.",
+					"source_url": "https://wiki.example/runbook",
+				}},
+			})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	manifestPath := filepath.Join(t.TempDir(), "connector.json")
+	mustWrite(t, manifestPath, `{
+  "id": "source-manifest",
+  "name": "Platform Wiki",
+  "scope": "team:platform",
+  "mcp_url": "https://mcp.example.local/mcp",
+  "tool": "export_documents",
+  "arguments": {"space": "ENG"},
+  "connector_kind": "confluence",
+  "document_source_type": "confluence",
+  "status": "active",
+  "schedule": "@every 10m",
+  "verify_query": "Connector runbook",
+  "metadata": {"owner": "platform"}
+}`)
+
+	output := captureStdout(t, func() {
+		err := run(context.Background(), []string{
+			"connectors", "mcp", "register",
+			"--manifest", manifestPath,
+			"--verify",
+			"--base-url", server.URL,
+			"--token", "test-token",
+		})
+		if err != nil {
+			t.Fatalf("connectors mcp register manifest error = %v", err)
+		}
+	})
+	if sourceRequest["id"] != "source-manifest" || sourceRequest["connector_kind"] != "confluence" || sourceRequest["status"] != "active" {
+		t.Fatalf("source request = %#v", sourceRequest)
+	}
+	config, _ := sourceRequest["config"].(map[string]any)
+	args, _ := config["arguments"].(map[string]any)
+	metadata, _ := sourceRequest["metadata"].(map[string]any)
+	if config["tool"] != "export_documents" || config["document_source_type"] != "confluence" || args["space"] != "ENG" || metadata["owner"] != "platform" {
+		t.Fatalf("source request = %#v", sourceRequest)
+	}
+	if recallRequest["query"] != "Connector runbook" || recallRequest["scope"] != "team:platform" {
+		t.Fatalf("recall request = %#v", recallRequest)
+	}
+	if !strings.Contains(output, "Recall verified:") {
+		t.Fatalf("output = %s", output)
+	}
+}
+
+func TestApprovalRequiredErrorIncludesCLIRequest(t *testing.T) {
+	err := (&httpStatusError{Code: http.StatusConflict, Body: `{"error":"approval_required"}`, Payload: map[string]any{
+		"error":  "approval_required",
+		"detail": "approval_id is required",
+		"approval": map[string]any{
+			"action":      "connector_enable",
+			"scope":       "team:platform",
+			"target_type": "source_config",
+			"target_id":   "source-mcp",
+		},
+	}}).Error()
+	for _, want := range []string{
+		"approval required",
+		"abra approvals request --scope 'team:platform' --action 'connector_enable'",
+		"--target-type 'source_config'",
+		"--target-id 'source-mcp'",
+		"--approval-id <approval-id>",
+	} {
+		if !strings.Contains(err, want) {
+			t.Fatalf("error missing %q:\n%s", want, err)
+		}
+	}
+}
+
+func TestConnectorsWebhookSignAndTest(t *testing.T) {
+	t.Setenv("ABRA_WEBHOOK_SECRET_TEST", "secret")
+	output := captureStdout(t, func() {
+		err := run(context.Background(), []string{
+			"connectors", "webhook", "sign",
+			"--payload-json", `{"scope":"team:platform","source_type":"confluence","source_url":"https://wiki.example/doc","title":"Doc","content":"Body"}`,
+			"--secret-env", "ABRA_WEBHOOK_SECRET_TEST",
+		})
+		if err != nil {
+			t.Fatalf("connectors webhook sign error = %v", err)
+		}
+	})
+	if !strings.HasPrefix(strings.TrimSpace(output), "sha256=") {
+		t.Fatalf("signature output = %s", output)
+	}
+
+	var signature string
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ingest/webhooks" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		signature = r.Header.Get("x-abra-signature")
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode webhook body: %v", err)
+		}
+		writeTestJSON(t, w, map[string]any{"accepted": 1, "delivery_id": body["delivery_id"]})
+	}))
+	defer server.Close()
+
+	output = captureStdout(t, func() {
+		err := run(context.Background(), []string{
+			"connectors", "webhook", "test",
+			"--scope", "team:platform",
+			"--connector", "confluence",
+			"--secret-env", "ABRA_WEBHOOK_SECRET_TEST",
+			"--base-url", server.URL,
+			"--token", "test-token",
+		})
+		if err != nil {
+			t.Fatalf("connectors webhook test error = %v", err)
+		}
+	})
+	if !strings.HasPrefix(signature, "sha256=") || body["connector_kind"] != "confluence" || body["scope"] != "team:platform" {
+		t.Fatalf("signature=%q body=%#v", signature, body)
+	}
+	if !strings.Contains(output, "Webhook accepted: accepted=1") {
+		t.Fatalf("output = %s", output)
+	}
+}
+
 func TestSourcesSyncQueuesExistingSource(t *testing.T) {
 	var jobRequest map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -4526,6 +4894,165 @@ func TestSourcesPauseAndResume(t *testing.T) {
 		t.Fatalf("resume body = %#v", requests[1].body)
 	}
 	if !strings.Contains(output, "Source paused: source-mcp") || !strings.Contains(output, "Source resumed: source-mcp") {
+		t.Fatalf("output = %s", output)
+	}
+}
+
+func TestApprovalsListUsesFilters(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/approvals" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("scope") != "repo:abra" || r.URL.Query().Get("status") != "pending" || r.URL.Query().Get("limit") != "2" {
+			t.Fatalf("query = %s", r.URL.RawQuery)
+		}
+		writeTestJSON(t, w, map[string]any{
+			"approvals": []map[string]any{{
+				"id":          "approval-1",
+				"status":      "pending",
+				"action":      "agent_write",
+				"scope":       "repo:abra",
+				"target_type": "document",
+				"target_id":   "doc-1",
+			}},
+		})
+	}))
+	defer server.Close()
+
+	output := captureStdout(t, func() {
+		err := run(context.Background(), []string{
+			"approvals",
+			"--scope", "repo:abra",
+			"--status", "pending",
+			"--limit", "2",
+			"--base-url", server.URL,
+			"--token", "test-token",
+		})
+		if err != nil {
+			t.Fatalf("approvals list error = %v", err)
+		}
+	})
+	if !strings.Contains(output, "Approvals: 1") || !strings.Contains(output, "approval-1  pending  agent_write  repo:abra  document/doc-1") {
+		t.Fatalf("output = %s", output)
+	}
+}
+
+func TestApprovalsRequestCreatesApproval(t *testing.T) {
+	var request map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/approvals" || r.Method != http.MethodPost {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		writeTestJSON(t, w, map[string]any{
+			"approval": map[string]any{
+				"id":     "approval-1",
+				"scope":  "repo:abra",
+				"action": "agent_write",
+				"status": "pending",
+			},
+		})
+	}))
+	defer server.Close()
+
+	output := captureStdout(t, func() {
+		err := run(context.Background(), []string{
+			"approvals", "request",
+			"--scope", "repo:abra",
+			"--action", "agent_write",
+			"--target-type", "document",
+			"--target-id", "doc-1",
+			"--requested-by", "operator",
+			"--reason", "review production ingest",
+			"--payload-json", `{"command":"ingest"}`,
+			"--metadata-json", `{"ticket":"OPS-1"}`,
+			"--base-url", server.URL,
+			"--token", "test-token",
+		})
+		if err != nil {
+			t.Fatalf("approvals request error = %v", err)
+		}
+	})
+	if request["action"] != "agent_write" || request["scope"] != "repo:abra" || request["target_type"] != "document" || request["target_id"] != "doc-1" {
+		t.Fatalf("request = %#v", request)
+	}
+	if request["requested_by"] != "operator" || request["reason"] != "review production ingest" {
+		t.Fatalf("request actor/reason = %#v", request)
+	}
+	payload, _ := request["payload"].(map[string]any)
+	metadata, _ := request["metadata"].(map[string]any)
+	if payload["command"] != "ingest" || metadata["ticket"] != "OPS-1" || metadata["channel"] != "cli" || metadata["command"] != "approvals request" {
+		t.Fatalf("payload=%#v metadata=%#v", payload, metadata)
+	}
+	if !strings.Contains(output, "Approval requested: approval-1") || !strings.Contains(output, "Use: abra approvals approve approval-1") {
+		t.Fatalf("output = %s", output)
+	}
+}
+
+func TestApprovalsApproveAndReject(t *testing.T) {
+	requests := []struct {
+		path string
+		body map[string]any
+	}{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		requests = append(requests, struct {
+			path string
+			body map[string]any
+		}{path: r.URL.Path, body: body})
+		status := "approved"
+		if strings.HasSuffix(r.URL.Path, "/reject") {
+			status = "rejected"
+		}
+		writeTestJSON(t, w, map[string]any{
+			"approval": map[string]any{
+				"id":     strings.Trim(strings.TrimPrefix(r.URL.Path, "/approvals/"), "/approve/reject"),
+				"status": status,
+			},
+		})
+	}))
+	defer server.Close()
+
+	output := captureStdout(t, func() {
+		if err := run(context.Background(), []string{
+			"approvals", "approve", "approval-1",
+			"--decided-by", "operator",
+			"--reason", "looks good",
+			"--base-url", server.URL,
+			"--token", "test-token",
+		}); err != nil {
+			t.Fatalf("approvals approve error = %v", err)
+		}
+		if err := run(context.Background(), []string{
+			"approvals", "reject",
+			"--approval-id", "approval-2",
+			"--reason", "missing ticket",
+			"--metadata-json", `{"ticket":"OPS-2"}`,
+			"--base-url", server.URL,
+			"--token", "test-token",
+		}); err != nil {
+			t.Fatalf("approvals reject error = %v", err)
+		}
+	})
+	if len(requests) != 2 {
+		t.Fatalf("requests = %#v", requests)
+	}
+	if requests[0].path != "/approvals/approval-1/approve" || requests[1].path != "/approvals/approval-2/reject" {
+		t.Fatalf("paths = %#v", requests)
+	}
+	if requests[0].body["decided_by"] != "operator" || requests[0].body["decision_reason"] != "looks good" {
+		t.Fatalf("approve body = %#v", requests[0].body)
+	}
+	metadata, _ := requests[1].body["metadata"].(map[string]any)
+	if requests[1].body["decision_reason"] != "missing ticket" || metadata["ticket"] != "OPS-2" || metadata["channel"] != "cli" || metadata["command"] != "approvals reject" {
+		t.Fatalf("reject body = %#v", requests[1].body)
+	}
+	if !strings.Contains(output, "Approval approved: approval-1") || !strings.Contains(output, "Approval rejected: approval-2") {
 		t.Fatalf("output = %s", output)
 	}
 }

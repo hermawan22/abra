@@ -24,12 +24,21 @@ const (
 	defaultServedModelName    = defaultEmbeddingModelID
 	defaultEmbeddingBaseURL   = "http://host.docker.internal:8080/v1"
 	defaultEmbeddingPublish   = "127.0.0.1"
-	localRunnerHashLabel      = "io.abra.local-embedding.config-hash"
-	localRunnerModelLabel     = "io.abra.local-embedding.model-id"
-	localRunnerDimsLabel      = "io.abra.local-embedding.dimensions"
+
+	defaultRerankerContainer       = "abra-reranker"
+	defaultRerankerModelID         = "Qwen/Qwen3-Reranker-0.6B-GGUF:Q8_0"
+	defaultRerankerServedModelName = defaultRerankerModelID
+	defaultRerankerBaseURL         = "http://host.docker.internal:8081/v1"
+
+	localRunnerHashLabel         = "io.abra.local-embedding.config-hash"
+	localRunnerModelLabel        = "io.abra.local-embedding.model-id"
+	localRunnerDimsLabel         = "io.abra.local-embedding.dimensions"
+	localRerankerRunnerHashLabel = "io.abra.local-reranker.config-hash"
+	localRerankerModelLabel      = "io.abra.local-reranker.model-id"
 )
 
 type embeddingRunnerConfig struct {
+	Kind             string
 	Container        string
 	Image            string
 	PullPolicy       string
@@ -67,32 +76,53 @@ func modelsUp(ctx context.Context, args cliArgs) error {
 	if err := requireLocalModelProvider(args, "up"); err != nil {
 		return err
 	}
-	cfg := embeddingRunner(args)
 	if err := syncLocalRunnerEnv(args); err != nil {
 		return err
 	}
-	cfg = embeddingRunner(args)
-	if err := validateLocalRunnerImagePolicy(args, cfg); err != nil {
-		return err
+	cfgs := localRunnerConfigs(args)
+	for _, cfg := range cfgs {
+		if err := validateLocalRunnerImagePolicy(args, cfg); err != nil {
+			return err
+		}
 	}
 	if _, err := execLookPath("docker"); err != nil {
 		return errors.New("missing required command: docker")
 	}
 	if boolFlag(args, "recreate") {
-		_, _ = commandOutput("docker", "rm", "-f", cfg.Container)
+		for _, cfg := range cfgs {
+			_, _ = commandOutput("docker", "rm", "-f", cfg.Container)
+		}
 	}
+	for _, cfg := range cfgs {
+		if err := startLocalRunner(cfg); err != nil {
+			return err
+		}
+	}
+	fmt.Println("First run may download model weights; this can take several minutes.")
+	for _, cfg := range cfgs {
+		fmt.Println("Waiting for " + cfg.Kind + " endpoint: " + localRunnerReadyURL(cfg))
+		if err := waitLocalRunnerReady(ctx, cfg, 10*time.Minute); err != nil {
+			return fmt.Errorf("%w\nRun: abra models logs\nRun: abra models status", err)
+		}
+		fmt.Println("Local " + cfg.Kind + " ready")
+	}
+	fmt.Println("Next: abra up")
+	return nil
+}
+
+func startLocalRunner(cfg embeddingRunnerConfig) error {
 	exists := dockerContainerExists(cfg.Container)
 	if exists {
 		image := dockerContainerImage(cfg.Container)
 		if image != "" && image != cfg.Image {
-			fmt.Println("Replacing local embedding container image: " + image + " -> " + cfg.Image)
+			fmt.Println("Replacing local " + cfg.Kind + " container image: " + image + " -> " + cfg.Image)
 			if _, err := commandOutput("docker", "rm", "-f", cfg.Container); err != nil {
 				return err
 			}
 			exists = false
 		}
 		if exists && localRunnerNeedsRecreate(cfg) {
-			fmt.Println("Replacing local embedding container config")
+			fmt.Println("Replacing local " + cfg.Kind + " container config")
 			if _, err := commandOutput("docker", "rm", "-f", cfg.Container); err != nil {
 				return err
 			}
@@ -103,45 +133,55 @@ func modelsUp(ctx context.Context, args cliArgs) error {
 		if err := os.MkdirAll(cfg.CacheDir, 0o755); err != nil {
 			return err
 		}
-		fmt.Println("Starting local embedding model:")
+		fmt.Println("Starting local " + cfg.Kind + " model:")
 		fmt.Println("  model: " + cfg.ModelID)
 		fmt.Println("  image: " + cfg.Image)
 		fmt.Println("  pull:  " + cfg.PullPolicy)
 		fmt.Println("  bind:  " + localRunnerPublish(cfg))
-		step := []string{
-			"run", "-d",
-			"--name", cfg.Container,
-			"--pull", cfg.PullPolicy,
-			"--label", localRunnerHashLabel + "=" + localRunnerConfigHash(cfg),
-			"--label", localRunnerModelLabel + "=" + cfg.ModelID,
-			"--label", localRunnerDimsLabel + "=" + strconv.Itoa(cfg.Dims),
-			"-p", localRunnerPublish(cfg) + ":8080",
-			"-v", cfg.CacheDir + ":/root/.cache/huggingface",
-			cfg.Image,
-			"-hf", cfg.ModelID,
-			"--embedding",
-			"--pooling", "last",
-			"--ctx-size", "32768",
-			"--host", "0.0.0.0",
-			"--port", "8080",
-		}
+		step := localRunnerDockerRunArgs(cfg)
 		if err := runCommand("docker", step...); err != nil {
 			return err
 		}
 	} else {
-		fmt.Println("Starting existing local embedding container: " + cfg.Container)
+		fmt.Println("Starting existing local " + cfg.Kind + " container: " + cfg.Container)
 		if err := runCommand("docker", "start", cfg.Container); err != nil {
 			return err
 		}
 	}
-	fmt.Println("First run may download model weights; this can take several minutes.")
-	fmt.Println("Waiting for embeddings endpoint: " + cfg.BaseURL + "/embeddings")
-	if err := waitEmbeddingReady(ctx, cfg, 10*time.Minute); err != nil {
-		return fmt.Errorf("%w\nRun: abra models logs\nRun: abra models status", err)
-	}
-	fmt.Println("Local embeddings ready")
-	fmt.Println("Next: abra up")
 	return nil
+}
+
+func localRunnerDockerRunArgs(cfg embeddingRunnerConfig) []string {
+	step := []string{
+		"run", "-d",
+		"--name", cfg.Container,
+		"--pull", cfg.PullPolicy,
+		"--label", localRunnerHashLabelFor(cfg) + "=" + localRunnerConfigHash(cfg),
+		"--label", localRunnerModelLabelFor(cfg) + "=" + cfg.ModelID,
+		"-p", localRunnerPublish(cfg) + ":8080",
+		"-v", cfg.CacheDir + ":/root/.cache/huggingface",
+	}
+	if cfg.Kind == "embedding" {
+		step = append(step,
+			"--label", localRunnerDimsLabel+"="+strconv.Itoa(cfg.Dims),
+			cfg.Image,
+			"-hf", cfg.ModelID,
+			"--embedding",
+			"--pooling", "last",
+		)
+	} else {
+		step = append(step,
+			cfg.Image,
+			"-hf", cfg.ModelID,
+			"--reranking",
+			"--pooling", "rank",
+		)
+	}
+	return append(step,
+		"--ctx-size", "32768",
+		"--host", "0.0.0.0",
+		"--port", "8080",
+	)
 }
 
 func modelsStatus(ctx context.Context, args cliArgs) error {
@@ -155,13 +195,63 @@ func modelsStatus(ctx context.Context, args cliArgs) error {
 		fmt.Println("hint:     " + stringValue(notice["hint"], ""))
 		return nil
 	}
-	cfg := embeddingRunner(args)
-	err := checkEmbeddingReady(ctx, cfg)
+	cfgs := localRunnerConfigs(args)
+	statuses := make([]map[string]any, 0, len(cfgs))
+	ready := true
+	var firstErr error
+	for _, cfg := range cfgs {
+		runnerStatus := localRunnerStatus(ctx, cfg)
+		statuses = append(statuses, runnerStatus)
+		if ok, _ := runnerStatus["ready"].(bool); !ok {
+			ready = false
+			if firstErr == nil {
+				firstErr = errors.New(stringValue(runnerStatus["error"], "not ready"))
+			}
+		}
+	}
+	status := cloneMap(statuses[0])
+	status["ready"] = ready
+	status["runners"] = statuses
+	if len(statuses) > 1 {
+		status["reranker"] = statuses[1]
+	}
+	if firstErr != nil {
+		status["error"] = firstErr.Error()
+		status["hint"] = "run: abra models up"
+	}
+	if boolFlag(args, "json") {
+		return printJSON(status)
+	}
+	if !ready {
+		fmt.Println("Local models: not ready")
+		for _, runnerStatus := range statuses {
+			fmt.Println(stringValue(runnerStatus["kind"], "model") + ": " + stringValue(runnerStatus["endpoint"], ""))
+			if errText := stringValue(runnerStatus["error"], ""); errText != "" {
+				fmt.Println("error:    " + errText)
+			}
+		}
+		fmt.Println("hint:     abra models up")
+		fmt.Println("timeout:  " + cfgs[0].ReadinessTimeout.String())
+		return nil
+	}
+	fmt.Println("Local models: ready")
+	for _, runnerStatus := range statuses {
+		fmt.Println(stringValue(runnerStatus["kind"], "model") + ": " + stringValue(runnerStatus["endpoint"], ""))
+		fmt.Println("publish:  " + stringValue(runnerStatus["publish"], ""))
+		fmt.Println("model:    " + stringValue(runnerStatus["model"], ""))
+	}
+	return nil
+}
+
+func localRunnerStatus(ctx context.Context, cfg embeddingRunnerConfig) map[string]any {
+	err := checkLocalRunnerReady(ctx, cfg)
 	status := map[string]any{
+		"kind":              cfg.Kind,
 		"container":         cfg.Container,
 		"model_id":          cfg.ModelID,
 		"model":             cfg.Model,
 		"base_url":          cfg.BaseURL,
+		"endpoint":          localRunnerReadyURL(cfg),
 		"publish":           localRunnerPublish(cfg),
 		"port":              cfg.Port,
 		"image":             cfg.Image,
@@ -171,44 +261,35 @@ func modelsStatus(ctx context.Context, args cliArgs) error {
 	}
 	if dockerContainerExists(cfg.Container) {
 		status["expected_config_hash"] = localRunnerConfigHash(cfg)
-		status["container_config_hash"] = dockerContainerLabel(cfg.Container, localRunnerHashLabel)
+		status["container_config_hash"] = dockerContainerLabel(cfg.Container, localRunnerHashLabelFor(cfg))
 		status["config_matches"] = !localRunnerNeedsRecreate(cfg)
 	}
 	if err != nil {
 		status["error"] = err.Error()
 		status["hint"] = "run: abra models up"
 	}
-	if boolFlag(args, "json") {
-		return printJSON(status)
-	}
-	if err != nil {
-		fmt.Println("Local embeddings: not ready")
-		fmt.Println("endpoint: " + cfg.BaseURL + "/embeddings")
-		fmt.Println("hint:     abra models up")
-		fmt.Println("timeout:  " + cfg.ReadinessTimeout.String())
-		fmt.Println("error:    " + err.Error())
-		return nil
-	}
-	fmt.Println("Local embeddings: ready")
-	fmt.Println("endpoint: " + cfg.BaseURL + "/embeddings")
-	fmt.Println("publish:  " + localRunnerPublish(cfg))
-	fmt.Println("model:    " + cfg.Model)
-	return nil
+	return status
 }
 
 func modelsDown(args cliArgs) error {
 	if err := requireLocalModelProvider(args, "down"); err != nil {
 		return err
 	}
-	cfg := embeddingRunner(args)
-	if !dockerContainerExists(cfg.Container) {
-		fmt.Println("Local embedding container is not present: " + cfg.Container)
+	removed := 0
+	for _, cfg := range localRunnerConfigs(args) {
+		if !dockerContainerExists(cfg.Container) {
+			fmt.Println("Local " + cfg.Kind + " container is not present: " + cfg.Container)
+			continue
+		}
+		if err := runCommand("docker", "rm", "-f", cfg.Container); err != nil {
+			return err
+		}
+		fmt.Println("Stopped local " + cfg.Kind + " container: " + cfg.Container)
+		removed++
+	}
+	if removed == 0 {
 		return nil
 	}
-	if err := runCommand("docker", "rm", "-f", cfg.Container); err != nil {
-		return err
-	}
-	fmt.Println("Stopped local embedding container: " + cfg.Container)
 	return nil
 }
 
@@ -216,12 +297,29 @@ func modelsLogs(args cliArgs) error {
 	if err := requireLocalModelProvider(args, "logs"); err != nil {
 		return err
 	}
-	cfg := embeddingRunner(args)
-	if !dockerContainerExists(cfg.Container) {
-		return errors.New("local embedding container is not present; run: abra models up")
+	cfgs := localRunnerConfigs(args)
+	present := 0
+	for _, cfg := range cfgs {
+		if dockerContainerExists(cfg.Container) {
+			present++
+		}
+	}
+	if present == 0 {
+		return errors.New("local model containers are not present; run: abra models up")
 	}
 	lines := flag(args, "tail", "120")
-	return runCommand("docker", "logs", "--tail", lines, cfg.Container)
+	for _, cfg := range cfgs {
+		if !dockerContainerExists(cfg.Container) {
+			continue
+		}
+		if len(cfgs) > 1 {
+			fmt.Println("==> " + cfg.Kind + " (" + cfg.Container + ")")
+		}
+		if err := runCommand("docker", "logs", "--tail", lines, cfg.Container); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func requireLocalModelProvider(args cliArgs, action string) error {
@@ -275,6 +373,7 @@ func embeddingRunner(args cliArgs) embeddingRunnerConfig {
 		hostBaseURL = replaceURLHostPort(hostBaseURL, "127.0.0.1", port)
 	}
 	return embeddingRunnerConfig{
+		Kind:             "embedding",
 		Container:        firstNonEmpty(flag(args, "container", ""), defaultEmbeddingContainer),
 		Image:            firstNonEmpty(flag(args, "image", ""), values["ABRA_LOCAL_EMBEDDING_IMAGE"], defaultTEIImage()),
 		PullPolicy:       localRunnerPullPolicy(firstNonEmpty(flag(args, "pull-policy", ""), values["ABRA_LOCAL_EMBEDDING_PULL_POLICY"], "missing")),
@@ -287,6 +386,90 @@ func embeddingRunner(args cliArgs) embeddingRunnerConfig {
 		Dims:             dims,
 		ReadinessTimeout: localRunnerReadinessTimeout(args, values),
 	}
+}
+
+func rerankerRunner(args cliArgs) embeddingRunnerConfig {
+	values, _ := readEnvValues(envPath(args))
+	baseURL := firstNonEmpty(flag(args, "reranker-base-url", ""), values["RERANKER_BASE_URL"], defaultRerankerBaseURL)
+	model := firstNonEmpty(flag(args, "reranker-model", ""), values["RERANKER_MODEL"], defaultRerankerServedModelName)
+	port := firstNonEmpty(flag(args, "reranker-port", ""), portFromBaseURL(baseURL), "8081")
+	hostBaseURL := hostReachableBaseURL(baseURL)
+	if flag(args, "reranker-port", "") != "" {
+		hostBaseURL = replaceURLHostPort(hostBaseURL, "127.0.0.1", port)
+	}
+	return embeddingRunnerConfig{
+		Kind:             "reranker",
+		Container:        firstNonEmpty(flag(args, "reranker-container", ""), defaultRerankerContainer),
+		Image:            firstNonEmpty(flag(args, "reranker-image", ""), values["ABRA_LOCAL_RERANKER_IMAGE"], values["ABRA_LOCAL_EMBEDDING_IMAGE"], defaultTEIImage()),
+		PullPolicy:       localRunnerPullPolicy(firstNonEmpty(flag(args, "reranker-pull-policy", ""), values["ABRA_LOCAL_RERANKER_PULL_POLICY"], values["ABRA_LOCAL_EMBEDDING_PULL_POLICY"], "missing")),
+		ModelID:          firstNonEmpty(flag(args, "reranker-model-id", ""), values["ABRA_LOCAL_RERANKER_MODEL_ID"], defaultRerankerModelID),
+		Model:            model,
+		BaseURL:          strings.TrimRight(hostBaseURL, "/"),
+		Publish:          firstNonEmpty(flag(args, "reranker-publish-addr", ""), values["ABRA_LOCAL_RERANKER_PUBLISH_ADDR"], values["ABRA_LOCAL_EMBEDDING_PUBLISH_ADDR"], defaultEmbeddingPublish),
+		Port:             port,
+		CacheDir:         firstNonEmpty(flag(args, "cache-dir", ""), filepath.Join(userConfigDir(), "models", "llama.cpp")),
+		ReadinessTimeout: localRerankerReadinessTimeout(args, values),
+	}
+}
+
+func localRunnerConfigs(args cliArgs) []embeddingRunnerConfig {
+	cfgs := []embeddingRunnerConfig{embeddingRunner(args)}
+	if localRerankerActive(args) {
+		cfgs = append(cfgs, rerankerRunner(args))
+	}
+	return cfgs
+}
+
+func localRerankerActive(args cliArgs) bool {
+	if boolFlag(args, "force") {
+		return true
+	}
+	if provider := flag(args, "reranker-provider", ""); provider != "" {
+		return !isDisabledProviderName(provider)
+	}
+	for _, name := range []string{"reranker-base-url", "reranker-model", "reranker-model-id", "reranker-port"} {
+		if flag(args, name, "") != "" {
+			return true
+		}
+	}
+	values, err := readEnvValues(envPath(args))
+	if err != nil {
+		return false
+	}
+	if !isLocalProviderName(values["EMBEDDING_PROVIDER"]) {
+		return false
+	}
+	provider := strings.TrimSpace(values["RERANKER_PROVIDER"])
+	if provider == "" {
+		return false
+	}
+	if isDisabledProviderName(provider) {
+		return false
+	}
+	return isLocalProviderName(provider)
+}
+
+func isDisabledProviderName(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "none", "off", "disabled":
+		return true
+	default:
+		return false
+	}
+}
+
+func defaultRerankerBaseURLForProvider(provider string) string {
+	if provider == "" || isLocalProviderName(provider) {
+		return defaultRerankerBaseURL
+	}
+	return ""
+}
+
+func defaultRerankerModelForProvider(provider string) string {
+	if provider == "" || isLocalProviderName(provider) {
+		return defaultRerankerServedModelName
+	}
+	return ""
 }
 
 func defaultTEIImage() string {
@@ -307,7 +490,7 @@ func validateLocalRunnerImagePolicy(args cliArgs, cfg embeddingRunnerConfig) err
 	if localRunnerImagePinned(cfg.Image) {
 		return nil
 	}
-	return fmt.Errorf("production local embeddings require a digest-pinned runner image. Set ABRA_LOCAL_EMBEDDING_IMAGE to an operator-verified image reference with @sha256, or use EMBEDDING_PROVIDER=compatible with a managed/self-hosted endpoint")
+	return fmt.Errorf("production local models require a digest-pinned runner image. Set ABRA_LOCAL_EMBEDDING_IMAGE/ABRA_LOCAL_RERANKER_IMAGE to operator-verified image references with @sha256, or use EMBEDDING_PROVIDER=compatible with a managed/self-hosted endpoint")
 }
 
 func localRunnerImagePinned(image string) bool {
@@ -340,7 +523,7 @@ func dockerContainerLabel(name, label string) string {
 }
 
 func localRunnerNeedsRecreate(cfg embeddingRunnerConfig) bool {
-	hash := dockerContainerLabel(cfg.Container, localRunnerHashLabel)
+	hash := dockerContainerLabel(cfg.Container, localRunnerHashLabelFor(cfg))
 	if hash == "" {
 		return true
 	}
@@ -349,6 +532,7 @@ func localRunnerNeedsRecreate(cfg embeddingRunnerConfig) bool {
 
 func localRunnerConfigHash(cfg embeddingRunnerConfig) string {
 	parts := []string{
+		"kind=" + cfg.Kind,
 		"image=" + cfg.Image,
 		"pull_policy=" + cfg.PullPolicy,
 		"model_id=" + cfg.ModelID,
@@ -357,11 +541,32 @@ func localRunnerConfigHash(cfg embeddingRunnerConfig) string {
 		"publish=" + cfg.Publish,
 		"port=" + cfg.Port,
 		"cache_dir=" + cfg.CacheDir,
-		"pooling=last",
+		"pooling=" + localRunnerPooling(cfg),
 		"ctx_size=32768",
 	}
 	sum := sha256.Sum256([]byte(strings.Join(parts, "\n")))
 	return fmt.Sprintf("%x", sum[:])
+}
+
+func localRunnerHashLabelFor(cfg embeddingRunnerConfig) string {
+	if cfg.Kind == "reranker" {
+		return localRerankerRunnerHashLabel
+	}
+	return localRunnerHashLabel
+}
+
+func localRunnerModelLabelFor(cfg embeddingRunnerConfig) string {
+	if cfg.Kind == "reranker" {
+		return localRerankerModelLabel
+	}
+	return localRunnerModelLabel
+}
+
+func localRunnerPooling(cfg embeddingRunnerConfig) string {
+	if cfg.Kind == "reranker" {
+		return "rank"
+	}
+	return "last"
 }
 
 func localRunnerPublish(cfg embeddingRunnerConfig) string {
@@ -395,6 +600,21 @@ func localRunnerReadinessTimeout(args cliArgs, values map[string]string) time.Du
 	return timeout
 }
 
+func localRerankerReadinessTimeout(args cliArgs, values map[string]string) time.Duration {
+	raw := firstNonEmpty(flag(args, "reranker-readiness-timeout", ""), values["ABRA_LOCAL_RERANKER_READINESS_TIMEOUT"], values["ABRA_LOCAL_EMBEDDING_READINESS_TIMEOUT"])
+	if raw == "" {
+		return 10 * time.Second
+	}
+	timeout, err := time.ParseDuration(raw)
+	if err != nil || timeout <= 0 {
+		if seconds, parseErr := strconv.Atoi(raw); parseErr == nil && seconds > 0 {
+			return time.Duration(seconds) * time.Second
+		}
+		return 10 * time.Second
+	}
+	return timeout
+}
+
 func syncLocalRunnerEnv(args cliArgs) error {
 	if err := ensureEnv(args); err != nil {
 		return err
@@ -415,31 +635,60 @@ func syncLocalRunnerEnv(args cliArgs) error {
 	} else {
 		baseURL = containerReachableBaseURL(baseURL)
 	}
-	return updateEnvValues(args, map[string]string{
+	updates := map[string]string{
 		"EMBEDDING_PROVIDER":                   "local",
 		"EMBEDDING_BASE_URL":                   strings.TrimRight(baseURL, "/"),
 		"EMBEDDING_API_KEY":                    "",
 		"EMBEDDING_MODEL":                      model,
 		"EMBEDDING_DIMENSIONS":                 strconv.Itoa(dims),
-		"RERANKER_PROVIDER":                    "",
-		"RERANKER_BASE_URL":                    "",
-		"RERANKER_API_KEY":                     "",
-		"RERANKER_MODEL":                       "",
 		"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION": "false",
-	})
+	}
+	rerankerProviderFlag := flag(args, "reranker-provider", "")
+	rerankerProvider := firstNonEmpty(rerankerProviderFlag, values["RERANKER_PROVIDER"], "none")
+	switch strings.ToLower(strings.TrimSpace(rerankerProvider)) {
+	case "none", "off", "disabled":
+		updates["RERANKER_PROVIDER"] = strings.TrimSpace(rerankerProvider)
+		updates["RERANKER_BASE_URL"] = ""
+		updates["RERANKER_API_KEY"] = ""
+		updates["RERANKER_MODEL"] = ""
+	default:
+		updates["RERANKER_PROVIDER"] = strings.TrimSpace(rerankerProvider)
+		updates["RERANKER_API_KEY"] = firstNonEmpty(flag(args, "reranker-api-key", ""), values["RERANKER_API_KEY"])
+		rerankerModel := firstNonEmpty(flag(args, "reranker-model", ""), values["RERANKER_MODEL"], defaultRerankerModelForProvider(rerankerProvider))
+		rerankerBaseURL := firstNonEmpty(flag(args, "reranker-base-url", ""), values["RERANKER_BASE_URL"], defaultRerankerBaseURLForProvider(rerankerProvider))
+		if rerankerProviderFlag != "" {
+			rerankerModel = firstNonEmpty(flag(args, "reranker-model", ""), defaultRerankerModelForProvider(rerankerProvider))
+			rerankerBaseURL = firstNonEmpty(flag(args, "reranker-base-url", ""), defaultRerankerBaseURLForProvider(rerankerProvider))
+		}
+		updates["RERANKER_MODEL"] = rerankerModel
+		if flag(args, "reranker-port", "") != "" {
+			rerankerBaseURL = replaceURLHostPort(rerankerBaseURL, "host.docker.internal", flag(args, "reranker-port", ""))
+		} else {
+			rerankerBaseURL = containerReachableBaseURL(rerankerBaseURL)
+		}
+		updates["RERANKER_BASE_URL"] = strings.TrimRight(rerankerBaseURL, "/")
+	}
+	return updateEnvValues(args, updates)
 }
 
-func waitEmbeddingReady(ctx context.Context, cfg embeddingRunnerConfig, timeout time.Duration) error {
+func waitLocalRunnerReady(ctx context.Context, cfg embeddingRunnerConfig, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 	for time.Now().Before(deadline) {
-		lastErr = checkEmbeddingReady(ctx, cfg)
+		lastErr = checkLocalRunnerReady(ctx, cfg)
 		if lastErr == nil {
 			return nil
 		}
 		time.Sleep(2 * time.Second)
 	}
-	return fmt.Errorf("local embedding model did not become ready: %v", lastErr)
+	return fmt.Errorf("local %s model did not become ready: %v", cfg.Kind, lastErr)
+}
+
+func checkLocalRunnerReady(ctx context.Context, cfg embeddingRunnerConfig) error {
+	if cfg.Kind == "reranker" {
+		return checkRerankerReady(ctx, cfg)
+	}
+	return checkEmbeddingReady(ctx, cfg)
 }
 
 func checkEmbeddingReady(ctx context.Context, cfg embeddingRunnerConfig) error {
@@ -474,6 +723,44 @@ func checkEmbeddingReady(ctx context.Context, cfg embeddingRunnerConfig) error {
 	return nil
 }
 
+func checkRerankerReady(ctx context.Context, cfg embeddingRunnerConfig) error {
+	if cfg.ReadinessTimeout <= 0 {
+		cfg.ReadinessTimeout = 10 * time.Second
+	}
+	body := map[string]any{
+		"model":     cfg.Model,
+		"query":     "abra readiness check",
+		"documents": []string{"abra readiness document"},
+		"top_n":     1,
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.BaseURL+"/rerank", bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("content-type", "application/json")
+	resp, err := (&http.Client{Timeout: cfg.ReadinessTimeout}).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	return nil
+}
+
+func localRunnerReadyURL(cfg embeddingRunnerConfig) string {
+	if cfg.Kind == "reranker" {
+		return cfg.BaseURL + "/rerank"
+	}
+	return cfg.BaseURL + "/embeddings"
+}
+
 func localEmbeddingCheck(ctx context.Context, args cliArgs) map[string]any {
 	values, err := readEnvValues(envPath(args))
 	if err != nil || !isLocalProviderName(values["EMBEDDING_PROVIDER"]) {
@@ -489,6 +776,14 @@ func localEmbeddingCheck(ctx context.Context, args cliArgs) map[string]any {
 		}
 	}
 	return map[string]any{"name": "local_embeddings", "ok": true, "endpoint": cfg.BaseURL + "/embeddings"}
+}
+
+func cloneMap(in map[string]any) map[string]any {
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func friendlyProviderError(err error) error {

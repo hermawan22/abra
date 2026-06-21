@@ -326,7 +326,7 @@ func (c *Composer) Compose(ctx context.Context, input ComposeInput) (ComposeResu
 			}
 		}
 		for _, claim := range queryResult.recall.Claims {
-			if existing, ok := facts[claim.ID]; !ok || claim.Rank > existing.Rank {
+			if existing, ok := facts[claim.ID]; !ok || claimPreferred(claim, existing) {
 				facts[claim.ID] = claim
 			}
 		}
@@ -1007,12 +1007,41 @@ func sortClaims(in map[string]store.ClaimResult) []store.ClaimResult {
 		out = append(out, claim)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
+		leftFreshness := freshnessPriority(out[i].Freshness)
+		rightFreshness := freshnessPriority(out[j].Freshness)
+		if leftFreshness != rightFreshness {
+			return leftFreshness < rightFreshness
+		}
 		if out[i].Rank == out[j].Rank {
 			return out[i].ID < out[j].ID
 		}
 		return out[i].Rank > out[j].Rank
 	})
 	return out
+}
+
+func claimPreferred(candidate, existing store.ClaimResult) bool {
+	candidateFreshness := freshnessPriority(candidate.Freshness)
+	existingFreshness := freshnessPriority(existing.Freshness)
+	if candidateFreshness != existingFreshness {
+		return candidateFreshness < existingFreshness
+	}
+	return candidate.Rank > existing.Rank
+}
+
+func freshnessPriority(freshness string) int {
+	switch strings.ToLower(strings.TrimSpace(freshness)) {
+	case "fresh":
+		return 0
+	case "", "unknown":
+		return 1
+	case "stale":
+		return 2
+	case "expired":
+		return 3
+	default:
+		return 1
+	}
 }
 
 func claimIDs(claims []store.ClaimResult) []string {

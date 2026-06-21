@@ -84,6 +84,10 @@ func Load() (Config, error) {
 	embeddingProvider := env("EMBEDDING_PROVIDER", "local")
 	defaultEmbeddingBaseURL := ""
 	defaultEmbeddingTimeout := 30 * time.Second
+	defaultRerankerProvider := ""
+	defaultRerankerBaseURL := ""
+	defaultRerankerModel := ""
+	defaultRerankerTimeout := 30 * time.Second
 	defaultWorkerSourceTimeout := 2 * time.Minute
 	defaultWorkerLeaseTimeout := 5 * time.Minute
 	defaultAPIReadTimeout := 2 * time.Minute
@@ -93,6 +97,10 @@ func Load() (Config, error) {
 	if isLocalNeuralProvider(embeddingProvider) {
 		defaultEmbeddingBaseURL = "http://host.docker.internal:8080/v1"
 		defaultEmbeddingTimeout = 10 * time.Minute
+		defaultRerankerProvider = "local"
+		defaultRerankerBaseURL = "http://host.docker.internal:8081/v1"
+		defaultRerankerModel = "Qwen/Qwen3-Reranker-0.6B-GGUF:Q8_0"
+		defaultRerankerTimeout = 10 * time.Minute
 		defaultWorkerSourceTimeout = 30 * time.Minute
 		defaultWorkerLeaseTimeout = 35 * time.Minute
 		defaultAPIReadTimeout = 10 * time.Minute
@@ -146,11 +154,11 @@ func Load() (Config, error) {
 			Timeout:    durationEnv("EMBEDDING_TIMEOUT", defaultEmbeddingTimeout),
 		},
 		Reranker: AIProviderConfig{
-			Provider: os.Getenv("RERANKER_PROVIDER"),
-			BaseURL:  os.Getenv("RERANKER_BASE_URL"),
+			Provider: env("RERANKER_PROVIDER", defaultRerankerProvider),
+			BaseURL:  env("RERANKER_BASE_URL", defaultRerankerBaseURL),
 			APIKey:   os.Getenv("RERANKER_API_KEY"),
-			Model:    os.Getenv("RERANKER_MODEL"),
-			Timeout:  durationEnv("RERANKER_TIMEOUT", 30*time.Second),
+			Model:    env("RERANKER_MODEL", defaultRerankerModel),
+			Timeout:  durationEnv("RERANKER_TIMEOUT", defaultRerankerTimeout),
 		},
 		Extractor: AIProviderConfig{
 			Provider: env("EXTRACTOR_PROVIDER", env("LLM_PROVIDER", "local")),

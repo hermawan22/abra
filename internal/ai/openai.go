@@ -145,7 +145,11 @@ func (p *OpenAICompatibleProvider) Rerank(ctx context.Context, request RerankReq
 	}
 	body := map[string]any{
 		"query": request.Query,
-		"texts": request.Documents,
+	}
+	if localRerankUsesDocuments(p.name) {
+		body["documents"] = request.Documents
+	} else {
+		body["texts"] = request.Documents
 	}
 	if model != "" {
 		body["model"] = model
@@ -178,6 +182,15 @@ func (p *OpenAICompatibleProvider) Rerank(ctx context.Context, request RerankReq
 		Usage:    usage,
 		Raw:      raw,
 	}, nil
+}
+
+func localRerankUsesDocuments(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "local", "qwen3", "local-smart":
+		return true
+	default:
+		return false
+	}
 }
 
 func (p *OpenAICompatibleProvider) Extract(ctx context.Context, request ExtractionRequest) (ExtractionResponse, error) {
