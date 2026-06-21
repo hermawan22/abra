@@ -75,8 +75,13 @@ jobs:
       - name: Render production Compose config
         run: |
           cat > /tmp/abra.env.production.test <<'EOF'
+          POSTGRES_IMAGE=pgvector/pgvector:pg16
+          POSTGRES_PASSWORD=test-postgres-password
+          ABRA_IMAGE=abra:test
+          ABRA_DATABASE_URL=postgres://abra:test-postgres-password@postgres:5432/abra?sslmode=disable
           ABRA_API_KEYS=test-admin-key
           ABRA_APPROVAL_MODE=enforce
+          ABRA_WEBHOOK_SECRETS=test-webhook-secret
           EMBEDDING_PROVIDER=compatible
           EMBEDDING_BASE_URL=https://embedding-provider.example/v1
           EMBEDDING_API_KEY=test-embedding-key
