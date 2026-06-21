@@ -103,6 +103,40 @@ service:
   type: ClusterIP
   port: 80
 
+networkPolicy:
+  enabled: true
+  # By default, only pods in the same namespace can reach the API Service.
+  # Add namespaceSelector/podSelector entries for ingress controllers, gateways,
+  # Prometheus, or agent runtimes that live outside the release namespace.
+  apiIngress:
+    - podSelector: {}
+  extraApiIngress: []
+
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+  path: /metrics
+  labels: {}
+
+prometheusRule:
+  enabled: false
+  labels: {}
+  rules:
+    apiDown:
+      enabled: true
+      for: 5m
+      severity: critical
+    high5xxRate:
+      enabled: true
+      for: 10m
+      severity: warning
+      threshold: 0.05
+    memoryComposeFailures:
+      enabled: true
+      for: 10m
+      severity: warning
+
 ingress:
   enabled: false
   className: ""

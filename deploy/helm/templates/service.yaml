@@ -4,6 +4,7 @@ metadata:
   name: {{ include "abra.fullname" . }}
   labels:
     {{- include "abra.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
 spec:
   type: {{ .Values.service.type }}
   selector:

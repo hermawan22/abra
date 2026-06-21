@@ -1,0 +1,50 @@
+{{- if .Values.prometheusRule.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "abra.fullname" . }}
+  labels:
+    {{- include "abra.labels" . | nindent 4 }}
+    {{- with .Values.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: {{ include "abra.fullname" . }}.rules
+      rules:
+        {{- if .Values.prometheusRule.rules.apiDown.enabled }}
+        - alert: AbraApiDown
+          expr: absent(up{job="{{ include "abra.fullname" . }}"} == 1)
+          for: {{ .Values.prometheusRule.rules.apiDown.for }}
+          labels:
+            severity: {{ .Values.prometheusRule.rules.apiDown.severity | quote }}
+          annotations:
+            summary: "Abra API metrics target is down"
+            description: "Prometheus has no healthy scrape for the Abra API ServiceMonitor target."
+        {{- end }}
+        {{- if .Values.prometheusRule.rules.high5xxRate.enabled }}
+        - alert: AbraHigh5xxRate
+          expr: |
+            (
+              sum(rate(abra_http_requests_total{status=~"5.."}[5m]))
+              /
+              clamp_min(sum(rate(abra_http_requests_total[5m])), 1)
+            ) > {{ .Values.prometheusRule.rules.high5xxRate.threshold }}
+          for: {{ .Values.prometheusRule.rules.high5xxRate.for }}
+          labels:
+            severity: {{ .Values.prometheusRule.rules.high5xxRate.severity | quote }}
+          annotations:
+            summary: "Abra API 5xx rate is elevated"
+            description: "More than {{ .Values.prometheusRule.rules.high5xxRate.threshold }} of Abra API requests returned 5xx over the last five minutes."
+        {{- end }}
+        {{- if .Values.prometheusRule.rules.memoryComposeFailures.enabled }}
+        - alert: AbraMemoryComposeFailures
+          expr: sum(rate(abra_smart_path_requests_total{operation="memory_compose",status!="ok"}[5m])) > 0
+          for: {{ .Values.prometheusRule.rules.memoryComposeFailures.for }}
+          labels:
+            severity: {{ .Values.prometheusRule.rules.memoryComposeFailures.severity | quote }}
+          annotations:
+            summary: "Abra memory compose is failing"
+            description: "At least one working-memory compose request failed recently."
+        {{- end }}
+{{- end }}
