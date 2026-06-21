@@ -4,7 +4,7 @@ Abra is terminal-first: install the `abra` command, start the service from the t
 
 The quickstart path defaults to local neural embeddings: Qwen/Qwen3-Embedding-0.6B-GGUF served by a local llama.cpp OpenAI-compatible endpoint started automatically by `abra up` and managed directly with `abra models up/status` when troubleshooting. Qwen/Qwen3-Reranker-0.6B can be configured when a compatible rerank endpoint is available. Custom providers are supported and replace the local defaults when configured.
 
-Local embedding calls default to a 10-minute provider timeout because CPU-backed model requests can be slower than normal API calls on large files. Custom providers default to 30 seconds and can be changed with `EMBEDDING_TIMEOUT`. Local neural setup writes `ABRA_AI_PROVIDER_CONCURRENCY=1`; compatible providers write `ABRA_AI_PROVIDER_CONCURRENCY=4`. `abra doctor` warns when this value is invalid or when a single local model runner is configured for multiple concurrent provider calls.
+Local embedding calls default to a 10-minute provider timeout because CPU-backed model requests can be slower than normal API calls on large files. Custom providers default to 30 seconds and can be changed with `EMBEDDING_TIMEOUT`. Local neural setup writes `ABRA_AI_PROVIDER_CONCURRENCY=1`, `ABRA_EMBEDDING_BATCH_MAX_ITEMS=6`, and `ABRA_EMBEDDING_BATCH_MAX_TOKENS=3000` so the default Qwen runner stays under its context window on large files. Compatible providers write `ABRA_AI_PROVIDER_CONCURRENCY=4`, `ABRA_EMBEDDING_BATCH_MAX_ITEMS=16`, and `ABRA_EMBEDDING_BATCH_MAX_TOKENS=6000`; raise those only after measuring provider capacity. `abra doctor` warns when these values are invalid or likely too aggressive for a single local model runner.
 
 ## 3-Minute Local Flow
 
@@ -53,7 +53,7 @@ abra config model openai --api-key-stdin
 abra config model compatible --base-url https://api.example.com/v1 --model embedding-model --dimensions 1024
 ```
 
-For non-interactive local setup, use `abra setup --yes`. `qwen3` and `local-smart` are local neural aliases; they use the same built-in Qwen runner lifecycle as `local`, and `abra models up` normalizes the stored provider back to `local` after syncing the env. For authenticated compatible providers during onboarding, use `printf '%s' "$PROVIDER_API_KEY" | abra setup --compatible --embedding-base-url https://api.example.com/v1 --embedding-model embedding-model --dimensions 1024 --api-key-stdin`. The CLI infers dimensions for known OpenAI, Qwen, BGE, Nomic, and Gemini embedding model names; pass `--dimensions` for unknown compatible models. For OpenAI, non-interactive setup requires `--api-key-stdin` or `OPENAI_API_KEY`.
+For non-interactive local setup, use `abra setup --yes`. `qwen3` and `local-smart` are local neural aliases; they use the same built-in Qwen runner lifecycle as `local`, and `abra models up` normalizes the stored provider back to `local` after syncing the env. For authenticated compatible providers during onboarding, use `printf '%s' "$PROVIDER_API_KEY" | abra setup --compatible --embedding-base-url https://api.example.com/v1 --embedding-model embedding-model --dimensions 1024 --api-key-stdin`. The CLI infers dimensions for known OpenAI, Qwen, BGE, Nomic, and Gemini embedding model names; pass `--dimensions` for unknown compatible models. If a local ingest still reports an embedding context-window error, reduce `--embedding-batch-max-items` or `--embedding-batch-max-tokens`; if a scaled compatible provider is underused, raise them deliberately. For OpenAI, non-interactive setup requires `--api-key-stdin` or `OPENAI_API_KEY`.
 Use `abra setup --yes --no-models` only when you intentionally manage the embedding endpoint yourself; otherwise the default local provider is started for you by setup or `abra up`.
 
 Make the current repo Codex-ready after setup:
@@ -319,6 +319,11 @@ From a source checkout, run the CLI as `go run ./cmd/abra <command>`. In a relea
 | ingest remote git | `abra ingest --git https://github.com/owner/repo.git --ref main --code --scope repo:owner-repo --wait --wait-timeout 10m` |
 | list sources | `abra sources` |
 | refresh an existing source config | `abra sources sync <source-config-id> --scope <scope> --wait --wait-timeout 10m` |
+| backfill an existing source config | `abra sources backfill <source-config-id> --scope <scope> --wait --wait-timeout 10m` |
+| inspect one source config | `abra sources status <source-config-id>` |
+| inspect one source job history | `abra sources logs <source-config-id> --limit 20` |
+| pause a source config | `abra sources pause <source-config-id>` |
+| resume a source config | `abra sources resume <source-config-id> --approval-id <approval-id>` |
 | register an auto-refreshing MCP source | `abra source mcp --scope team:platform --mcp-url https://mcp.example/mcp --tool export_documents --schedule "@every 10m" --freshness-seconds 600` |
 | list jobs | `abra jobs` |
 | capture raw observation | `abra observe "Agents should rerun release checks" --scope repo:demo` |
@@ -432,6 +437,31 @@ To run an existing source again without changing its config:
 ```sh
 abra sources sync <source-config-id> --scope team:platform --wait --wait-timeout 10m
 ```
+
+For explicit historical reprocessing, use a backfill trigger. This still queues
+the existing source config, but records the operator intent separately in the
+job trigger and metadata:
+
+```sh
+abra sources backfill <source-config-id> --scope team:platform --wait --wait-timeout 10m
+```
+
+Inspect a source and its latest job, then drill into recent job history:
+
+```sh
+abra sources status <source-config-id>
+abra sources logs <source-config-id> --limit 20
+```
+
+Pause and resume connector-backed sources without rewriting their config:
+
+```sh
+abra sources pause <source-config-id>
+abra sources resume <source-config-id> --approval-id <approval-id>
+```
+
+Resume is connector enablement and may require an approved request when
+`ABRA_APPROVAL_MODE=enforce`.
 
 Manual `sources sync` bypasses due checks. Scheduled worker refresh only queues
 sources whose `freshness_policy` or `schedule_cron` says they are due, and skips

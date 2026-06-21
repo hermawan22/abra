@@ -1500,6 +1500,78 @@ func TestModelConfigCheckExplainsLocalModel(t *testing.T) {
 	}
 }
 
+func TestEmbeddingBatchCheckExplainsLocalLimits(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+	mustWrite(t, filepath.Join(home, "quickstart.env"), strings.Join([]string{
+		"EMBEDDING_PROVIDER=local",
+		"ABRA_EMBEDDING_BATCH_MAX_ITEMS=16",
+		"ABRA_EMBEDDING_BATCH_MAX_TOKENS=6000",
+		"",
+	}, "\n"))
+
+	check := embeddingBatchCheck(parseArgs([]string{"doctor"}))
+	if check["ok"] != true {
+		t.Fatalf("check = %#v", check)
+	}
+	if !strings.Contains(stringValue(check["detail"], ""), "large batches can exceed") {
+		t.Fatalf("detail = %q", check["detail"])
+	}
+	if !strings.Contains(stringValue(check["hint"], ""), "ABRA_EMBEDDING_BATCH_MAX_ITEMS=6") {
+		t.Fatalf("hint = %q", check["hint"])
+	}
+}
+
+func TestEmbeddingBatchCheckRejectsInvalidValues(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+	mustWrite(t, filepath.Join(home, "quickstart.env"), strings.Join([]string{
+		"EMBEDDING_PROVIDER=compatible",
+		"ABRA_EMBEDDING_BATCH_MAX_ITEMS=0",
+		"ABRA_EMBEDDING_BATCH_MAX_TOKENS=6000",
+		"",
+	}, "\n"))
+
+	check := embeddingBatchCheck(parseArgs([]string{"doctor"}))
+	if check["ok"] != false || !strings.Contains(stringValue(check["detail"], ""), "between 1 and 128") {
+		t.Fatalf("check = %#v", check)
+	}
+}
+
+func TestConfigShowIncludesEmbeddingBatchLimits(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+	mustWrite(t, filepath.Join(home, "quickstart.env"), strings.Join([]string{
+		"EMBEDDING_PROVIDER=local",
+		"EMBEDDING_BASE_URL=http://host.docker.internal:8080/v1",
+		"EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0",
+		"EMBEDDING_DIMENSIONS=1024",
+		"",
+	}, "\n"))
+
+	output := captureStdout(t, func() {
+		if err := run(context.Background(), []string{"config", "show", "--json"}); err != nil {
+			t.Fatalf("config show error = %v", err)
+		}
+	})
+	var view map[string]any
+	if err := json.Unmarshal([]byte(output), &view); err != nil {
+		t.Fatalf("decode config show: %v\n%s", err, output)
+	}
+	if view["batch_max_items"] != "6" {
+		t.Fatalf("batch_max_items = %#v", view["batch_max_items"])
+	}
+	if view["batch_max_tokens"] != "3000" {
+		t.Fatalf("batch_max_tokens = %#v", view["batch_max_tokens"])
+	}
+}
+
 func TestWorkerIntervalCheckWarnsAggressiveLocalDefault(t *testing.T) {
 	root := t.TempDir()
 	home := t.TempDir()
@@ -1974,6 +2046,12 @@ func TestSetupYesNoStartDefaultsLocalQwen(t *testing.T) {
 	if values["EMBEDDING_TIMEOUT"] != "10m" {
 		t.Fatalf("timeout = %q", values["EMBEDDING_TIMEOUT"])
 	}
+	if values["ABRA_EMBEDDING_BATCH_MAX_ITEMS"] != "6" {
+		t.Fatalf("batch max items = %q", values["ABRA_EMBEDDING_BATCH_MAX_ITEMS"])
+	}
+	if values["ABRA_EMBEDDING_BATCH_MAX_TOKENS"] != "3000" {
+		t.Fatalf("batch max tokens = %q", values["ABRA_EMBEDDING_BATCH_MAX_TOKENS"])
+	}
 	if values["ABRA_AI_PROVIDER_CONCURRENCY"] != "1" {
 		t.Fatalf("provider concurrency = %q", values["ABRA_AI_PROVIDER_CONCURRENCY"])
 	}
@@ -2057,6 +2135,12 @@ func TestConfigModelLocalPersistsRunnerControls(t *testing.T) {
 	}
 	if values["ABRA_LOCAL_EMBEDDING_READINESS_TIMEOUT"] != "45s" {
 		t.Fatalf("readiness timeout = %q", values["ABRA_LOCAL_EMBEDDING_READINESS_TIMEOUT"])
+	}
+	if values["ABRA_EMBEDDING_BATCH_MAX_ITEMS"] != "6" {
+		t.Fatalf("batch max items = %q", values["ABRA_EMBEDDING_BATCH_MAX_ITEMS"])
+	}
+	if values["ABRA_EMBEDDING_BATCH_MAX_TOKENS"] != "3000" {
+		t.Fatalf("batch max tokens = %q", values["ABRA_EMBEDDING_BATCH_MAX_TOKENS"])
 	}
 }
 
@@ -2591,6 +2675,12 @@ func TestSetupCompatibleNoStartDoesNotSuggestLocalModels(t *testing.T) {
 	if values["EMBEDDING_MODEL"] != "custom-embedding" {
 		t.Fatalf("model = %q", values["EMBEDDING_MODEL"])
 	}
+	if values["ABRA_EMBEDDING_BATCH_MAX_ITEMS"] != "16" {
+		t.Fatalf("batch max items = %q", values["ABRA_EMBEDDING_BATCH_MAX_ITEMS"])
+	}
+	if values["ABRA_EMBEDDING_BATCH_MAX_TOKENS"] != "6000" {
+		t.Fatalf("batch max tokens = %q", values["ABRA_EMBEDDING_BATCH_MAX_TOKENS"])
+	}
 	if strings.Contains(output, "abra models up") {
 		t.Fatalf("compatible setup next steps should not suggest local models:\n%s", output)
 	}
@@ -2753,6 +2843,12 @@ func TestConfigModelCompatibleUpdatesEnv(t *testing.T) {
 	if values["ABRA_AI_PROVIDER_CONCURRENCY"] != "4" {
 		t.Fatalf("provider concurrency = %q", values["ABRA_AI_PROVIDER_CONCURRENCY"])
 	}
+	if values["ABRA_EMBEDDING_BATCH_MAX_ITEMS"] != "16" {
+		t.Fatalf("batch max items = %q", values["ABRA_EMBEDDING_BATCH_MAX_ITEMS"])
+	}
+	if values["ABRA_EMBEDDING_BATCH_MAX_TOKENS"] != "6000" {
+		t.Fatalf("batch max tokens = %q", values["ABRA_EMBEDDING_BATCH_MAX_TOKENS"])
+	}
 }
 
 func TestConfigModelCompatibleInfersKnownDimensions(t *testing.T) {
@@ -2841,6 +2937,12 @@ func TestConfigModelCompatibleAllowsNoAPIKey(t *testing.T) {
 	}
 	if values["EMBEDDING_API_KEY"] != "" {
 		t.Fatalf("api key = %q", values["EMBEDDING_API_KEY"])
+	}
+	if values["ABRA_EMBEDDING_BATCH_MAX_ITEMS"] != "16" {
+		t.Fatalf("batch max items = %q", values["ABRA_EMBEDDING_BATCH_MAX_ITEMS"])
+	}
+	if values["ABRA_EMBEDDING_BATCH_MAX_TOKENS"] != "6000" {
+		t.Fatalf("batch max tokens = %q", values["ABRA_EMBEDDING_BATCH_MAX_TOKENS"])
 	}
 	if values["EMBEDDING_DIMENSIONS"] != "768" {
 		t.Fatalf("dimensions = %q", values["EMBEDDING_DIMENSIONS"])
@@ -3588,6 +3690,158 @@ func TestSourcesSyncQueuesExistingSource(t *testing.T) {
 	}
 }
 
+func TestSourcesBackfillQueuesBackfillJob(t *testing.T) {
+	var jobRequest map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ingestion/jobs" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&jobRequest); err != nil {
+			t.Fatalf("decode job body: %v", err)
+		}
+		writeTestJSON(t, w, map[string]any{
+			"ingestion_job": map[string]any{
+				"id":               "job-backfill",
+				"scope":            "team:platform",
+				"status":           "queued",
+				"source_config_id": "source-mcp",
+			},
+		})
+	}))
+	defer server.Close()
+
+	output := captureStdout(t, func() {
+		err := run(context.Background(), []string{
+			"sources", "backfill", "source-mcp",
+			"--base-url", server.URL,
+			"--token", "test-token",
+		})
+		if err != nil {
+			t.Fatalf("sources backfill error = %v", err)
+		}
+	})
+	if jobRequest["source_config_id"] != "source-mcp" || jobRequest["trigger_type"] != "backfill" {
+		t.Fatalf("job request = %#v", jobRequest)
+	}
+	metadata, _ := jobRequest["metadata"].(map[string]any)
+	if metadata["command"] != "sources backfill" {
+		t.Fatalf("metadata = %#v", metadata)
+	}
+	if !strings.Contains(output, "Source queued: source-mcp") || !strings.Contains(output, "Job queued: job-backfill") {
+		t.Fatalf("output = %s", output)
+	}
+}
+
+func TestSourcesStatusShowsSourceAndLatestJob(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/sources/configs/source-mcp":
+			writeTestJSON(t, w, map[string]any{
+				"source_config": map[string]any{
+					"id":              "source-mcp",
+					"scope":           "team:platform",
+					"status":          "active",
+					"source_type":     "mcp",
+					"name":            "Confluence",
+					"authority":       "official-doc",
+					"authority_score": 0.9,
+					"schedule_cron":   "@every 1h",
+					"last_success_at": "2026-06-21T01:02:03Z",
+				},
+			})
+		case "/ingestion/jobs":
+			if r.URL.Query().Get("source_config_id") != "source-mcp" || r.URL.Query().Get("limit") != "1" {
+				t.Fatalf("jobs query = %s", r.URL.RawQuery)
+			}
+			writeTestJSON(t, w, map[string]any{
+				"ingestion_jobs": []map[string]any{{
+					"id":                "job-latest",
+					"status":            "succeeded",
+					"trigger_type":      "schedule",
+					"source_config_id":  "source-mcp",
+					"attempts":          1,
+					"max_attempts":      3,
+					"documents_seen":    4,
+					"documents_changed": 2,
+					"chunks_written":    8,
+					"claims_written":    3,
+				}},
+			})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	output := captureStdout(t, func() {
+		err := run(context.Background(), []string{
+			"sources", "status", "source-mcp",
+			"--base-url", server.URL,
+			"--token", "test-token",
+		})
+		if err != nil {
+			t.Fatalf("sources status error = %v", err)
+		}
+	})
+	for _, want := range []string{"Source: source-mcp", "status: active", "latest_job: - job-latest  succeeded"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestSourcesLogsListsSourceJobs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/sources/configs/source-mcp":
+			writeTestJSON(t, w, map[string]any{
+				"source_config": map[string]any{
+					"id":    "source-mcp",
+					"scope": "team:platform",
+				},
+			})
+			return
+		case "/ingestion/jobs":
+			if r.URL.Query().Get("scope") != "team:platform" || r.URL.Query().Get("source_config_id") != "source-mcp" || r.URL.Query().Get("limit") != "5" {
+				t.Fatalf("jobs query = %s", r.URL.RawQuery)
+			}
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		writeTestJSON(t, w, map[string]any{
+			"ingestion_jobs": []map[string]any{{
+				"id":                "job-2",
+				"status":            "failed",
+				"trigger_type":      "backfill",
+				"source_config_id":  "source-mcp",
+				"attempts":          3,
+				"max_attempts":      3,
+				"documents_seen":    1,
+				"documents_changed": 0,
+				"chunks_written":    0,
+				"claims_written":    0,
+				"error_message":     "connector timeout",
+			}},
+		})
+	}))
+	defer server.Close()
+
+	output := captureStdout(t, func() {
+		err := run(context.Background(), []string{
+			"sources", "logs", "source-mcp",
+			"--limit", "5",
+			"--base-url", server.URL,
+			"--token", "test-token",
+		})
+		if err != nil {
+			t.Fatalf("sources logs error = %v", err)
+		}
+	})
+	if !strings.Contains(output, "Source logs: source-mcp  jobs=1") || !strings.Contains(output, "trigger=backfill") || !strings.Contains(output, "error=connector timeout") {
+		t.Fatalf("output = %s", output)
+	}
+}
+
 func TestSourcesSyncWaitsForQueuedJobID(t *testing.T) {
 	var jobRequest map[string]any
 	getRequests := 0
@@ -3701,6 +3955,64 @@ func TestSourcesSyncJSONWaitReturnsFinalJob(t *testing.T) {
 	job, _ := payload["job"].(map[string]any)
 	if job["id"] != "job-sync" || job["status"] != "succeeded" {
 		t.Fatalf("payload = %#v", payload)
+	}
+}
+
+func TestSourcesPauseAndResume(t *testing.T) {
+	requests := []struct {
+		path string
+		body map[string]any
+	}{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		requests = append(requests, struct {
+			path string
+			body map[string]any
+		}{path: r.URL.Path, body: body})
+		status := "paused"
+		if strings.HasSuffix(r.URL.Path, "/resume") {
+			status = "active"
+		}
+		writeTestJSON(t, w, map[string]any{
+			"source_config": map[string]any{
+				"id":     "source-mcp",
+				"status": status,
+			},
+		})
+	}))
+	defer server.Close()
+
+	output := captureStdout(t, func() {
+		if err := run(context.Background(), []string{
+			"sources", "pause", "source-mcp",
+			"--base-url", server.URL,
+			"--token", "test-token",
+		}); err != nil {
+			t.Fatalf("sources pause error = %v", err)
+		}
+		if err := run(context.Background(), []string{
+			"sources", "resume", "source-mcp",
+			"--approval-id", "approval-1",
+			"--base-url", server.URL,
+			"--token", "test-token",
+		}); err != nil {
+			t.Fatalf("sources resume error = %v", err)
+		}
+	})
+	if len(requests) != 2 {
+		t.Fatalf("requests = %#v", requests)
+	}
+	if requests[0].path != "/sources/configs/source-mcp/pause" || requests[1].path != "/sources/configs/source-mcp/resume" {
+		t.Fatalf("paths = %#v", requests)
+	}
+	if requests[1].body["approval_id"] != "approval-1" {
+		t.Fatalf("resume body = %#v", requests[1].body)
+	}
+	if !strings.Contains(output, "Source paused: source-mcp") || !strings.Contains(output, "Source resumed: source-mcp") {
+		t.Fatalf("output = %s", output)
 	}
 }
 
@@ -4002,8 +4314,18 @@ func TestDemoEnvUsesPublishedRuntimeImageOutsideCheckout(t *testing.T) {
 	if !strings.Contains(content, "ABRA_IMAGE=ghcr.io/hermawan22/abra:"+runtimeVersion()+"\n") {
 		t.Fatalf("runtime demo env should use published image:\n%s", content)
 	}
+	if !strings.Contains(content, "ABRA_EMBEDDING_BATCH_MAX_ITEMS=6\n") || !strings.Contains(content, "ABRA_EMBEDDING_BATCH_MAX_TOKENS=3000\n") {
+		t.Fatalf("runtime demo env should include local embedding batch limits:\n%s", content)
+	}
 	if strings.Contains(content, "ABRA_IMAGE=abra:local") {
 		t.Fatalf("runtime demo env must not use local image:\n%s", content)
+	}
+}
+
+func TestProductionEnvExampleIncludesCompatibleBatchLimits(t *testing.T) {
+	if !strings.Contains(productionEnvExample, "ABRA_EMBEDDING_BATCH_MAX_ITEMS=16\n") ||
+		!strings.Contains(productionEnvExample, "ABRA_EMBEDDING_BATCH_MAX_TOKENS=6000\n") {
+		t.Fatalf("production env example should include compatible embedding batch limits:\n%s", productionEnvExample)
 	}
 }
 

@@ -105,6 +105,8 @@ config:
   embeddingProvider: compatible
   embeddingModel: embedding-model
   embeddingDimensions: "1024"
+  embeddingBatchMaxItems: "16"
+  embeddingBatchMaxTokens: "6000"
   apiReadTimeout: 2m
   maxRequestBodyBytes: "26214400"
   rerankerProvider: ""
@@ -160,6 +162,7 @@ migrate:
 - Keep `ABRA_WEBHOOK_SECRETS` present in the existing secret. The chart requires it by default for the migration, API, and worker pods; set `config.allowUnsignedWebhooksInProduction="true"` only when webhook ingestion is disabled or an upstream gateway verifies webhook signatures.
 - `config.embeddingProvider=local` means self-hosted Qwen-compatible neural retrieval. Set `config.embeddingProvider=compatible` plus the embedding secret values to replace it with any custom provider. Set `config.rerankerProvider` only when a reranker endpoint is available.
 - Keep `config.aiProviderConcurrency=1` for a single local model runner. Raise it only when the embedding or reranker provider is horizontally scaled and latency/error metrics show headroom.
+- Tune `config.embeddingBatchMaxItems` and `config.embeddingBatchMaxTokens` for provider request size. Use smaller values for local Qwen context-window reliability; raise them only for compatible providers with measured capacity.
 - Keep `worker.concurrency=1` for the default local Qwen runner. Raise it up to `32` only after provider capacity and database pool usage show headroom; same-source jobs are serialized within one worker process.
 - Keep Abra's built-in Postgres-backed rate limit enabled with `config.rateLimitMax` and `config.rateLimitWindow`; it applies across replicated API pods after migrations are applied. Add ingress or gateway rate limits for defense in depth on exposed deployments.
 - Set `config.composeHealthCacheTtl=0s` only when every working-memory compose call must run a fresh scoped health aggregate.

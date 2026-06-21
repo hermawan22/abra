@@ -14,6 +14,8 @@ data:
   EMBEDDING_MODEL: {{ .Values.config.embeddingModel | quote }}
   EMBEDDING_DIMENSIONS: {{ .Values.config.embeddingDimensions | quote }}
   EMBEDDING_TIMEOUT: {{ .Values.config.embeddingTimeout | quote }}
+  ABRA_EMBEDDING_BATCH_MAX_ITEMS: {{ .Values.config.embeddingBatchMaxItems | quote }}
+  ABRA_EMBEDDING_BATCH_MAX_TOKENS: {{ .Values.config.embeddingBatchMaxTokens | quote }}
   RERANKER_PROVIDER: {{ .Values.config.rerankerProvider | quote }}
   RERANKER_MODEL: {{ .Values.config.rerankerModel | quote }}
   ABRA_ALLOW_UNSIGNED_WEBHOOKS_IN_PRODUCTION: {{ .Values.config.allowUnsignedWebhooksInProduction | quote }}

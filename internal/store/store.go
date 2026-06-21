@@ -2022,6 +2022,33 @@ func (s *Store) UpsertSourceConfig(ctx context.Context, source SourceConfigRecor
 	return source.ID, err
 }
 
+func (s *Store) UpdateSourceConfigStatus(ctx context.Context, id, status string, metadata map[string]any) (SourceConfigRecord, error) {
+	id = strings.TrimSpace(id)
+	status = strings.TrimSpace(status)
+	if id == "" || status == "" {
+		return SourceConfigRecord{}, fmt.Errorf("source_config_id and status are required")
+	}
+	switch status {
+	case "active", "paused", "disabled", "deleted", "error":
+	default:
+		return SourceConfigRecord{}, fmt.Errorf("source status must be active, paused, disabled, deleted, or error")
+	}
+	tag, err := s.queryRunner().Exec(ctx, `
+		UPDATE source_configs
+		SET status = $2,
+		    metadata = metadata || $3::jsonb,
+		    updated_at = now()
+		WHERE id = $1
+	`, id, status, jsonb(metadata))
+	if err != nil {
+		return SourceConfigRecord{}, err
+	}
+	if tag.RowsAffected() == 0 {
+		return SourceConfigRecord{}, fmt.Errorf("source_config_id %q not found", id)
+	}
+	return s.GetSourceConfig(ctx, id)
+}
+
 func (s *Store) UpsertMemorySummary(ctx context.Context, summary MemorySummaryRecord) (string, error) {
 	if summary.Scope == "" || summary.Level == "" || summary.Key == "" || summary.Title == "" || summary.Summary == "" {
 		return "", fmt.Errorf("scope, level, key, title, and summary are required")

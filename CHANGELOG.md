@@ -29,6 +29,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 
 - Infer embedding dimensions for known compatible models and require `--dimensions` for unknown compatible providers instead of silently defaulting every custom endpoint to OpenAI dimensions.
 - Treat `qwen3` and `local-smart` as first-class local provider aliases across `abra up`, `abra down`, `abra models`, `abra doctor`, and readiness checks.
+- Add configurable embedding batch limits with conservative local Qwen defaults to avoid context-window failures on large files while keeping compatible providers tunable for higher throughput.
 - Make agent no-context recovery in CLI and MCP guidance verify MCP/API/token readiness before suggesting re-ingestion, reserving ingest guidance for proven missing scopes or empty source-backed memory.
 - Keep `custom-http` as an internal provider implementation and test that public setup/config/runtime selectors reject it until an arbitrary HTTP provider contract is ready.
 - Redact and bound provider error bodies and transport causes before exposing them through API, CLI, MCP, logs, or job metadata.

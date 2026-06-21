@@ -53,6 +53,23 @@ func TestSourceConfigApprovalTarget(t *testing.T) {
 	}
 }
 
+func TestSourceStatusMetadataProtectsServerOwnedFields(t *testing.T) {
+	got := sourceStatusMetadata(map[string]any{
+		"channel":           "cli",
+		"status_change":     "active",
+		"status_changed_by": "caller",
+	}, "paused", "api")
+	if got["channel"] != "cli" {
+		t.Fatalf("custom metadata missing: %#v", got)
+	}
+	if got["status_change"] != "paused" {
+		t.Fatalf("status_change = %#v", got["status_change"])
+	}
+	if got["status_changed_by"] != "api" {
+		t.Fatalf("status_changed_by = %#v", got["status_changed_by"])
+	}
+}
+
 func TestValidateSourceConfigInputRejectsInvalidCoreWorkerSource(t *testing.T) {
 	err := validateSourceConfigInput(store.SourceConfigRecord{
 		Scope:      "team:a",

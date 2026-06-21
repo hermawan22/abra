@@ -1090,8 +1090,14 @@ func (s *Service) ChallengeClaim(ctx context.Context, input ChallengeClaimInput)
 }
 
 func (s *Service) embedTexts(ctx context.Context, inputs []string) (ai.EmbeddingResponse, error) {
-	const maxEmbeddingBatchTokens = 6000
-	const maxEmbeddingBatchItems = 16
+	maxEmbeddingBatchItems := s.cfg.EmbeddingBatchMaxItems
+	if maxEmbeddingBatchItems < 1 {
+		maxEmbeddingBatchItems = 16
+	}
+	maxEmbeddingBatchTokens := s.cfg.EmbeddingBatchMaxTokens
+	if maxEmbeddingBatchTokens < 1 {
+		maxEmbeddingBatchTokens = 6000
+	}
 	out := ai.EmbeddingResponse{}
 	if len(inputs) == 0 {
 		return out, nil

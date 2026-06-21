@@ -67,6 +67,8 @@ type Config struct {
 	WorkerLeaseTimeout                 time.Duration
 	WorkerMaxChangedDocumentsPerSource int
 	AIProviderConcurrency              int
+	EmbeddingBatchMaxItems             int
+	EmbeddingBatchMaxTokens            int
 	ComposeHealthCacheTTL              time.Duration
 	ComposeRecallConcurrency           int
 	ComposeGraphConcurrency            int
@@ -86,6 +88,8 @@ func Load() (Config, error) {
 	defaultWorkerLeaseTimeout := 5 * time.Minute
 	defaultAPIReadTimeout := 2 * time.Minute
 	defaultAIProviderConcurrency := 4
+	defaultEmbeddingBatchMaxItems := 16
+	defaultEmbeddingBatchMaxTokens := 6000
 	if isLocalNeuralProvider(embeddingProvider) {
 		defaultEmbeddingBaseURL = "http://host.docker.internal:8080/v1"
 		defaultEmbeddingTimeout = 10 * time.Minute
@@ -93,6 +97,8 @@ func Load() (Config, error) {
 		defaultWorkerLeaseTimeout = 35 * time.Minute
 		defaultAPIReadTimeout = 10 * time.Minute
 		defaultAIProviderConcurrency = 1
+		defaultEmbeddingBatchMaxItems = 6
+		defaultEmbeddingBatchMaxTokens = 3000
 	}
 
 	nodeEnv := env("NODE_ENV", "development")
@@ -162,6 +168,8 @@ func Load() (Config, error) {
 		WorkerLeaseTimeout:                 durationEnv("WORKER_LEASE_TIMEOUT", defaultWorkerLeaseTimeout),
 		WorkerMaxChangedDocumentsPerSource: intEnv("WORKER_MAX_CHANGED_DOCUMENTS_PER_SOURCE", 100),
 		AIProviderConcurrency:              intEnv("ABRA_AI_PROVIDER_CONCURRENCY", defaultAIProviderConcurrency),
+		EmbeddingBatchMaxItems:             intEnv("ABRA_EMBEDDING_BATCH_MAX_ITEMS", defaultEmbeddingBatchMaxItems),
+		EmbeddingBatchMaxTokens:            intEnv("ABRA_EMBEDDING_BATCH_MAX_TOKENS", defaultEmbeddingBatchMaxTokens),
 		ComposeHealthCacheTTL:              durationEnv("ABRA_COMPOSE_HEALTH_CACHE_TTL", 2*time.Second),
 		ComposeRecallConcurrency:           intEnv("ABRA_COMPOSE_RECALL_CONCURRENCY", 1),
 		ComposeGraphConcurrency:            intEnv("ABRA_COMPOSE_GRAPH_CONCURRENCY", 4),
@@ -237,6 +245,12 @@ func Load() (Config, error) {
 	}
 	if cfg.AIProviderConcurrency < 1 || cfg.AIProviderConcurrency > 32 {
 		return Config{}, errors.New("ABRA_AI_PROVIDER_CONCURRENCY must be between 1 and 32")
+	}
+	if cfg.EmbeddingBatchMaxItems < 1 || cfg.EmbeddingBatchMaxItems > 128 {
+		return Config{}, errors.New("ABRA_EMBEDDING_BATCH_MAX_ITEMS must be between 1 and 128")
+	}
+	if cfg.EmbeddingBatchMaxTokens < 1 || cfg.EmbeddingBatchMaxTokens > 200000 {
+		return Config{}, errors.New("ABRA_EMBEDDING_BATCH_MAX_TOKENS must be between 1 and 200000")
 	}
 	if cfg.Embedding.Timeout <= 0 || cfg.Embedding.Timeout > 30*time.Minute {
 		return Config{}, errors.New("EMBEDDING_TIMEOUT must be between 1ns and 30m")
@@ -416,6 +430,8 @@ func validateEnvSyntax() error {
 		"WORKER_MAX_CHANGED_DOCUMENTS_PER_SOURCE",
 		"ABRA_GIT_CLONE_DEPTH",
 		"ABRA_MAX_REQUEST_BODY_BYTES",
+		"ABRA_EMBEDDING_BATCH_MAX_ITEMS",
+		"ABRA_EMBEDDING_BATCH_MAX_TOKENS",
 	} {
 		if raw, ok := os.LookupEnv(name); ok && strings.TrimSpace(raw) != "" {
 			if _, err := strconv.Atoi(strings.TrimSpace(raw)); err != nil {

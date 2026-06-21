@@ -598,6 +598,8 @@ MCP tools:
 - `list_agent_profiles(scope, status?, limit?)`
 - `upsert_source_config(scope, source_type, name, id?, base_url?, connector_kind?, status?, authority?, authority_score?, config?, metadata?, created_by?, approval_id?)`
 - `list_source_configs(scope, limit?)`
+- `get_source_config(source_config_id)`
+- `set_source_config_status(source_config_id, status, created_by?, approval_id?, metadata?)`
 - `enqueue_ingestion_job(source_config_id, trigger_type?, created_by?, max_attempts?, metadata?)`
 - `list_ingestion_jobs(scope, source_config_id?, limit?)`
 - `retry_ingestion_job(job_id, created_by?, max_attempts?, metadata?)`
@@ -634,6 +636,7 @@ MCP tools:
 - `POST /learning/proposals/:proposalId/decide`
 - `GET /sources/configs`
 - `POST /sources/configs`
+- `GET /sources/configs/:sourceConfigId`
 - `GET /ingestion/jobs`
 - `POST /ingestion/jobs`
 - `POST /ingestion/jobs/:jobId/retry`
@@ -819,6 +822,8 @@ EMBEDDING_BASE_URL=http://host.docker.internal:8080/v1
 EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0
 EMBEDDING_DIMENSIONS=1024
 EMBEDDING_TIMEOUT=10m
+ABRA_EMBEDDING_BATCH_MAX_ITEMS=6
+ABRA_EMBEDDING_BATCH_MAX_TOKENS=3000
 ABRA_AI_PROVIDER_CONCURRENCY=1
 RERANKER_PROVIDER=
 RERANKER_BASE_URL=
@@ -905,11 +910,13 @@ EMBEDDING_API_KEY=...
 EMBEDDING_MODEL=embedding-model
 EMBEDDING_DIMENSIONS=1024
 EMBEDDING_TIMEOUT=30s
+ABRA_EMBEDDING_BATCH_MAX_ITEMS=16
+ABRA_EMBEDDING_BATCH_MAX_TOKENS=6000
 ABRA_AI_PROVIDER_CONCURRENCY=4
 RERANKER_PROVIDER=
 ```
 
-The provider contract is generic: any embedding endpoint that implements the configured embeddings API shape can be used by setting `EMBEDDING_BASE_URL`, `EMBEDDING_API_KEY`, `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`, and optionally `EMBEDDING_TIMEOUT`. Empty API keys are allowed for self-hosted endpoints. The CLI infers dimensions for known OpenAI, Qwen, BGE, Nomic, and Gemini embedding model names; unknown compatible models require `--dimensions` so vector storage is configured intentionally. `EMBEDDING_PROVIDER=local`, `qwen3`, and `local-smart` all mean the built-in local neural runner; `abra models up` normalizes those aliases back to `local` after syncing runtime env. Abra does not use an LLM for answer generation; the provider is used to embed chunks, claims, and recall queries for hybrid retrieval. `ABRA_AI_PROVIDER_CONCURRENCY` is a service-wide guard around embedding and reranker calls, separate from compose fan-out settings; keep it low for one local model runner and tune upward for horizontally scaled provider endpoints. The optional reranker uses `RERANKER_PROVIDER`, `RERANKER_BASE_URL`, `RERANKER_API_KEY`, and `RERANKER_MODEL`. If reranking fails, recall keeps the hybrid retrieval result instead of failing the user query.
+The provider contract is generic: any embedding endpoint that implements the configured embeddings API shape can be used by setting `EMBEDDING_BASE_URL`, `EMBEDDING_API_KEY`, `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`, and optionally `EMBEDDING_TIMEOUT`. Empty API keys are allowed for self-hosted endpoints. The CLI infers dimensions for known OpenAI, Qwen, BGE, Nomic, and Gemini embedding model names; unknown compatible models require `--dimensions` so vector storage is configured intentionally. `EMBEDDING_PROVIDER=local`, `qwen3`, and `local-smart` all mean the built-in local neural runner; `abra models up` normalizes those aliases back to `local` after syncing runtime env. Abra does not use an LLM for answer generation; the provider is used to embed chunks, claims, and recall queries for hybrid retrieval. `ABRA_AI_PROVIDER_CONCURRENCY` is a service-wide guard around embedding and reranker calls, separate from compose fan-out settings; keep it low for one local model runner and tune upward for horizontally scaled provider endpoints. `ABRA_EMBEDDING_BATCH_MAX_ITEMS` and `ABRA_EMBEDDING_BATCH_MAX_TOKENS` bound each embedding provider request; local Qwen defaults to smaller batches (`6` items and `3000` estimated tokens) to avoid context-window failures on large files, while compatible providers default to `16` and `6000`. The optional reranker uses `RERANKER_PROVIDER`, `RERANKER_BASE_URL`, `RERANKER_API_KEY`, and `RERANKER_MODEL`. If reranking fails, recall keeps the hybrid retrieval result instead of failing the user query.
 
 ## V1 Direction
 
@@ -983,9 +990,9 @@ The OSS surface is generic document ingestion through `POST /ingest/documents` o
 - Preserve ACL and scope metadata before records become available to agents.
 - Keep connector-specific auth and normalization in a private overlay, fork, or MCP source tool.
 
-Worker runs are written to `ingestion_jobs` and exposed through `GET /ingestion/jobs`. Signed webhook documents also create durable queued jobs so slow embedding providers do not block webhook responses. Operators and agent gateways can manually enqueue a source with `POST /ingestion/jobs` or MCP `enqueue_ingestion_job`, list jobs with `list_ingestion_jobs`, retry failed/canceled jobs with `POST /ingestion/jobs/:jobId/retry` or MCP `retry_ingestion_job`, and cancel queued/retry jobs with `POST /ingestion/jobs/:jobId/cancel` or MCP `cancel_ingestion_job`. Source configs can be written and listed through both HTTP and MCP (`upsert_source_config`, `list_source_configs`). Source configs also keep the latest success/error timestamps for quick operator checks over HTTP or MCP. Source config changes, including pause/resume status changes, write `source_config.upserted` audit events so operators can review lifecycle changes through `GET /audit/events`.
+Worker runs are written to `ingestion_jobs` and exposed through `GET /ingestion/jobs`. Signed webhook documents also create durable queued jobs so slow embedding providers do not block webhook responses. Operators and agent gateways can manually enqueue a source with `POST /ingestion/jobs` or MCP `enqueue_ingestion_job`, list jobs with `list_ingestion_jobs`, retry failed/canceled jobs with `POST /ingestion/jobs/:jobId/retry` or MCP `retry_ingestion_job`, and cancel queued/retry jobs with `POST /ingestion/jobs/:jobId/cancel` or MCP `cancel_ingestion_job`. Source configs can be written and listed through both HTTP and MCP (`upsert_source_config`, `list_source_configs`), and read directly over HTTP with `GET /sources/configs/:sourceConfigId`. Source configs also keep the latest success/error timestamps for quick operator checks over HTTP or MCP. Source config upserts write `source_config.upserted` audit events; pause/resume status changes write `source_config.status_changed` events so operators can review lifecycle changes through `GET /audit/events`.
 
-From the CLI, queue an existing source again with `abra sources sync <source-config-id> --scope <scope> --wait --wait-timeout 10m`. Manual sync bypasses source due checks so operators can force a refresh after an incident, source migration, or credential rotation.
+From the CLI, inspect connector health with `abra sources status <source-config-id>` and job history with `abra sources logs <source-config-id>`. Queue an existing source again with `abra sources sync <source-config-id> --scope <scope> --wait --wait-timeout 10m`, or record an explicit historical reprocess with `abra sources backfill <source-config-id> --scope <scope> --wait --wait-timeout 10m`. Manual sync and backfill bypass source due checks so operators can force a refresh after an incident, source migration, credential rotation, or normalization change. Pause or resume a source without rewriting its connector config with `abra sources pause <source-config-id>` and `abra sources resume <source-config-id> --approval-id <approval-id>`; resume may require approval when enforcement is active.
 
 ### Git/local-repo source configs
 

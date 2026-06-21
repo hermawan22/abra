@@ -209,6 +209,59 @@ func TestEmbedTextsBatchesLargeRequests(t *testing.T) {
 	}
 }
 
+func TestEmbedTextsHonorsConfiguredBatchLimits(t *testing.T) {
+	provider := &recordingEmbeddingProvider{}
+	service := Service{
+		cfg: config.Config{
+			Embedding:               config.AIProviderConfig{Dimensions: 3},
+			EmbeddingBatchMaxItems:  3,
+			EmbeddingBatchMaxTokens: 100000,
+		},
+		embeddings: provider,
+	}
+	inputs := make([]string, 7)
+	for i := range inputs {
+		inputs[i] = "small input"
+	}
+	response, err := service.embedTexts(context.Background(), inputs)
+	if err != nil {
+		t.Fatalf("embedTexts error = %v", err)
+	}
+	if len(response.Embeddings) != len(inputs) {
+		t.Fatalf("embeddings = %d, want %d", len(response.Embeddings), len(inputs))
+	}
+	if got, want := fmt.Sprint(provider.callSizes), fmt.Sprint([]int{3, 3, 1}); got != want {
+		t.Fatalf("provider call sizes = %s, want %s", got, want)
+	}
+}
+
+func TestEmbedTextsHonorsConfiguredBatchTokenLimit(t *testing.T) {
+	provider := &recordingEmbeddingProvider{}
+	service := Service{
+		cfg: config.Config{
+			Embedding:               config.AIProviderConfig{Dimensions: 3},
+			EmbeddingBatchMaxItems:  100,
+			EmbeddingBatchMaxTokens: 100,
+		},
+		embeddings: provider,
+	}
+	inputs := []string{
+		strings.Repeat("word ", 90),
+		strings.Repeat("word ", 90),
+		strings.Repeat("word ", 90),
+	}
+	response, err := service.embedTexts(context.Background(), inputs)
+	if err != nil {
+		t.Fatalf("embedTexts error = %v", err)
+	}
+	if len(response.Embeddings) != len(inputs) {
+		t.Fatalf("embeddings = %d, want %d", len(response.Embeddings), len(inputs))
+	}
+	if got, want := fmt.Sprint(provider.callSizes), fmt.Sprint([]int{1, 1, 1}); got != want {
+		t.Fatalf("provider call sizes = %s, want %s", got, want)
+	}
+}
+
 func TestEmbedPreparedDocumentsBatchesChunksAcrossDocuments(t *testing.T) {
 	provider := &recordingEmbeddingProvider{}
 	service := Service{

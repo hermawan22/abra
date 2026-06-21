@@ -378,6 +378,8 @@ func configShow(args cliArgs) error {
 		"embedding_dimensions": values["EMBEDDING_DIMENSIONS"],
 		"embedding_timeout":    values["EMBEDDING_TIMEOUT"],
 		"provider_concurrency": firstNonEmpty(values["ABRA_AI_PROVIDER_CONCURRENCY"], defaultProviderConcurrency(values["EMBEDDING_PROVIDER"])),
+		"batch_max_items":      firstNonEmpty(values["ABRA_EMBEDDING_BATCH_MAX_ITEMS"], defaultBatchMaxItems(values["EMBEDDING_PROVIDER"])),
+		"batch_max_tokens":     firstNonEmpty(values["ABRA_EMBEDDING_BATCH_MAX_TOKENS"], defaultBatchMaxTokens(values["EMBEDDING_PROVIDER"])),
 		"worker_concurrency":   firstNonEmpty(values["WORKER_CONCURRENCY"], "1"),
 		"worker_max_sources":   firstNonEmpty(values["WORKER_MAX_SOURCES_PER_RUN"], "25"),
 		"reranker_provider":    values["RERANKER_PROVIDER"],
@@ -406,6 +408,8 @@ func configShow(args cliArgs) error {
 		fmt.Println("timeout:   " + timeout)
 	}
 	fmt.Println("provider_concurrency: " + stringValue(view["provider_concurrency"], ""))
+	fmt.Println("batch_max_items:      " + stringValue(view["batch_max_items"], ""))
+	fmt.Println("batch_max_tokens:     " + stringValue(view["batch_max_tokens"], ""))
 	fmt.Println("worker_concurrency:   " + stringValue(view["worker_concurrency"], ""))
 	fmt.Println("worker_max_sources:   " + stringValue(view["worker_max_sources"], ""))
 	fmt.Println("api_key:   " + stringValue(view["embedding_api_key"], ""))
@@ -469,6 +473,8 @@ func configModelLocalNeural(args cliArgs, label string) error {
 		"EMBEDDING_MODEL":                      flag(args, "model", defaultServedModelName),
 		"EMBEDDING_DIMENSIONS":                 flag(args, "dimensions", "1024"),
 		"EMBEDDING_TIMEOUT":                    flag(args, "embedding-timeout", "10m"),
+		"ABRA_EMBEDDING_BATCH_MAX_ITEMS":       flag(args, "embedding-batch-max-items", "6"),
+		"ABRA_EMBEDDING_BATCH_MAX_TOKENS":      flag(args, "embedding-batch-max-tokens", "3000"),
 		"ABRA_AI_PROVIDER_CONCURRENCY":         flag(args, "provider-concurrency", "1"),
 		"RERANKER_PROVIDER":                    flag(args, "reranker-provider", ""),
 		"RERANKER_BASE_URL":                    flag(args, "reranker-base-url", ""),
@@ -516,6 +522,8 @@ func configModelCompatible(args cliArgs, label string) error {
 		"EMBEDDING_MODEL":                        model,
 		"EMBEDDING_DIMENSIONS":                   dimensions,
 		"EMBEDDING_TIMEOUT":                      flag(args, "embedding-timeout", "30s"),
+		"ABRA_EMBEDDING_BATCH_MAX_ITEMS":         flag(args, "embedding-batch-max-items", "16"),
+		"ABRA_EMBEDDING_BATCH_MAX_TOKENS":        flag(args, "embedding-batch-max-tokens", "6000"),
 		"ABRA_AI_PROVIDER_CONCURRENCY":           flag(args, "provider-concurrency", "4"),
 		"RERANKER_PROVIDER":                      "",
 		"RERANKER_BASE_URL":                      "",
@@ -597,6 +605,8 @@ func updateEnvValues(args cliArgs, updates map[string]string) error {
 		"EMBEDDING_MODEL",
 		"EMBEDDING_DIMENSIONS",
 		"EMBEDDING_TIMEOUT",
+		"ABRA_EMBEDDING_BATCH_MAX_ITEMS",
+		"ABRA_EMBEDDING_BATCH_MAX_TOKENS",
 		"ABRA_AI_PROVIDER_CONCURRENCY",
 		"RERANKER_PROVIDER",
 		"RERANKER_BASE_URL",
@@ -851,6 +861,7 @@ func doctor(ctx context.Context, args cliArgs) error {
 	}
 	checks = append(checks, modelConfigCheck(args))
 	checks = append(checks, aiProviderConcurrencyCheck(args))
+	checks = append(checks, embeddingBatchCheck(args))
 	if envPath(args) != "" {
 		checks = append(checks, composeConcurrencyCheck(args))
 	}
@@ -1075,6 +1086,71 @@ func aiProviderConcurrencyCheck(args cliArgs) map[string]any {
 		"ok":     true,
 		"detail": "ABRA_AI_PROVIDER_CONCURRENCY=" + raw,
 	}
+}
+
+func embeddingBatchCheck(args cliArgs) map[string]any {
+	values, err := readEnvValues(envPath(args))
+	if err != nil {
+		return map[string]any{
+			"name":   "embedding_batch",
+			"ok":     false,
+			"detail": "runtime env is not readable: " + envPath(args),
+			"hint":   "run: abra setup",
+		}
+	}
+	path := envPath(args)
+	provider := strings.TrimSpace(values["EMBEDDING_PROVIDER"])
+	defaultItems, defaultTokens := defaultEmbeddingBatchLimits(provider)
+	itemsRaw := firstNonEmpty(strings.TrimSpace(values["ABRA_EMBEDDING_BATCH_MAX_ITEMS"]), defaultItems)
+	tokensRaw := firstNonEmpty(strings.TrimSpace(values["ABRA_EMBEDDING_BATCH_MAX_TOKENS"]), defaultTokens)
+	items, itemsErr := strconv.Atoi(itemsRaw)
+	tokens, tokensErr := strconv.Atoi(tokensRaw)
+	if itemsErr != nil || items < 1 || items > 128 {
+		return map[string]any{
+			"name":   "embedding_batch",
+			"ok":     false,
+			"detail": "ABRA_EMBEDDING_BATCH_MAX_ITEMS=" + itemsRaw + " must be an integer between 1 and 128",
+			"hint":   "set ABRA_EMBEDDING_BATCH_MAX_ITEMS=" + defaultItems + " in " + path + ", then run: abra down && abra up",
+		}
+	}
+	if tokensErr != nil || tokens < 1 || tokens > 200000 {
+		return map[string]any{
+			"name":   "embedding_batch",
+			"ok":     false,
+			"detail": "ABRA_EMBEDDING_BATCH_MAX_TOKENS=" + tokensRaw + " must be an integer between 1 and 200000",
+			"hint":   "set ABRA_EMBEDDING_BATCH_MAX_TOKENS=" + defaultTokens + " in " + path + ", then run: abra down && abra up",
+		}
+	}
+	if isLocalProviderName(provider) && (items > 6 || tokens > 3000) {
+		return map[string]any{
+			"name":   "embedding_batch",
+			"ok":     true,
+			"detail": "items=" + itemsRaw + " tokens=" + tokensRaw + " for local provider; large batches can exceed the local runner context window",
+			"hint":   "use ABRA_EMBEDDING_BATCH_MAX_ITEMS=6 and ABRA_EMBEDDING_BATCH_MAX_TOKENS=3000 for the default local Qwen runner unless capacity is measured",
+		}
+	}
+	return map[string]any{
+		"name":   "embedding_batch",
+		"ok":     true,
+		"detail": "items=" + itemsRaw + " tokens=" + tokensRaw,
+	}
+}
+
+func defaultEmbeddingBatchLimits(provider string) (string, string) {
+	if isLocalProviderName(provider) {
+		return "6", "3000"
+	}
+	return "16", "6000"
+}
+
+func defaultBatchMaxItems(provider string) string {
+	items, _ := defaultEmbeddingBatchLimits(provider)
+	return items
+}
+
+func defaultBatchMaxTokens(provider string) string {
+	_, tokens := defaultEmbeddingBatchLimits(provider)
+	return tokens
 }
 
 func composeConcurrencyCheck(args cliArgs) map[string]any {
@@ -1795,6 +1871,16 @@ func listSources(ctx context.Context, args cliArgs) error {
 		switch action {
 		case "sync", "enqueue", "run":
 			return syncSource(ctx, args)
+		case "backfill":
+			return backfillSource(ctx, args)
+		case "status":
+			return sourceStatus(ctx, args)
+		case "logs", "log":
+			return sourceLogs(ctx, args)
+		case "pause":
+			return setSourceStatus(ctx, args, "pause")
+		case "resume":
+			return setSourceStatus(ctx, args, "resume")
 		default:
 			return fmt.Errorf("unknown sources action %q\n\n%s", action, commandUsage("sources"))
 		}
@@ -1820,20 +1906,28 @@ func listSources(ctx context.Context, args cliArgs) error {
 }
 
 func syncSource(ctx context.Context, args cliArgs) error {
+	return enqueueSourceJob(ctx, args, "sync", flag(args, "trigger", "manual"))
+}
+
+func backfillSource(ctx context.Context, args cliArgs) error {
+	return enqueueSourceJob(ctx, args, "backfill", flag(args, "trigger", "backfill"))
+}
+
+func enqueueSourceJob(ctx context.Context, args cliArgs, command, triggerType string) error {
 	sourceID := firstNonEmpty(flag(args, "source-config-id", ""), flag(args, "source-id", ""), flag(args, "id", ""))
 	if sourceID == "" && len(args.Rest) > 0 {
 		sourceID = strings.TrimSpace(args.Rest[0])
 		args.Rest = args.Rest[1:]
 	}
 	if sourceID == "" {
-		return errors.New("sources sync requires a source config id, for example: abra sources sync source-123")
+		return fmt.Errorf("sources %s requires a source config id, for example: abra sources %s source-123", command, command)
 	}
 	result, err := postJSON(ctx, args, "/ingestion/jobs", map[string]any{
 		"source_config_id": sourceID,
-		"trigger_type":     flag(args, "trigger", "manual"),
+		"trigger_type":     triggerType,
 		"created_by":       flag(args, "created-by", "abra-cli"),
 		"max_attempts":     intFlag(args, "max-attempts", 3),
-		"metadata":         map[string]any{"channel": "cli", "command": "sources sync"},
+		"metadata":         map[string]any{"channel": "cli", "command": "sources " + command},
 	})
 	if err != nil {
 		return err
@@ -1870,6 +1964,167 @@ func syncSource(ctx context.Context, args cliArgs) error {
 	if scope != "" {
 		fmt.Println("Check jobs: abra jobs --scope " + scope + " --source-config-id " + sourceID)
 	}
+	return nil
+}
+
+func sourceStatus(ctx context.Context, args cliArgs) error {
+	sourceID, err := sourceIDArg(args, "status")
+	if err != nil {
+		return err
+	}
+	source, err := getSourceConfigByID(ctx, args, sourceID)
+	if err != nil {
+		return err
+	}
+	scope := firstNonEmpty(flag(args, "scope", ""), stringValue(source["scope"], ""), os.Getenv("ABRA_SCOPE"))
+	if scope == "" {
+		return fmt.Errorf("source config %q response did not include scope; pass --scope", sourceID)
+	}
+	jobsResult, _, err := getJSON(ctx, args, sourceJobsPath(scope, sourceID, 1))
+	if err != nil {
+		return err
+	}
+	if boolFlag(args, "json") {
+		return printJSON(map[string]any{"source_config": source, "latest_job": firstIngestionJob(jobsResult)})
+	}
+	printSourceStatus(source, firstIngestionJob(jobsResult))
+	return nil
+}
+
+func sourceLogs(ctx context.Context, args cliArgs) error {
+	sourceID, err := sourceIDArg(args, "logs")
+	if err != nil {
+		return err
+	}
+	scope := firstNonEmpty(flag(args, "scope", ""), os.Getenv("ABRA_SCOPE"))
+	if scope == "" {
+		source, err := getSourceConfigByID(ctx, args, sourceID)
+		if err != nil {
+			return err
+		}
+		scope = stringValue(source["scope"], "")
+	}
+	if scope == "" {
+		return fmt.Errorf("source config %q response did not include scope; pass --scope", sourceID)
+	}
+	result, _, err := getJSON(ctx, args, sourceJobsPath(scope, sourceID, intFlag(args, "limit", 20)))
+	if err != nil {
+		return err
+	}
+	if boolFlag(args, "json") {
+		return printJSON(result)
+	}
+	items, _ := result["ingestion_jobs"].([]any)
+	fmt.Printf("Source logs: %s  jobs=%d\n", sourceID, len(items))
+	for _, raw := range items {
+		item, _ := raw.(map[string]any)
+		printSourceJobLine(item)
+	}
+	return nil
+}
+
+func getSourceConfigByID(ctx context.Context, args cliArgs, sourceID string) (map[string]any, error) {
+	result, _, err := getJSON(ctx, args, "/sources/configs/"+url.PathEscape(sourceID))
+	if err != nil {
+		return nil, err
+	}
+	source, _ := result["source_config"].(map[string]any)
+	if source == nil {
+		return nil, fmt.Errorf("source config %q response did not include source_config", sourceID)
+	}
+	return source, nil
+}
+
+func sourceIDArg(args cliArgs, action string) (string, error) {
+	sourceID := firstNonEmpty(flag(args, "source-config-id", ""), flag(args, "source-id", ""), flag(args, "id", ""))
+	if sourceID == "" && len(args.Rest) > 0 {
+		sourceID = strings.TrimSpace(args.Rest[0])
+	}
+	if sourceID == "" {
+		return "", fmt.Errorf("sources %s requires a source config id, for example: abra sources %s source-123", action, action)
+	}
+	return sourceID, nil
+}
+
+func sourceJobsPath(scope, sourceID string, limit int) string {
+	return "/ingestion/jobs?scope=" + urlQueryEscape(scope) + "&source_config_id=" + urlQueryEscape(sourceID) + "&limit=" + strconv.Itoa(limit)
+}
+
+func firstIngestionJob(result map[string]any) map[string]any {
+	items, _ := result["ingestion_jobs"].([]any)
+	if len(items) == 0 {
+		return nil
+	}
+	item, _ := items[0].(map[string]any)
+	return item
+}
+
+func printSourceStatus(source, latestJob map[string]any) {
+	fmt.Printf("Source: %s\n", stringValue(source["id"], ""))
+	fmt.Printf("status: %s\n", stringValue(source["status"], ""))
+	fmt.Printf("type: %s\n", stringValue(source["source_type"], ""))
+	fmt.Printf("name: %s\n", stringValue(source["name"], ""))
+	fmt.Printf("authority: %s score=%v\n", stringValue(source["authority"], ""), source["authority_score"])
+	if schedule := stringValue(source["schedule_cron"], ""); schedule != "" {
+		fmt.Println("schedule: " + schedule)
+	}
+	if value := stringValue(source["last_success_at"], ""); value != "" {
+		fmt.Println("last_success_at: " + value)
+	}
+	if value := stringValue(source["last_error"], ""); value != "" {
+		fmt.Println("last_error: " + value)
+	}
+	if latestJob == nil {
+		fmt.Println("latest_job: none")
+		return
+	}
+	fmt.Print("latest_job: ")
+	printSourceJobLine(latestJob)
+}
+
+func printSourceJobLine(item map[string]any) {
+	fmt.Printf("- %s  %s  trigger=%s attempts=%v/%v seen=%v changed=%v chunks=%v claims=%v",
+		stringValue(item["id"], ""),
+		stringValue(item["status"], ""),
+		stringValue(item["trigger_type"], ""),
+		item["attempts"],
+		item["max_attempts"],
+		item["documents_seen"],
+		item["documents_changed"],
+		item["chunks_written"],
+		item["claims_written"],
+	)
+	if message := stringValue(item["error_message"], ""); message != "" {
+		fmt.Print(" error=" + message)
+	}
+	fmt.Println()
+}
+
+func setSourceStatus(ctx context.Context, args cliArgs, action string) error {
+	sourceID := firstNonEmpty(flag(args, "source-config-id", ""), flag(args, "source-id", ""), flag(args, "id", ""))
+	if sourceID == "" && len(args.Rest) > 0 {
+		sourceID = strings.TrimSpace(args.Rest[0])
+		args.Rest = args.Rest[1:]
+	}
+	if sourceID == "" {
+		return fmt.Errorf("sources %s requires a source config id, for example: abra sources %s source-123", action, action)
+	}
+	body := map[string]any{
+		"created_by": flag(args, "created-by", "abra-cli"),
+		"metadata":   map[string]any{"channel": "cli", "command": "sources " + action},
+	}
+	if approvalID := flag(args, "approval-id", ""); approvalID != "" {
+		body["approval_id"] = approvalID
+	}
+	result, err := postJSON(ctx, args, "/sources/configs/"+url.PathEscape(sourceID)+"/"+action, body)
+	if err != nil {
+		return err
+	}
+	if boolFlag(args, "json") {
+		return printJSON(result)
+	}
+	source, _ := result["source_config"].(map[string]any)
+	fmt.Printf("Source %s: %s  status=%s\n", action+"d", sourceID, stringValue(source["status"], ""))
 	return nil
 }
 
@@ -4059,6 +4314,9 @@ Source ingestion flags:
 
 Config edits the Abra runtime env file used by abra up. It intentionally only
 exposes core runtime settings needed for local operation and embedding/reranker connection.
+Use --embedding-batch-max-items and --embedding-batch-max-tokens to tune provider
+request size when a local model times out or a scaled compatible provider can
+handle larger batches.
 After changing model config, restart with: abra down && abra up
 After changing embedding providers, re-ingest important sources for reliable vector recall.
 `
@@ -4113,8 +4371,14 @@ Use --wait-timeout or ABRA_CLI_WAIT_TIMEOUT for slow local model or large repo r
 		return `Usage:
   abra sources [--scope repo:demo] [--limit 50] [--json]
   abra sources sync <source-config-id> [--scope repo:demo] [--wait] [--wait-timeout 10m] [--json]
+  abra sources backfill <source-config-id> [--scope repo:demo] [--wait] [--wait-timeout 10m] [--json]
+  abra sources status <source-config-id> [--json]
+  abra sources logs <source-config-id> [--limit 20] [--json]
+  abra sources pause <source-config-id> [--json]
+  abra sources resume <source-config-id> [--approval-id approval...] [--json]
 
-Lists configured ingestion sources or queues a manual sync for an existing source.
+Lists configured ingestion sources, queues sync/backfill jobs, inspects source status/logs, or pauses/resumes a source.
+Resume is treated as connector enablement and may require approval when enforcement is active.
 `
 	case "jobs":
 		return `Usage:
@@ -4255,6 +4519,8 @@ Common setup flags:
   --model               provider selector or legacy embedding model alias
   --dimensions          embedding dimensions; required for unknown compatible models, inferred for known OpenAI/Qwen/BGE/Nomic/Gemini models
   --embedding-timeout   provider timeout, default 10m for local and 30s for compatible
+  --embedding-batch-max-items max embedding inputs per provider request, default 6 local and 16 compatible
+  --embedding-batch-max-tokens estimated embedding tokens per provider request, default 3000 local and 6000 compatible
   --provider-concurrency provider call concurrency, default 1 for local and 4 for compatible
   --api-key             embedding provider API key
   --api-key-stdin       read embedding provider API key from stdin
@@ -4338,6 +4604,8 @@ EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0
 EMBEDDING_DIMENSIONS=1024
 EMBEDDING_TIMEOUT=10m
 ABRA_AI_PROVIDER_CONCURRENCY=1
+ABRA_EMBEDDING_BATCH_MAX_ITEMS=6
+ABRA_EMBEDDING_BATCH_MAX_TOKENS=3000
 RERANKER_PROVIDER=
 RERANKER_BASE_URL=
 RERANKER_MODEL=
@@ -4374,6 +4642,8 @@ EMBEDDING_MODEL=embedding-model
 EMBEDDING_DIMENSIONS=1024
 EMBEDDING_TIMEOUT=30s
 ABRA_AI_PROVIDER_CONCURRENCY=4
+ABRA_EMBEDDING_BATCH_MAX_ITEMS=16
+ABRA_EMBEDDING_BATCH_MAX_TOKENS=6000
 RERANKER_PROVIDER=
 RERANKER_BASE_URL=
 RERANKER_API_KEY=

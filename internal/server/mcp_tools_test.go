@@ -46,6 +46,35 @@ func TestUpsertSourceConfigMCPAllowsOverlaySourceTypes(t *testing.T) {
 	}
 }
 
+func TestSourceConfigLifecycleMCPToolsAreDiscoverable(t *testing.T) {
+	getSchema := mcpToolSchema(t, "get_source_config")
+	getRequired := requiredSet(t, getSchema)
+	if !getRequired["source_config_id"] {
+		t.Fatalf("get_source_config required = %#v, want source_config_id", getSchema["required"])
+	}
+
+	statusSchema := mcpToolSchema(t, "set_source_config_status")
+	statusRequired := requiredSet(t, statusSchema)
+	if !statusRequired["source_config_id"] || !statusRequired["status"] {
+		t.Fatalf("set_source_config_status required = %#v, want source_config_id and status", statusSchema["required"])
+	}
+	properties, ok := statusSchema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("properties = %#v", statusSchema["properties"])
+	}
+	status, ok := properties["status"].(map[string]any)
+	if !ok {
+		t.Fatalf("status schema = %#v", properties["status"])
+	}
+	enum, ok := status["enum"].([]string)
+	if !ok {
+		t.Fatalf("status enum = %#v", status["enum"])
+	}
+	if !containsString(enum, "active") || !containsString(enum, "paused") {
+		t.Fatalf("status enum = %#v, want active and paused", enum)
+	}
+}
+
 func TestMCPAppliesRequestBodyLimit(t *testing.T) {
 	h := handler{cfg: config.Config{MaxRequestBodyBytes: 32}}
 	request := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewBufferString(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"padding":"`+strings.Repeat("x", 80)+`"}}`))
@@ -396,4 +425,13 @@ func requiredSet(t *testing.T, schema map[string]any) map[string]bool {
 		requiredSet[item] = true
 	}
 	return requiredSet
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

@@ -62,6 +62,8 @@ config:
   embeddingModel: embedding-model
   embeddingDimensions: "1024"
   embeddingTimeout: 30s
+  embeddingBatchMaxItems: "16"
+  embeddingBatchMaxTokens: "6000"
   rerankerProvider: ""
   rerankerModel: ""
   allowUnsignedWebhooksInProduction: "false"

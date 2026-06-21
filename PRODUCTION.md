@@ -31,6 +31,8 @@ EMBEDDING_BASE_URL=https://embedding-provider.example/v1
 EMBEDDING_API_KEY=replace-with-embedding-key
 EMBEDDING_MODEL=embedding-model
 EMBEDDING_DIMENSIONS=1024
+ABRA_EMBEDDING_BATCH_MAX_ITEMS=16
+ABRA_EMBEDDING_BATCH_MAX_TOKENS=6000
 RERANKER_PROVIDER=
 RERANKER_BASE_URL=
 RERANKER_API_KEY=
@@ -182,7 +184,7 @@ Production startup fails without `ABRA_WEBHOOK_SECRETS` unless `ABRA_ALLOW_UNSIG
 
 `EMBEDDING_PROVIDER=local` is the default self-hosted neural path. It does not need an external API key, but it does require a local embedding endpoint reachable from the Abra containers. With Docker Compose, the default URLs use `host.docker.internal` so models running on the host can be reached from the API and worker containers. If you intentionally run local embeddings in production, set `ABRA_LOCAL_EMBEDDING_IMAGE` to an operator-verified `@sha256` runner image or provide your own compatible endpoint. Set `EMBEDDING_PROVIDER=compatible` to replace the local defaults with a custom provider.
 
-The provider contract is intentionally provider-neutral. The provider must expose the configured embeddings request/response shape and must return vectors with the configured `EMBEDDING_DIMENSIONS`. API keys may be empty for self-hosted endpoints. The optional reranker is controlled separately with `RERANKER_PROVIDER`, `RERANKER_BASE_URL`, `RERANKER_API_KEY`, and `RERANKER_MODEL`; when unset, custom embedding providers do not keep the local Qwen reranker enabled. Abra stores embeddings and source-derived snippets; it does not send prompts for generation.
+The provider contract is intentionally provider-neutral. The provider must expose the configured embeddings request/response shape and must return vectors with the configured `EMBEDDING_DIMENSIONS`. API keys may be empty for self-hosted endpoints. `ABRA_EMBEDDING_BATCH_MAX_ITEMS` and `ABRA_EMBEDDING_BATCH_MAX_TOKENS` bound each embedding provider request; use smaller batches for local Qwen context-window reliability and raise them only after a compatible provider has measured capacity. The optional reranker is controlled separately with `RERANKER_PROVIDER`, `RERANKER_BASE_URL`, `RERANKER_API_KEY`, and `RERANKER_MODEL`; when unset, custom embedding providers do not keep the local Qwen reranker enabled. Abra stores embeddings and source-derived snippets; it does not send prompts for generation.
 
 `ABRA_COMPOSE_HEALTH_CACHE_TTL` controls the short-lived per-scope health snapshot cache used by `POST /memory/compose`; set it to `0s` to disable caching. Direct `GET /memory/health` remains uncached for operator checks. Track `abra_working_memory_health_lookup_total` to see whether compose traffic is using fresh lookups, cache hits, coalesced waits, disabled cache mode, or unknown/error paths.
 
@@ -314,6 +316,7 @@ Endpoints:
 - `POST /ingest/webhooks`
 - `POST /mcp`
 - `GET /sources/configs`
+- `GET /sources/configs/:sourceConfigId`
 - `GET /ingestion/jobs`
 - `POST /ingestion/jobs`
 - `GET /approvals`

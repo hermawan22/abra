@@ -189,6 +189,56 @@ func TestLoadEmbeddingTimeoutOverride(t *testing.T) {
 	}
 }
 
+func TestLoadEmbeddingBatchDefaultsByProvider(t *testing.T) {
+	allowUnauthenticatedDev(t)
+	t.Setenv("EMBEDDING_PROVIDER", "local")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.EmbeddingBatchMaxItems != 6 || cfg.EmbeddingBatchMaxTokens != 3000 {
+		t.Fatalf("local batch limits = %d/%d, want 6/3000", cfg.EmbeddingBatchMaxItems, cfg.EmbeddingBatchMaxTokens)
+	}
+
+	t.Setenv("EMBEDDING_PROVIDER", "compatible")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.EmbeddingBatchMaxItems != 16 || cfg.EmbeddingBatchMaxTokens != 6000 {
+		t.Fatalf("compatible batch limits = %d/%d, want 16/6000", cfg.EmbeddingBatchMaxItems, cfg.EmbeddingBatchMaxTokens)
+	}
+}
+
+func TestLoadEmbeddingBatchOverrides(t *testing.T) {
+	allowUnauthenticatedDev(t)
+	t.Setenv("ABRA_EMBEDDING_BATCH_MAX_ITEMS", "3")
+	t.Setenv("ABRA_EMBEDDING_BATCH_MAX_TOKENS", "1200")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.EmbeddingBatchMaxItems != 3 || cfg.EmbeddingBatchMaxTokens != 1200 {
+		t.Fatalf("batch limits = %d/%d, want 3/1200", cfg.EmbeddingBatchMaxItems, cfg.EmbeddingBatchMaxTokens)
+	}
+}
+
+func TestLoadRejectsInvalidEmbeddingBatchLimits(t *testing.T) {
+	allowUnauthenticatedDev(t)
+	t.Setenv("ABRA_EMBEDDING_BATCH_MAX_ITEMS", "0")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected invalid batch items error")
+	}
+
+	t.Setenv("ABRA_EMBEDDING_BATCH_MAX_ITEMS", "3")
+	t.Setenv("ABRA_EMBEDDING_BATCH_MAX_TOKENS", "0")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected invalid batch tokens error")
+	}
+}
+
 func TestLoadRejectsInvalidEmbeddingTimeout(t *testing.T) {
 	allowUnauthenticatedDev(t)
 	t.Setenv("EMBEDDING_TIMEOUT", "45m")

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -72,6 +73,9 @@ func New(cfg config.Config, db *store.Store) (http.Handler, error) {
 	mux.HandleFunc("POST /learning/proposals/{proposalId}/decide", handler.auth(handler.decideLearningProposal))
 	mux.HandleFunc("GET /sources/configs", handler.auth(handler.listSourceConfigs))
 	mux.HandleFunc("POST /sources/configs", handler.auth(handler.upsertSourceConfig))
+	mux.HandleFunc("GET /sources/configs/{sourceConfigId}", handler.auth(handler.getSourceConfig))
+	mux.HandleFunc("POST /sources/configs/{sourceConfigId}/pause", handler.auth(handler.pauseSourceConfig))
+	mux.HandleFunc("POST /sources/configs/{sourceConfigId}/resume", handler.auth(handler.resumeSourceConfig))
 	mux.HandleFunc("GET /ingestion/jobs", handler.auth(handler.listIngestionJobs))
 	mux.HandleFunc("POST /ingestion/jobs", handler.auth(handler.enqueueIngestionJob))
 	mux.HandleFunc("POST /ingestion/jobs/{jobId}/retry", handler.auth(handler.retryIngestionJob))
@@ -947,6 +951,19 @@ func (h *handler) listSourceConfigs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"source_configs": sources})
 }
 
+func (h *handler) getSourceConfig(w http.ResponseWriter, r *http.Request) {
+	sourceID := strings.TrimSpace(r.PathValue("sourceConfigId"))
+	source, err := h.db.GetSourceConfig(r.Context(), sourceID)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if !h.requireAccess(w, r, authActionRead, source.Scope) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"source_config": source})
+}
+
 func (h *handler) upsertSourceConfig(w http.ResponseWriter, r *http.Request) {
 	var input store.SourceConfigRecord
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
@@ -996,6 +1013,76 @@ func (h *handler) upsertSourceConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"source_config_id": id, "status": "upserted"})
+}
+
+func (h *handler) pauseSourceConfig(w http.ResponseWriter, r *http.Request) {
+	h.setSourceConfigStatus(w, r, "paused")
+}
+
+func (h *handler) resumeSourceConfig(w http.ResponseWriter, r *http.Request) {
+	h.setSourceConfigStatus(w, r, "active")
+}
+
+func (h *handler) setSourceConfigStatus(w http.ResponseWriter, r *http.Request, status string) {
+	sourceID := strings.TrimSpace(r.PathValue("sourceConfigId"))
+	var input struct {
+		ApprovalID string         `json:"approval_id"`
+		CreatedBy  string         `json:"created_by"`
+		Metadata   map[string]any `json:"metadata"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil && !errors.Is(err, io.EOF) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
+		return
+	}
+	source, err := h.db.GetSourceConfig(r.Context(), sourceID)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if !h.requireAccess(w, r, authActionWrite, source.Scope) {
+		return
+	}
+	if status == "active" && !h.requireRiskApproval(w, r, approvalRequirement{
+		Action:     "source_authority_change",
+		Scope:      source.Scope,
+		TargetType: "source_config",
+		TargetID:   sourceConfigApprovalTarget(source),
+		ApprovalID: strings.TrimSpace(input.ApprovalID),
+	}) {
+		return
+	}
+	changedBy := strings.TrimSpace(input.CreatedBy)
+	if changedBy == "" {
+		changedBy = "api"
+	}
+	metadata := sourceStatusMetadata(input.Metadata, status, changedBy)
+	updated, err := h.db.UpdateSourceConfigStatus(r.Context(), sourceID, status, metadata)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := h.db.InsertAuditEvent(r.Context(), "source_config.status_changed", "source_config", sourceID, updated.Scope, updated.BaseURL, map[string]any{
+		"name":           updated.Name,
+		"source_type":    updated.SourceType,
+		"connector_kind": updated.ConnectorKind,
+		"status":         updated.Status,
+		"created_by":     changedBy,
+		"approval_id":    input.ApprovalID,
+	}); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"source_config": updated})
+}
+
+func sourceStatusMetadata(input map[string]any, status string, changedBy string) map[string]any {
+	metadata := map[string]any{}
+	for key, value := range input {
+		metadata[key] = value
+	}
+	metadata["status_change"] = status
+	metadata["status_changed_by"] = changedBy
+	return metadata
 }
 
 func (h *handler) listIngestionJobs(w http.ResponseWriter, r *http.Request) {
@@ -1754,6 +1841,64 @@ func (h *handler) mcpToolCall(w http.ResponseWriter, r *http.Request, id any, pa
 			return
 		}
 		result, err = h.db.ListSourceConfigs(r.Context(), scope, intArg(args, "limit", 50))
+	case "get_source_config":
+		sourceConfigID := stringArg(args, "source_config_id")
+		source, getErr := h.db.GetSourceConfig(r.Context(), sourceConfigID)
+		if getErr != nil {
+			err = getErr
+			break
+		}
+		if !h.requireAccess(w, r, authActionRead, source.Scope) {
+			return
+		}
+		result = source
+	case "set_source_config_status":
+		sourceConfigID := stringArg(args, "source_config_id")
+		status := stringArg(args, "status")
+		source, getErr := h.db.GetSourceConfig(r.Context(), sourceConfigID)
+		if getErr != nil {
+			err = getErr
+			break
+		}
+		if !h.requireAccess(w, r, authActionWrite, source.Scope) {
+			return
+		}
+		if status == "active" && !h.requireRiskApproval(w, r, approvalRequirement{
+			Action:     "source_authority_change",
+			Scope:      source.Scope,
+			TargetType: "source_config",
+			TargetID:   sourceConfigApprovalTarget(source),
+			ApprovalID: stringArg(args, "approval_id"),
+		}) {
+			return
+		}
+		changedBy := firstNonEmpty(stringArg(args, "created_by"), "mcp")
+		metadata := map[string]any{
+			"status_change":     status,
+			"status_changed_by": changedBy,
+			"channel":           "mcp",
+		}
+		for key, value := range mapArg(args, "metadata") {
+			metadata[key] = value
+		}
+		updated, updateErr := h.db.UpdateSourceConfigStatus(r.Context(), sourceConfigID, status, metadata)
+		if updateErr != nil {
+			err = updateErr
+			break
+		}
+		if auditErr := h.db.InsertAuditEvent(r.Context(), "source_config.status_changed", "source_config", sourceConfigID, updated.Scope, updated.BaseURL, map[string]any{
+			"name":           updated.Name,
+			"source_type":    updated.SourceType,
+			"connector_kind": updated.ConnectorKind,
+			"status":         updated.Status,
+			"created_by":     changedBy,
+			"approval_id":    stringArg(args, "approval_id"),
+			"channel":        "mcp",
+		}); auditErr != nil {
+			err = auditErr
+			break
+		}
+		result = updated
 	case "enqueue_ingestion_job":
 		sourceConfigID := stringArg(args, "source_config_id")
 		source, getErr := h.db.GetSourceConfig(r.Context(), sourceConfigID)
@@ -2243,6 +2388,24 @@ func mcpTools() []map[string]any {
 			}),
 		},
 		{
+			"name":        "get_source_config",
+			"description": "Read one source config by id, including status, authority, freshness policy, and latest success/error fields. Requires read access to the source scope.",
+			"inputSchema": objectSchema([]string{"source_config_id"}, map[string]any{
+				"source_config_id": stringSchema(),
+			}),
+		},
+		{
+			"name":        "set_source_config_status",
+			"description": "Pause, resume, disable, or mark a source config status without rewriting connector config. Resuming to active is connector enablement and may require approval when enforcement is active.",
+			"inputSchema": objectSchema([]string{"source_config_id", "status"}, map[string]any{
+				"source_config_id": stringSchema(),
+				"status":           map[string]any{"type": "string", "enum": []string{"active", "paused", "disabled", "deleted", "error"}},
+				"created_by":       stringSchema(),
+				"approval_id":      stringSchema(),
+				"metadata":         map[string]any{"type": "object"},
+			}),
+		},
+		{
 			"name":        "enqueue_ingestion_job",
 			"description": "Queue an ingestion job for an active source config. Requires write access to the source scope.",
 			"inputSchema": objectSchema([]string{"source_config_id"}, map[string]any{
@@ -2340,7 +2503,7 @@ func mcpTools() []map[string]any {
 
 func mcpToolTraceName(name string) string {
 	switch name {
-	case "recall", "ingest_document", "ingest_documents", "remember_claim", "capture_observation", "list_observations", "challenge", "forget", "brain_sources", "brain_summaries", "brain_think", "memory_health", "discover_scopes", "rebuild_summaries", "policy_plan", "working_memory_compose", "list_conflicts", "resolve_conflict", "upsert_acl_policy", "list_acl_policies", "acl_decision", "upsert_agent_policy", "list_agent_policies", "agent_policy_decision", "upsert_agent_profile", "list_agent_profiles", "upsert_source_config", "list_source_configs", "enqueue_ingestion_job", "list_ingestion_jobs", "retry_ingestion_job", "cancel_ingestion_job", "propose_learning", "list_learning_proposals", "decide_learning_proposal", "request_approval":
+	case "recall", "ingest_document", "ingest_documents", "remember_claim", "capture_observation", "list_observations", "challenge", "forget", "brain_sources", "brain_summaries", "brain_think", "memory_health", "discover_scopes", "rebuild_summaries", "policy_plan", "working_memory_compose", "list_conflicts", "resolve_conflict", "upsert_acl_policy", "list_acl_policies", "acl_decision", "upsert_agent_policy", "list_agent_policies", "agent_policy_decision", "upsert_agent_profile", "list_agent_profiles", "upsert_source_config", "list_source_configs", "get_source_config", "set_source_config_status", "enqueue_ingestion_job", "list_ingestion_jobs", "retry_ingestion_job", "cancel_ingestion_job", "propose_learning", "list_learning_proposals", "decide_learning_proposal", "request_approval":
 		return name
 	default:
 		return "unknown"
