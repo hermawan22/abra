@@ -22,6 +22,15 @@ func (h *handler) enqueueIngestionJob(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAccess(w, r, authActionWrite, source.Scope) {
 		return
 	}
+	if strings.TrimSpace(input.TriggerType) == "backfill" && !h.requireRiskApproval(w, r, approvalRequirement{
+		Action:     "backfill",
+		Scope:      source.Scope,
+		TargetType: "source_config",
+		TargetID:   sourceConfigApprovalTarget(source),
+		ApprovalID: strings.TrimSpace(input.ApprovalID),
+	}) {
+		return
+	}
 	job, err := h.db.EnqueueIngestionJob(r.Context(), input)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})

@@ -110,6 +110,103 @@ func TestObserveRequiresText(t *testing.T) {
 	}
 }
 
+func TestObserveConversationCapturesPreferenceTurnsAndProposes(t *testing.T) {
+	root := t.TempDir()
+	transcript := filepath.Join(root, "conversation.md")
+	mustWrite(t, transcript, strings.Join([]string{
+		"User: saya lebih suka jawaban yang singkat dan langsung.",
+		"Assistant: siap.",
+		"User: ini cuma konteks biasa tanpa preferensi.",
+	}, "\n"))
+
+	observationRequests := []map[string]any{}
+	proposalRequests := []map[string]any{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/observations":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode observation body: %v", err)
+			}
+			observationRequests = append(observationRequests, body)
+			writeTestJSON(t, w, map[string]any{"observation": map[string]any{
+				"id":               "obs-1",
+				"scope":            body["scope"],
+				"observation_type": body["observation_type"],
+				"status":           body["status"],
+				"source_url":       body["source_url"],
+			}})
+		case "/learning/proposals":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode proposal body: %v", err)
+			}
+			proposalRequests = append(proposalRequests, body)
+			writeTestJSON(t, w, map[string]any{"learning_proposal": map[string]any{
+				"id":            "lp-1",
+				"scope":         body["scope"],
+				"proposal_type": body["proposal_type"],
+				"target_type":   body["target_type"],
+				"target_id":     body["target_id"],
+				"status":        "pending",
+			}})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	output := captureStdout(t, func() {
+		if err := run(context.Background(), []string{
+			"observe", "conversation",
+			"--file", transcript,
+			"--scope", "repo:demo",
+			"--propose",
+			"--base-url", server.URL,
+			"--token", "test-token",
+		}); err != nil {
+			t.Fatalf("observe conversation error = %v", err)
+		}
+	})
+	if len(observationRequests) != 1 || len(proposalRequests) != 1 {
+		t.Fatalf("observations=%#v proposals=%#v", observationRequests, proposalRequests)
+	}
+	observation := observationRequests[0]
+	if observation["observation_type"] != "preference" || observation["source_type"] != "conversation" {
+		t.Fatalf("observation body = %#v", observation)
+	}
+	if !strings.Contains(stringValue(observation["observation_text"], ""), "lebih suka") {
+		t.Fatalf("observation text = %#v", observation["observation_text"])
+	}
+	metadata, _ := observation["metadata"].(map[string]any)
+	if metadata["adapter"] != "conversation" || metadata["role"] != "user" {
+		t.Fatalf("metadata = %#v", metadata)
+	}
+	proposal := proposalRequests[0]
+	if proposal["proposal_type"] != "claim" || proposal["target_type"] != "observation" || proposal["target_id"] != "obs-1" {
+		t.Fatalf("proposal body = %#v", proposal)
+	}
+	if !strings.Contains(output, "Conversation observations captured: 1") || !strings.Contains(output, "trusted: no") {
+		t.Fatalf("output = %s", output)
+	}
+}
+
+func TestIsPreferenceTurnSkipsNegatedPreferenceMentions(t *testing.T) {
+	cases := []string{
+		"ini cuma konteks biasa tanpa preferensi.",
+		"not a preference, just background context.",
+		"no preference here, only a note.",
+	}
+	for _, content := range cases {
+		if isPreferenceTurn(conversationTurn{Role: "user", Content: content}) {
+			t.Fatalf("negated preference mention should be skipped: %q", content)
+		}
+	}
+	if !isPreferenceTurn(conversationTurn{Role: "user", Content: "saya lebih suka jawaban singkat"}) {
+		t.Fatal("positive preference was not detected")
+	}
+}
+
 func TestListObservationsUsesScopedQuery(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/observations" {
@@ -243,7 +340,7 @@ func TestScopeCommandPrintsAgentGuidance(t *testing.T) {
 		"If Codex says Abra has no context",
 		"run Check first",
 		"agent_ready=false",
-		"run Ingest only when Check proves missing scope or empty memory",
+		"ingest only when Check proves missing scope or empty memory",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("scope output missing %q:\n%s", want, output)
@@ -252,10 +349,10 @@ func TestScopeCommandPrintsAgentGuidance(t *testing.T) {
 	if strings.Contains(output, "run Ingest, then Check") {
 		t.Fatalf("scope output should not unconditionally suggest ingest before verify:\n%s", output)
 	}
-	ingestIndex := strings.Index(output, "Ingest: abra ingest")
+	ingestIndex := strings.Index(output, "Ingest only if Check proves missing scope or empty memory")
 	checkIndex := strings.Index(output, "Check:  abra agents verify")
-	if ingestIndex < 0 || checkIndex < 0 || ingestIndex > checkIndex {
-		t.Fatalf("scope output should list ingest before verify:\n%s", output)
+	if ingestIndex < 0 || checkIndex < 0 || checkIndex > ingestIndex {
+		t.Fatalf("scope output should list verify before conditional ingest:\n%s", output)
 	}
 }
 
@@ -291,7 +388,7 @@ func TestScopeCommandJSON(t *testing.T) {
 		t.Fatalf("codex example = %#v", examples["codex"])
 	}
 	troubleshooting := stringValue(examples["troubleshooting"], "")
-	for _, want := range []string{"run agents_verify first", "agent_ready is false", "ingest only when verify proves"} {
+	for _, want := range []string{"run agents_verify --json first", "readiness errors", "Ingest only when verify proves"} {
 		if !strings.Contains(troubleshooting, want) {
 			t.Fatalf("troubleshooting missing %q: %s", want, troubleshooting)
 		}
@@ -1042,7 +1139,7 @@ func TestAgentsVerifyJSONIncludesReadyPromptAndNextSteps(t *testing.T) {
 		t.Fatalf("payload = %#v", payload)
 	}
 	readyPrompt := stringValue(payload["ready_prompt"], "")
-	for _, want := range []string{wantScope, "discover_scopes", "working_memory_compose", "task=<current task>", `agent="codex"`, "Abra MCP tools are unavailable", "abra doctor", "source-backed context", "abra agents verify . --scope " + wantScope + " --agent codex"} {
+	for _, want := range []string{wantScope, "discover_scopes", "working_memory_compose", "task=<current task>", `agent="codex"`, "Abra MCP tools are unavailable", "abra doctor", "agent_ready=false", "source-backed memory is empty", "abra agents verify . --scope " + wantScope + " --agent codex"} {
 		if !strings.Contains(readyPrompt, want) {
 			t.Fatalf("ready_prompt missing %q:\n%s", want, readyPrompt)
 		}
@@ -1497,6 +1594,49 @@ func TestModelConfigCheckExplainsLocalModel(t *testing.T) {
 				t.Fatalf("hint = %q", check["hint"])
 			}
 		})
+	}
+}
+
+func TestDockerDaemonCheckReportsReachability(t *testing.T) {
+	bin := t.TempDir()
+	dockerPath := filepath.Join(bin, "docker")
+	mustWrite(t, dockerPath, "#!/bin/sh\nif [ \"$1\" = 'info' ]; then printf '25.0.0\\n'; exit 0; fi\nexit 2\n")
+	if err := os.Chmod(dockerPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	check := dockerDaemonCheck()
+	if check["ok"] != true || !strings.Contains(stringValue(check["detail"], ""), "25.0.0") {
+		t.Fatalf("check = %#v", check)
+	}
+	if err := ensureDockerDaemon(); err != nil {
+		t.Fatalf("ensureDockerDaemon error = %v", err)
+	}
+}
+
+func TestDockerDaemonCheckExplainsStoppedDaemon(t *testing.T) {
+	bin := t.TempDir()
+	dockerPath := filepath.Join(bin, "docker")
+	mustWrite(t, dockerPath, "#!/bin/sh\nprintf 'Cannot connect to the Docker daemon\\n' >&2\nexit 1\n")
+	if err := os.Chmod(dockerPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	check := dockerDaemonCheck()
+	if check["ok"] != false {
+		t.Fatalf("check = %#v", check)
+	}
+	if !strings.Contains(stringValue(check["detail"], ""), "Cannot connect") {
+		t.Fatalf("detail = %q", check["detail"])
+	}
+	if !strings.Contains(stringValue(check["hint"], ""), "OrbStack") {
+		t.Fatalf("hint = %q", check["hint"])
+	}
+	err := ensureDockerDaemon()
+	if err == nil || !strings.Contains(err.Error(), "Start Docker Desktop or OrbStack") {
+		t.Fatalf("ensureDockerDaemon error = %v", err)
 	}
 }
 
@@ -2072,6 +2212,11 @@ func TestSetupYesNoStartDefaultsLocalQwen(t *testing.T) {
 	if !strings.Contains(output, "abra ingest . --code --scope <scope-from-abra-scope>") ||
 		!strings.Contains(output, `abra think "What should I know before changing this project?" --scope <scope-from-abra-scope>`) {
 		t.Fatalf("setup next steps should defer scope until after cd and abra scope:\n%s", output)
+	}
+	verifyIndex := strings.Index(output, "abra agents verify . --scope <scope-from-abra-scope>")
+	ingestIndex := strings.Index(output, "abra ingest . --code --scope <scope-from-abra-scope>")
+	if verifyIndex < 0 || ingestIndex < 0 || verifyIndex > ingestIndex {
+		t.Fatalf("setup manual path should verify before conditional ingest:\n%s", output)
 	}
 	for _, want := range []string{"run `abra agents verify --json` first", "server_ready=true but agent_ready=false", "re-ingest only if verify reports missing scope or empty source-backed memory"} {
 		if !strings.Contains(output, want) {
@@ -3614,6 +3759,7 @@ func TestSourceMCPQueuesSourceConfig(t *testing.T) {
 		"--arguments-json", `{"space":"ENG"}`,
 		"--document-source-type", "confluence",
 		"--bearer-token-env", "CONFLUENCE_MCP_TOKEN",
+		"--header-env", "X-API-Key=CONFLUENCE_API_KEY,X-Team=TEAM_ENV",
 		"--freshness-seconds", "600",
 		"--schedule", "@every 10m",
 		"--base-url", server.URL,
@@ -3632,6 +3778,10 @@ func TestSourceMCPQueuesSourceConfig(t *testing.T) {
 	if config["tool"] != "export_documents" || config["document_source_type"] != "confluence" || config["bearer_token_env"] != "CONFLUENCE_MCP_TOKEN" {
 		t.Fatalf("config = %#v", config)
 	}
+	headerEnv, _ := config["header_env"].(map[string]any)
+	if headerEnv["X-API-Key"] != "CONFLUENCE_API_KEY" || headerEnv["X-Team"] != "TEAM_ENV" {
+		t.Fatalf("header_env = %#v", headerEnv)
+	}
 	args, _ := config["arguments"].(map[string]any)
 	if args["space"] != "ENG" {
 		t.Fatalf("arguments = %#v", args)
@@ -3645,6 +3795,54 @@ func TestSourceMCPQueuesSourceConfig(t *testing.T) {
 	}
 	if jobRequest["source_config_id"] != "source-mcp" {
 		t.Fatalf("job request = %#v", jobRequest)
+	}
+}
+
+func TestSourceMCPDryRunValidatesExportedDocuments(t *testing.T) {
+	var rpc map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/mcp" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&rpc); err != nil {
+			t.Fatalf("decode rpc body: %v", err)
+		}
+		writeTestJSON(t, w, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      rpc["id"],
+			"result": map[string]any{
+				"structuredContent": map[string]any{
+					"documents": []map[string]any{{
+						"source_type": "confluence",
+						"source_url":  "https://wiki.example/pages/1",
+						"title":       "Runbook",
+						"content":     "Agents should cite this runbook.",
+					}},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	output := captureStdout(t, func() {
+		err := run(context.Background(), []string{
+			"source", "mcp",
+			"--scope", "team:platform",
+			"--mcp-url", server.URL + "/mcp",
+			"--tool", "export_documents",
+			"--document-source-type", "confluence",
+			"--dry-run",
+		})
+		if err != nil {
+			t.Fatalf("source mcp --dry-run error = %v", err)
+		}
+	})
+	params, _ := rpc["params"].(map[string]any)
+	if rpc["method"] != "tools/call" || params["name"] != "export_documents" {
+		t.Fatalf("rpc = %#v", rpc)
+	}
+	if !strings.Contains(output, "MCP source valid: 1 document(s)") || !strings.Contains(output, "Runbook") {
+		t.Fatalf("output = %s", output)
 	}
 }
 
@@ -3713,6 +3911,7 @@ func TestSourcesBackfillQueuesBackfillJob(t *testing.T) {
 	output := captureStdout(t, func() {
 		err := run(context.Background(), []string{
 			"sources", "backfill", "source-mcp",
+			"--approval-id", "approval-backfill",
 			"--base-url", server.URL,
 			"--token", "test-token",
 		})
@@ -3722,6 +3921,9 @@ func TestSourcesBackfillQueuesBackfillJob(t *testing.T) {
 	})
 	if jobRequest["source_config_id"] != "source-mcp" || jobRequest["trigger_type"] != "backfill" {
 		t.Fatalf("job request = %#v", jobRequest)
+	}
+	if jobRequest["approval_id"] != "approval-backfill" {
+		t.Fatalf("job approval_id = %#v", jobRequest)
 	}
 	metadata, _ := jobRequest["metadata"].(map[string]any)
 	if metadata["command"] != "sources backfill" {

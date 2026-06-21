@@ -20,7 +20,7 @@ Core scheduled source types are:
 - `git_repo`
 - `mcp`
 
-The `mcp` source type lets Abra call an existing HTTP MCP server as a source adapter. Configure `base_url` or `config.server_url`, `config.tool`, optional `config.arguments`, and optional secret references such as `config.bearer_token_env`. The configured tool must return normalized Abra documents as JSON, either in `structuredContent` or a text content item:
+The `mcp` source type lets Abra call an existing HTTP MCP server as a source adapter. Configure `base_url` or `config.server_url`, `config.tool`, optional `config.arguments`, and optional secret references such as `config.bearer_token_env` and `config.header_env`. Validate the export contract before enabling a source with CLI `abra source mcp --dry-run`, HTTP `POST /sources/configs/validate`, or MCP `validate_mcp_source`. The configured tool must return normalized Abra documents as JSON, either in `structuredContent` or a text content item:
 
 ```json
 {
@@ -42,7 +42,7 @@ The `mcp` source type lets Abra call an existing HTTP MCP server as a source ada
 }
 ```
 
-Deployment overlays may still store other source configs, such as `jira`, `confluence`, or `drive`, through HTTP or MCP. The core worker does not schedule those vendor-specific source types directly; use `mcp` when an internal MCP server can export normalized documents, or let the overlay own polling, webhooks, ACL normalization, and retry behavior before pushing into Abra.
+Deployment overlays may still store other source configs, such as `jira`, `confluence`, or `drive`, through HTTP or MCP. The core worker does not schedule those vendor-specific source types directly; use `mcp` when an internal MCP server can export normalized documents, or let the overlay own polling, webhooks, ACL normalization, and retry behavior before pushing into Abra. In enforced approval mode, active source config writes and resume use `connector_enable` unless the authority is trusted, in which case the gate is `source_authority_change`; explicit source backfills use `backfill`.
 
 ## Webhook Pattern
 

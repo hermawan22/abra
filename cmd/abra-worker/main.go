@@ -22,7 +22,31 @@ type brainIngestor struct {
 }
 
 func (b brainIngestor) IngestDocument(ctx context.Context, input jobs.IngestDocumentInput) (jobs.IngestDocumentResult, error) {
-	result, err := b.service.IngestDocument(ctx, brain.IngestDocumentInput{
+	result, err := b.service.IngestDocument(ctx, brainDocumentInput(input))
+	if err != nil {
+		return jobs.IngestDocumentResult{}, err
+	}
+	return jobDocumentResult(result), nil
+}
+
+func (b brainIngestor) IngestDocuments(ctx context.Context, inputs []jobs.IngestDocumentInput) ([]jobs.IngestDocumentResult, error) {
+	brainInputs := make([]brain.IngestDocumentInput, 0, len(inputs))
+	for _, input := range inputs {
+		brainInputs = append(brainInputs, brainDocumentInput(input))
+	}
+	results, err := b.service.IngestDocuments(ctx, brainInputs)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]jobs.IngestDocumentResult, 0, len(results))
+	for _, result := range results {
+		out = append(out, jobDocumentResult(result))
+	}
+	return out, nil
+}
+
+func brainDocumentInput(input jobs.IngestDocumentInput) brain.IngestDocumentInput {
+	return brain.IngestDocumentInput{
 		SourceType:      input.SourceType,
 		SourceURL:       input.SourceURL,
 		SourceID:        input.SourceID,
@@ -31,15 +55,15 @@ func (b brainIngestor) IngestDocument(ctx context.Context, input jobs.IngestDocu
 		Content:         input.Content,
 		SourceUpdatedAt: input.SourceUpdatedAt,
 		Metadata:        input.Metadata,
-	})
-	if err != nil {
-		return jobs.IngestDocumentResult{}, err
 	}
+}
+
+func jobDocumentResult(result brain.IngestDocumentResult) jobs.IngestDocumentResult {
 	return jobs.IngestDocumentResult{
 		DocumentID: result.DocumentID,
 		Chunks:     result.Chunks,
 		Claims:     result.Claims,
-	}, nil
+	}
 }
 
 func main() {

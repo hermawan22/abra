@@ -302,9 +302,66 @@ Production ingestion should be automated but bounded:
 - Prefer source webhooks or scheduled connector jobs over manual uploads.
 - Ingest only approved sources and map each source to a stable scope and authority.
 - Keep connector credentials outside the Abra OSS image.
-- Use `mcp` source configs when an internal MCP server can export normalized Abra documents, or `POST /ingest/webhooks` for connector overlays that can push normalized documents. Configure `ABRA_WEBHOOK_SECRETS` and send `x-abra-signature: sha256=<hmac>` so webhook bodies are tamper-evident in addition to API-key auth.
+- Use `mcp` source configs when a user-owned or internal MCP server can export normalized Abra documents, or `POST /ingest/webhooks` for connector overlays that can push normalized documents. Configure `ABRA_WEBHOOK_SECRETS` and send `x-abra-signature: sha256=<hmac>` so webhook bodies are tamper-evident in addition to API-key auth.
 - Treat source refresh as idempotent. Re-ingestion deprecates missing claims and graph relations, reactivates still-present claims and relations from the same source, and replaces source-scoped summaries.
 - Store connector state outside the request path so ingestion spikes do not affect recall latency.
+
+When approval enforcement is active, direct `POST /ingest/documents`, MCP
+`ingest_document(s)`, and CLI `abra ingest` use the `agent_write` approval gate.
+Automated connectors should either carry an approved `approval_id` for planned
+writes or run behind stored agent-action policies that explicitly allow the
+source scope.
+
+Before registering a user-owned MCP export tool as a production source, validate
+it from the operator CLI with `--dry-run` or `--validate`:
+
+```sh
+abra source mcp \
+  --scope team:platform \
+  --mcp-url https://mcp.example/mcp \
+  --tool export_documents \
+  --header-env X-API-Key=CONFLUENCE_API_KEY \
+  --dry-run
+```
+
+The dry run calls the upstream MCP tool and validates the returned normalized
+documents without creating a source config or queueing ingestion. The same
+validation contract is available to gateways through `POST /sources/configs/validate`
+and MCP `validate_mcp_source`. Server-side validation that reads
+`bearer_token_env` or `header_env` can require an approved `connector_enable`
+`approval_id` before Abra sends those env-backed credentials to the upstream
+MCP server. Register the source only after the exported documents have stable
+`source_url`, title, content, scope, and authority semantics. Keep bearer tokens
+and custom headers in env references such as `bearer_token_env` and
+`header_env`; do not store literal vendor credentials in source configs.
+
+Operate registered sources through the source lifecycle commands:
+
+```sh
+abra sources status <source-config-id>
+abra sources logs <source-config-id> --limit 20
+abra sources sync <source-config-id> --scope team:platform --wait --wait-timeout 10m
+abra sources backfill <source-config-id> --scope team:platform --approval-id <approval-id> --wait --wait-timeout 10m
+abra sources pause <source-config-id>
+abra sources resume <source-config-id> --approval-id <approval-id>
+```
+
+Manual sync and backfill are operator actions and bypass normal due checks, so
+use them for incident recovery, source migration, credential rotation, or
+normalization changes. Backfill uses the `backfill` approval action when
+enforcement or stored policy requires review. Pause stops future scheduled
+refresh without rewriting the connector config. Active source config writes and
+resume are connector enablement; in enforced approval mode they can require an
+approved `connector_enable` or `source_authority_change` request, especially
+when the source authority, authority score, scope, or connector identity
+changed. Source config upserts and pause/resume changes write audit events, so
+record the approval ID and the later operation `x-request-id` in change records.
+
+Private connector overlays still own vendor credentials, token rotation,
+source-system ACL and group normalization, event diffing, and provider-specific
+retries for systems such as Confluence, Jira, Slack, or Drive. Abra owns the
+durable memory contract after the overlay or MCP source emits normalized
+documents.
 
 ## Observability
 

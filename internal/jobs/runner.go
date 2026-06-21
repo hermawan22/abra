@@ -49,6 +49,10 @@ type DocumentIngestor interface {
 	IngestDocument(ctx context.Context, input IngestDocumentInput) (IngestDocumentResult, error)
 }
 
+type BatchDocumentIngestor interface {
+	IngestDocuments(ctx context.Context, inputs []IngestDocumentInput) ([]IngestDocumentResult, error)
+}
+
 type IngestDocumentInput struct {
 	SourceType      string
 	SourceURL       string
@@ -420,6 +424,7 @@ func (r *Runner) runSource(ctx context.Context, source SourceConfig, jobID strin
 		attribute.Int("abra.source.files_skipped_binary", stats.FilesSkippedBinary),
 		attribute.Int("abra.source.files_skipped_generated", stats.FilesSkippedGenerated),
 	)
+	changedInputs := make([]IngestDocumentInput, 0, minInt(len(docs), r.options.MaxChangedDocumentsPerSource))
 	for _, doc := range docs {
 		if err := sourceCtx.Err(); err != nil {
 			if heartbeatErr := heartbeatLoopErr(heartbeatErrs); heartbeatErr != nil {
@@ -442,22 +447,23 @@ func (r *Runner) runSource(ctx context.Context, source SourceConfig, jobID strin
 			stats.DocumentsSkipped++
 			continue
 		}
-		if stats.DocumentsChanged >= r.options.MaxChangedDocumentsPerSource {
+		if len(changedInputs) >= r.options.MaxChangedDocumentsPerSource {
 			stats.DocumentsDeferred++
 			continue
 		}
-		result, err := r.ingestor.IngestDocument(sourceCtx, documentInput(source, doc, jobID))
-		if err != nil {
-			if heartbeatErr := heartbeatLoopErr(heartbeatErrs); heartbeatErr != nil {
-				runErr = heartbeatErr
-				return stats, heartbeatErr
-			}
-			runErr = err
-			return stats, fmt.Errorf("ingest %s: %w", doc.SourceURL, err)
+		changedInputs = append(changedInputs, documentInput(source, doc, jobID))
+	}
+	results, err := r.ingestDocumentBatch(sourceCtx, changedInputs)
+	if err != nil {
+		if heartbeatErr := heartbeatLoopErr(heartbeatErrs); heartbeatErr != nil {
+			runErr = heartbeatErr
+			return stats, heartbeatErr
 		}
-		stats.DocumentsChanged++
-		stats.ChunksWritten += result.Chunks
-		stats.ClaimsWritten += result.Claims
+		runErr = err
+		return stats, err
+	}
+	accumulateResults(&stats, results)
+	if len(results) > 0 {
 		if err := r.heartbeatJob(sourceCtx, jobID); err != nil {
 			runErr = err
 			return stats, err
@@ -493,6 +499,39 @@ func applySkippedFileStats(stats *SourceStats, skipped []ingest.SkippedFile) {
 	}
 }
 
+func (r *Runner) ingestDocumentBatch(ctx context.Context, inputs []IngestDocumentInput) ([]IngestDocumentResult, error) {
+	if len(inputs) == 0 {
+		return []IngestDocumentResult{}, nil
+	}
+	if batch, ok := r.ingestor.(BatchDocumentIngestor); ok {
+		results, err := batch.IngestDocuments(ctx, inputs)
+		if err != nil {
+			return nil, err
+		}
+		if len(results) != len(inputs) {
+			return nil, fmt.Errorf("batch ingest returned %d results for %d inputs", len(results), len(inputs))
+		}
+		return results, nil
+	}
+	results := make([]IngestDocumentResult, 0, len(inputs))
+	for _, input := range inputs {
+		result, err := r.ingestor.IngestDocument(ctx, input)
+		if err != nil {
+			return nil, fmt.Errorf("ingest %s: %w", input.SourceURL, err)
+		}
+		results = append(results, result)
+	}
+	return results, nil
+}
+
+func accumulateResults(stats *SourceStats, results []IngestDocumentResult) {
+	stats.DocumentsChanged += len(results)
+	for _, result := range results {
+		stats.ChunksWritten += result.Chunks
+		stats.ClaimsWritten += result.Claims
+	}
+}
+
 func (r *Runner) startHeartbeatLoop(ctx context.Context, jobID string, cancel context.CancelFunc) <-chan error {
 	if jobID == "" {
 		return nil
@@ -518,6 +557,13 @@ func (r *Runner) startHeartbeatLoop(ctx context.Context, jobID string, cancel co
 		}
 	}()
 	return errs
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func (r *Runner) heartbeatInterval() time.Duration {

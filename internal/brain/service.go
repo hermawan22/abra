@@ -49,6 +49,7 @@ type IngestDocumentInput struct {
 	Scope           string         `json:"scope"`
 	Content         string         `json:"content"`
 	SourceUpdatedAt string         `json:"source_updated_at,omitempty"`
+	ApprovalID      string         `json:"approval_id,omitempty"`
 	Metadata        map[string]any `json:"metadata,omitempty"`
 }
 
@@ -988,8 +989,10 @@ func (s *Service) CaptureObservation(ctx context.Context, input CaptureObservati
 		return CaptureObservationResult{}, fmt.Errorf("scope and observation_text are required")
 	}
 	observationText := input.ObservationText
+	value := input.Value
 	if s.cfg.RedactPII {
 		observationText = redact(observationText)
+		value = redactObservationValue(value)
 	}
 	observation, err := s.db.InsertObservation(ctx, store.ObservationRecord{
 		Scope:           input.Scope,
@@ -1015,7 +1018,7 @@ func (s *Service) CaptureObservation(ctx context.Context, input CaptureObservati
 		ValidFrom:       input.ValidFrom,
 		ExpiresAt:       input.ExpiresAt,
 		CreatedBy:       input.CreatedBy,
-		Value:           input.Value,
+		Value:           value,
 		Metadata: mergeMetadata(map[string]any{
 			"channel": "api",
 		}, input.Metadata),
@@ -2098,6 +2101,34 @@ func redact(input string) string {
 		return match
 	})
 	return input
+}
+
+func redactObservationValue(value map[string]any) map[string]any {
+	if value == nil {
+		return nil
+	}
+	redacted := map[string]any{}
+	for key, item := range value {
+		redacted[key] = redactObservationAny(item)
+	}
+	return redacted
+}
+
+func redactObservationAny(value any) any {
+	switch typed := value.(type) {
+	case string:
+		return redact(typed)
+	case map[string]any:
+		return redactObservationValue(typed)
+	case []any:
+		redacted := make([]any, 0, len(typed))
+		for _, item := range typed {
+			redacted = append(redacted, redactObservationAny(item))
+		}
+		return redacted
+	default:
+		return value
+	}
 }
 
 func metadataString(metadata map[string]any, key string) string {

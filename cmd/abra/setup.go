@@ -469,8 +469,8 @@ func printSetupNext(args cliArgs) {
 	fmt.Println(`  abra think "What should I know before changing this project?" --scope <scope-from-abra-scope>`)
 	fmt.Println("Manual alternative to bootstrap:")
 	fmt.Println("  abra agents init --agent codex")
-	fmt.Println("  abra ingest . --code --scope <scope-from-abra-scope>")
 	fmt.Println("  abra agents verify . --scope <scope-from-abra-scope>")
+	fmt.Println("  abra ingest . --code --scope <scope-from-abra-scope>   # only if verify reports missing scope or empty memory")
 	fmt.Println("  abra mcp install-codex")
 	fmt.Println("If Codex says Abra has no context, run `abra agents verify --json` first. Reinstall/restart MCP when server_ready=true but agent_ready=false; re-ingest only if verify reports missing scope or empty source-backed memory.")
 }

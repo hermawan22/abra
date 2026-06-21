@@ -47,6 +47,22 @@ func TestUpsertSourceConfigMCPAllowsOverlaySourceTypes(t *testing.T) {
 }
 
 func TestSourceConfigLifecycleMCPToolsAreDiscoverable(t *testing.T) {
+	validateSchema := mcpToolSchema(t, "validate_mcp_source")
+	validateRequired := requiredSet(t, validateSchema)
+	if !validateRequired["scope"] || !validateRequired["tool"] || validateRequired["base_url"] {
+		t.Fatalf("validate_mcp_source required = %#v, want scope and tool without base_url", validateSchema["required"])
+	}
+	validateProperties, ok := validateSchema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("validate properties = %#v", validateSchema["properties"])
+	}
+	if _, ok := validateProperties["header_env"]; !ok {
+		t.Fatalf("validate_mcp_source missing header_env property: %#v", validateProperties)
+	}
+	if _, ok := validateProperties["approval_id"]; !ok {
+		t.Fatalf("validate_mcp_source missing approval_id property: %#v", validateProperties)
+	}
+
 	getSchema := mcpToolSchema(t, "get_source_config")
 	getRequired := requiredSet(t, getSchema)
 	if !getRequired["source_config_id"] {
@@ -72,6 +88,15 @@ func TestSourceConfigLifecycleMCPToolsAreDiscoverable(t *testing.T) {
 	}
 	if !containsString(enum, "active") || !containsString(enum, "paused") {
 		t.Fatalf("status enum = %#v, want active and paused", enum)
+	}
+
+	enqueueSchema := mcpToolSchema(t, "enqueue_ingestion_job")
+	enqueueProperties, ok := enqueueSchema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("enqueue properties = %#v", enqueueSchema["properties"])
+	}
+	if _, ok := enqueueProperties["approval_id"]; !ok {
+		t.Fatalf("enqueue_ingestion_job missing approval_id property: %#v", enqueueProperties)
 	}
 }
 
@@ -226,6 +251,21 @@ func TestLearningProposalReviewMCPToolsAreDiscoverable(t *testing.T) {
 	for _, property := range []string{"proposal_id", "status", "reviewed_by", "review_reason", "approval_id", "metadata"} {
 		if _, ok := decideProperties[property]; !ok {
 			t.Fatalf("decide_learning_proposal missing property %q in %#v", property, decideProperties)
+		}
+	}
+
+	applySchema := mcpToolSchema(t, "apply_learning_proposal")
+	applyRequired := requiredSet(t, applySchema)
+	if !applyRequired["proposal_id"] {
+		t.Fatalf("apply_learning_proposal required = %#v, want proposal_id", applySchema["required"])
+	}
+	applyProperties, ok := applySchema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("apply properties = %#v", applySchema["properties"])
+	}
+	for _, property := range []string{"proposal_id", "applied_by", "approval_id", "payload", "metadata"} {
+		if _, ok := applyProperties[property]; !ok {
+			t.Fatalf("apply_learning_proposal missing property %q in %#v", property, applyProperties)
 		}
 	}
 }

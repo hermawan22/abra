@@ -52,6 +52,12 @@ type DecideLearningProposalInput struct {
 	Metadata     map[string]any `json:"metadata"`
 }
 
+type ApplyLearningProposalInput struct {
+	AppliedBy  string         `json:"applied_by"`
+	ApprovalID string         `json:"approval_id"`
+	Metadata   map[string]any `json:"metadata"`
+}
+
 func (s *Store) CreateLearningProposal(ctx context.Context, input CreateLearningProposalInput) (LearningProposalRecord, error) {
 	input.Scope = strings.TrimSpace(input.Scope)
 	input.ProposalType = normalizedLearningProposalType(input.ProposalType)
@@ -200,6 +206,34 @@ func (s *Store) DecideLearningProposal(ctx context.Context, id string, input Dec
 			return LearningProposalRecord{}, getErr
 		}
 		return LearningProposalRecord{}, fmt.Errorf("learning proposal %q is %s and cannot be decided", id, current.Status)
+	}
+	return s.GetLearningProposal(ctx, id)
+}
+
+func (s *Store) MarkLearningProposalApplied(ctx context.Context, id string, input ApplyLearningProposalInput) (LearningProposalRecord, error) {
+	payload := mergeMetadata(input.Metadata, map[string]any{
+		"applied_at": time.Now().UTC().Format(time.RFC3339Nano),
+	})
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE learning_proposals
+		SET status = 'applied',
+		    reviewed_by = COALESCE(NULLIF($2, ''), reviewed_by),
+		    approval_id = COALESCE(NULLIF($3, ''), approval_id),
+		    payload = payload || $4::jsonb,
+		    reviewed_at = COALESCE(reviewed_at, now()),
+		    updated_at = now()
+		WHERE id = $1
+		  AND status = 'accepted'
+	`, strings.TrimSpace(id), strings.TrimSpace(input.AppliedBy), strings.TrimSpace(input.ApprovalID), jsonb(payload))
+	if err != nil {
+		return LearningProposalRecord{}, err
+	}
+	if tag.RowsAffected() == 0 {
+		current, getErr := s.GetLearningProposal(ctx, id)
+		if getErr != nil {
+			return LearningProposalRecord{}, getErr
+		}
+		return LearningProposalRecord{}, fmt.Errorf("learning proposal %q is %s and cannot be applied", id, current.Status)
 	}
 	return s.GetLearningProposal(ctx, id)
 }

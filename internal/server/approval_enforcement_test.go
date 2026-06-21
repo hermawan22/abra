@@ -43,6 +43,69 @@ func TestSourceAuthorityApprovalRequired(t *testing.T) {
 	}
 }
 
+func TestSourceConfigApprovalAction(t *testing.T) {
+	cases := []struct {
+		name  string
+		input store.SourceConfigRecord
+		want  string
+	}{
+		{
+			name:  "active untrusted source is connector enablement",
+			input: store.SourceConfigRecord{Status: "active", Authority: "manual-unverified", AuthorityScore: 0.35},
+			want:  "connector_enable",
+		},
+		{
+			name:  "empty status defaults to active connector enablement",
+			input: store.SourceConfigRecord{},
+			want:  "connector_enable",
+		},
+		{
+			name:  "paused source does not enable connector",
+			input: store.SourceConfigRecord{Status: "paused", Authority: "manual-unverified", AuthorityScore: 0.35},
+			want:  "",
+		},
+		{
+			name:  "trusted paused source is authority change",
+			input: store.SourceConfigRecord{Status: "paused", Authority: "official-doc"},
+			want:  "source_authority_change",
+		},
+		{
+			name:  "trusted active source prefers authority action",
+			input: store.SourceConfigRecord{Status: "active", AuthorityScore: 0.8},
+			want:  "source_authority_change",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sourceConfigApprovalAction(tc.input); got != tc.want {
+				t.Fatalf("sourceConfigApprovalAction() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSourceConfigApprovalActionForStatusUsesTargetStatus(t *testing.T) {
+	source := store.SourceConfigRecord{Status: "paused", Authority: "manual-unverified", AuthorityScore: 0.35}
+	if got := sourceConfigApprovalActionForStatus(source, "active"); got != "connector_enable" {
+		t.Fatalf("activate approval action = %q, want connector_enable", got)
+	}
+	if got := sourceConfigApprovalActionForStatus(source, "paused"); got != "" {
+		t.Fatalf("paused approval action = %q, want empty", got)
+	}
+}
+
+func TestSourceValidationApprovalActionRequiresApprovalForServerCredentialEnv(t *testing.T) {
+	if got := sourceValidationApprovalAction(store.SourceConfigRecord{Config: map[string]any{"bearer_token_env": "MCP_TOKEN"}}); got != "connector_enable" {
+		t.Fatalf("bearer env approval action = %q, want connector_enable", got)
+	}
+	if got := sourceValidationApprovalAction(store.SourceConfigRecord{Config: map[string]any{"header_env": map[string]any{"X-API-Key": "MCP_API_KEY"}}}); got != "connector_enable" {
+		t.Fatalf("header env approval action = %q, want connector_enable", got)
+	}
+	if got := sourceValidationApprovalAction(store.SourceConfigRecord{Config: map[string]any{"arguments": map[string]any{"space": "ENG"}}}); got != "" {
+		t.Fatalf("plain validation approval action = %q, want empty", got)
+	}
+}
+
 func TestSourceConfigApprovalTarget(t *testing.T) {
 	if got := sourceConfigApprovalTarget(store.SourceConfigRecord{ID: "source-1"}); got != "source-1" {
 		t.Fatalf("target = %q, want source-1", got)

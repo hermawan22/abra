@@ -90,6 +90,43 @@ func TestRunnerIngestsOnlyChangedDocuments(t *testing.T) {
 	}
 }
 
+func TestRunnerBatchesChangedSourceDocuments(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, root, "a.md", "# A\n\nA should be ingested.")
+	writeTestFile(t, root, "b.md", "# B\n\nB should be ingested.")
+
+	store := &fakeStore{
+		sources: []SourceConfig{{
+			ID:         "docs",
+			Scope:      "repo:batch",
+			SourceType: ingest.SourceTypeMarkdown,
+			Name:       "Docs",
+			Config:     map[string]any{"root": root},
+		}},
+		states: map[string]DocumentState{},
+	}
+	brain := &fakeIngestor{}
+	runner := NewRunner(store, brain, Options{
+		MaxSourcesPerRun:             10,
+		MaxChangedDocumentsPerSource: 10,
+		SourceTimeout:                time.Second,
+	})
+
+	stats, err := runner.RunOnce(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.DocumentsSeen != 2 || stats.DocumentsChanged != 2 || stats.ChunksWritten != 4 || stats.ClaimsWritten != 2 {
+		t.Fatalf("stats = %+v", stats)
+	}
+	if len(brain.batchInputs) != 1 || len(brain.batchInputs[0]) != 2 {
+		t.Fatalf("batch inputs = %+v", brain.batchInputs)
+	}
+	if len(brain.inputs) != 2 {
+		t.Fatalf("ingested %d documents", len(brain.inputs))
+	}
+}
+
 func TestProviderFailureMetadataUsesStructuredProviderError(t *testing.T) {
 	err := fmt.Errorf("ingest failed: %w", &ai.ProviderError{
 		Operation:   "embedding",
@@ -247,6 +284,119 @@ func TestRunnerIngestsMCPSourceDocuments(t *testing.T) {
 	}
 	if !store.success {
 		t.Fatal("source success was not recorded")
+	}
+}
+
+func TestRunnerBatchesChangedMCPDocuments(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		writeJSONResponse(t, w, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      body["id"],
+			"result": map[string]any{
+				"structuredContent": map[string]any{
+					"documents": []map[string]any{
+						{
+							"source_type": "confluence",
+							"source_url":  "https://wiki.example/pages/1",
+							"source_id":   "1",
+							"title":       "One",
+							"scope":       "team:platform",
+							"content":     "First source-backed document.",
+						},
+						{
+							"source_type": "confluence",
+							"source_url":  "https://wiki.example/pages/2",
+							"source_id":   "2",
+							"title":       "Two",
+							"scope":       "team:platform",
+							"content":     "Second source-backed document.",
+						},
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	store := &fakeStore{
+		states: map[string]DocumentState{},
+		sources: []SourceConfig{{
+			ID:         "mcp-confluence",
+			Scope:      "team:platform",
+			SourceType: ingest.SourceTypeMCP,
+			Name:       "Confluence MCP",
+			BaseURL:    server.URL,
+			Config:     map[string]any{"tool": "export_documents"},
+		}},
+	}
+	brain := &fakeIngestor{}
+	runner := NewRunner(store, brain, Options{
+		MaxSourcesPerRun:             10,
+		MaxChangedDocumentsPerSource: 10,
+		SourceTimeout:                time.Second,
+	})
+
+	stats, err := runner.RunOnce(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.DocumentsSeen != 2 || stats.DocumentsChanged != 2 || stats.ChunksWritten != 4 || stats.ClaimsWritten != 2 {
+		t.Fatalf("stats = %+v", stats)
+	}
+	if len(brain.batchInputs) != 1 || len(brain.batchInputs[0]) != 2 {
+		t.Fatalf("batch inputs = %+v", brain.batchInputs)
+	}
+}
+
+func TestRunnerFallsBackWhenIngestorDoesNotSupportBatch(t *testing.T) {
+	brain := &singleOnlyIngestor{}
+	runner := NewRunner(&fakeStore{}, brain, Options{})
+
+	results, err := runner.ingestDocumentBatch(context.Background(), []IngestDocumentInput{
+		{SourceURL: "https://example.invalid/1"},
+		{SourceURL: "https://example.invalid/2"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 || len(brain.inputs) != 2 {
+		t.Fatalf("results = %+v inputs = %+v", results, brain.inputs)
+	}
+}
+
+func TestRunnerBatchResultCountMismatchFailsJob(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, root, "a.md", "# A\n\nA should be ingested.")
+	writeTestFile(t, root, "b.md", "# B\n\nB should be ingested.")
+
+	store := &fakeStore{
+		sources: []SourceConfig{{
+			ID:         "docs",
+			Scope:      "repo:batch",
+			SourceType: ingest.SourceTypeMarkdown,
+			Name:       "Docs",
+			Config:     map[string]any{"root": root},
+		}},
+		states:              map[string]DocumentState{},
+		finishStatusOnError: "failed",
+	}
+	brain := &fakeIngestor{batchResults: []IngestDocumentResult{{DocumentID: "only-one"}}}
+	runner := NewRunner(store, brain, Options{
+		MaxSourcesPerRun:             10,
+		MaxChangedDocumentsPerSource: 10,
+		SourceTimeout:                time.Second,
+	})
+
+	stats, err := runner.RunOnce(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.SourcesFailed != 1 || stats.DocumentsChanged != 0 || !store.markedError {
+		t.Fatalf("stats = %+v markedError=%v", stats, store.markedError)
 	}
 }
 
@@ -755,9 +905,12 @@ func (f *fakeStore) MarkSourceError(context.Context, string, error) error {
 }
 
 type fakeIngestor struct {
-	mu     sync.Mutex
-	inputs []IngestDocumentInput
-	err    error
+	mu           sync.Mutex
+	inputs       []IngestDocumentInput
+	batchInputs  [][]IngestDocumentInput
+	err          error
+	batchErr     error
+	batchResults []IngestDocumentResult
 }
 
 func (f *fakeIngestor) IngestDocument(_ context.Context, input IngestDocumentInput) (IngestDocumentResult, error) {
@@ -767,6 +920,41 @@ func (f *fakeIngestor) IngestDocument(_ context.Context, input IngestDocumentInp
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.inputs = append(f.inputs, input)
+	return IngestDocumentResult{DocumentID: "doc", Chunks: 2, Claims: 1}, nil
+}
+
+func (f *fakeIngestor) IngestDocuments(_ context.Context, inputs []IngestDocumentInput) ([]IngestDocumentResult, error) {
+	if f.batchErr != nil {
+		return nil, f.batchErr
+	}
+	if f.err != nil {
+		return nil, f.err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	copied := append([]IngestDocumentInput(nil), inputs...)
+	f.batchInputs = append(f.batchInputs, copied)
+	f.inputs = append(f.inputs, copied...)
+	if f.batchResults != nil {
+		return f.batchResults, nil
+	}
+	results := make([]IngestDocumentResult, 0, len(inputs))
+	for range inputs {
+		results = append(results, IngestDocumentResult{DocumentID: "doc", Chunks: 2, Claims: 1})
+	}
+	return results, nil
+}
+
+type singleOnlyIngestor struct {
+	inputs []IngestDocumentInput
+	err    error
+}
+
+func (s *singleOnlyIngestor) IngestDocument(_ context.Context, input IngestDocumentInput) (IngestDocumentResult, error) {
+	if s.err != nil {
+		return IngestDocumentResult{}, s.err
+	}
+	s.inputs = append(s.inputs, input)
 	return IngestDocumentResult{DocumentID: "doc", Chunks: 2, Claims: 1}, nil
 }
 

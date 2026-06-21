@@ -194,11 +194,12 @@ abra mcp > .tmp/abra.mcp.json
 abra agents verify . --agent claude --scope <scope-from-abra-scope>
 ```
 
-The manual recovery path is:
+The manual setup path is:
 
 ```sh
 abra scope
-abra ingest . --code --scope <scope-from-abra-scope>
+abra agents verify . --scope <scope-from-abra-scope>
+abra ingest . --code --scope <scope-from-abra-scope>   # only if verify reports missing scope or empty memory
 abra agents verify . --scope <scope-from-abra-scope>
 ```
 
@@ -206,11 +207,12 @@ Then tell the agent: `Use Abra MCP first. Exact scope: repo:<project>. Call
 discover_scopes with expected_scope="repo:<project>", then call
 working_memory_compose with task=<current task>, scope="repo:<project>", and
 agent="codex" before answering or changing code. If Abra MCP tools are
-unavailable, run abra doctor, fix the MCP/token warning, fully restart the AI
-client, and retry before re-ingesting. If discover_scopes does not show
-repo:<project> or working_memory_compose returns no source-backed context, run
-abra scope, ingest the project with that exact scope, rerun abra agents verify .
---scope repo:<project> --agent codex, then retry with this exact scope.`
+unavailable or the AI client says Abra has no context, run abra agents verify .
+--scope repo:<project> --agent codex --json first. Run abra doctor and repair
+MCP/API/token/model readiness when verify reports readiness errors; when
+server_ready=true but agent_ready=false, reinstall/restart the AI client MCP
+integration. Re-ingest only when verify proves the exact scope is missing or
+source-backed memory is empty, then rerun verify with this exact scope.`
 
 `abra scope` also prints the exact `abra agents bootstrap`, `abra agents init`,
 `abra ingest`, and `abra agents verify` commands for the current project. When
@@ -312,22 +314,24 @@ From a source checkout, run the CLI as `go run ./cmd/abra <command>`. In a relea
 | start local stack and default local embedding runner | `abra up` |
 | init env only | `abra init` |
 | compatibility setup alias | `abra install` |
-| ingest one document | `abra ingest --text "source-backed content"` |
+| ingest one document | `abra ingest --text "source-backed content" --approval-id <approval-id>` |
 | ingest local repo directly from the CLI | `abra ingest . --code --scope <scope-from-abra-scope>` |
 | ingest local repo and keep going after per-file failures | `abra ingest . --code --continue-on-error --scope <scope-from-abra-scope>` |
 | suppress direct local ingest progress | `abra ingest . --code --quiet --scope <scope-from-abra-scope>` |
 | ingest remote git | `abra ingest --git https://github.com/owner/repo.git --ref main --code --scope repo:owner-repo --wait --wait-timeout 10m` |
 | list sources | `abra sources` |
 | refresh an existing source config | `abra sources sync <source-config-id> --scope <scope> --wait --wait-timeout 10m` |
-| backfill an existing source config | `abra sources backfill <source-config-id> --scope <scope> --wait --wait-timeout 10m` |
+| backfill an existing source config | `abra sources backfill <source-config-id> --scope <scope> --approval-id <approval-id> --wait --wait-timeout 10m` |
 | inspect one source config | `abra sources status <source-config-id>` |
 | inspect one source job history | `abra sources logs <source-config-id> --limit 20` |
 | pause a source config | `abra sources pause <source-config-id>` |
 | resume a source config | `abra sources resume <source-config-id> --approval-id <approval-id>` |
+| validate an MCP source before registering it | `abra source mcp --scope team:platform --mcp-url https://mcp.example/mcp --tool export_documents --dry-run` |
 | register an auto-refreshing MCP source | `abra source mcp --scope team:platform --mcp-url https://mcp.example/mcp --tool export_documents --schedule "@every 10m" --freshness-seconds 600` |
 | list jobs | `abra jobs` |
 | capture raw observation | `abra observe "Agents should rerun release checks" --scope repo:demo` |
 | capture and propose observation | `abra observe "Agents should rerun release checks" --scope repo:demo --propose --source-url file://release-runbook.md` |
+| capture preferences from a transcript | `abra observe conversation --file transcript.md --scope repo:demo --propose` |
 | list observations | `abra observations --scope repo:demo --query release` |
 | propose existing observation | `abra observations propose <observation-id> --scope repo:demo --claim "Agents should rerun release checks." --source-url file://release-runbook.md` |
 | think | `abra think "question" --scope <scope-from-abra-scope>` |
@@ -366,9 +370,20 @@ Capture raw episodic memory without promoting it to a trusted claim:
 ```sh
 abra observe "Agents should rerun release checks before tagging" --scope repo:demo
 abra observe "Agents should rerun release checks before tagging" --scope repo:demo --propose --source-url file://release-runbook.md
+abra observe conversation --file transcript.md --scope repo:demo --propose
 abra observations --scope repo:demo --query release
 abra observations propose <observation-id> --scope repo:demo --claim "Agents should rerun release checks before tagging." --source-url file://release-runbook.md
 ```
+
+`observe conversation` accepts plain transcripts with `User:` / `Assistant:`
+lines or JSON arrays/objects with `messages`. By default it captures only
+preference-like user turns as raw `preference` observations, then `--propose`
+queues review items without trusting them. Use `--all-turns` when a gateway
+intentionally wants full episodic transcript capture.
+
+When `ABRA_APPROVAL_MODE=enforce` or stored agent policy requires review,
+direct ingestion uses the `agent_write` approval action. Pass
+`--approval-id <approval-id>` to `abra ingest` after the request is approved.
 
 The equivalent HTTP surface is:
 
@@ -424,6 +439,17 @@ abra source mcp \
   --arguments-json '{"space":"ENG"}' \
   --document-source-type confluence \
   --bearer-token-env CONFLUENCE_MCP_TOKEN \
+  --header-env X-API-Key=CONFLUENCE_API_KEY \
+  --dry-run
+
+abra source mcp \
+  --scope team:platform \
+  --mcp-url https://mcp.example.internal/mcp \
+  --tool export_documents \
+  --arguments-json '{"space":"ENG"}' \
+  --document-source-type confluence \
+  --bearer-token-env CONFLUENCE_MCP_TOKEN \
+  --header-env X-API-Key=CONFLUENCE_API_KEY \
   --freshness-seconds 3600 \
   --schedule "@every 1h" \
   --wait
@@ -431,7 +457,11 @@ abra source mcp \
 
 The configured MCP tool must return normalized Abra documents as JSON, either as
 `structuredContent.documents` or as a JSON text content item containing
-`{"documents":[...]}`.
+`{"documents":[...]}`. `--dry-run` or `--validate` calls that upstream MCP tool
+and validates the returned documents without creating a source config or queueing
+an ingestion job. Use `--bearer-token-env` and `--header-env HEADER=ENV_NAME`
+to reference credentials from environment variables instead of writing secrets
+into source configs.
 To run an existing source again without changing its config:
 
 ```sh
@@ -443,7 +473,7 @@ the existing source config, but records the operator intent separately in the
 job trigger and metadata:
 
 ```sh
-abra sources backfill <source-config-id> --scope team:platform --wait --wait-timeout 10m
+abra sources backfill <source-config-id> --scope team:platform --approval-id <approval-id> --wait --wait-timeout 10m
 ```
 
 Inspect a source and its latest job, then drill into recent job history:

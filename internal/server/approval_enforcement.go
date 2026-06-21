@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/hermawan22/abra/internal/brain"
 	"github.com/hermawan22/abra/internal/ingest"
 	"github.com/hermawan22/abra/internal/jobs"
 	"github.com/hermawan22/abra/internal/store"
@@ -82,6 +83,50 @@ func (h *handler) requireApprovedRisk(w http.ResponseWriter, r *http.Request, re
 	return true
 }
 
+func (h *handler) requireIngestApproval(w http.ResponseWriter, r *http.Request, scope, approvalID string) bool {
+	scope = strings.TrimSpace(scope)
+	return h.requireRiskApproval(w, r, approvalRequirement{
+		Action:     "agent_write",
+		Scope:      scope,
+		TargetType: "memory_write",
+		TargetID:   scope,
+		ApprovalID: strings.TrimSpace(approvalID),
+	})
+}
+
+func (h *handler) requireIngestDocumentsApproval(w http.ResponseWriter, r *http.Request, docs []brain.IngestDocumentInput, approvalID string) bool {
+	seen := map[string]bool{}
+	for _, doc := range docs {
+		scope := strings.TrimSpace(doc.Scope)
+		if scope == "" || seen[scope] {
+			continue
+		}
+		seen[scope] = true
+		if !h.requireIngestApproval(w, r, scope, firstNonEmpty(strings.TrimSpace(doc.ApprovalID), approvalID)) {
+			return false
+		}
+	}
+	return true
+}
+
+func (h *handler) requireLearningApplyApproval(w http.ResponseWriter, r *http.Request, proposal store.LearningProposalRecord, input applyLearningProposalInput) bool {
+	plan := buildLearningApplyPlan(proposal, h.cfg.ApprovalMode)
+	if !plan.RequiresApproval {
+		return true
+	}
+	targetType := firstNonEmpty(plan.TargetType, proposal.TargetType, "learning_proposal")
+	targetID := firstNonEmpty(plan.TargetID, proposal.TargetID, proposal.ID)
+	return h.requireRiskApproval(w, r, approvalRequirement{
+		Action:        plan.ApprovalAction,
+		Scope:         proposal.Scope,
+		TargetType:    targetType,
+		TargetID:      targetID,
+		ApprovalID:    firstNonEmpty(strings.TrimSpace(input.ApprovalID), proposal.ApprovalID),
+		PrincipalType: "agent",
+		PrincipalID:   firstNonEmpty(strings.TrimSpace(input.AppliedBy), proposal.ReviewedBy, proposal.CreatedBy, "unknown"),
+	})
+}
+
 func writePolicyDenied(w http.ResponseWriter, requirement approvalRequirement, decision store.AgentActionDecisionResult) {
 	payload := map[string]any{
 		"error":   "policy_denied",
@@ -121,6 +166,37 @@ func sourceAuthorityApprovalRequired(input store.SourceConfigRecord) bool {
 	return (authority != "" && authority != "manual-unverified") || input.AuthorityScore > 0.35
 }
 
+func sourceConnectorEnableApprovalRequired(input store.SourceConfigRecord) bool {
+	status := strings.TrimSpace(input.Status)
+	return status == "" || status == "active"
+}
+
+func sourceConfigApprovalAction(input store.SourceConfigRecord) string {
+	if sourceAuthorityApprovalRequired(input) {
+		return "source_authority_change"
+	}
+	if sourceConnectorEnableApprovalRequired(input) {
+		return "connector_enable"
+	}
+	return ""
+}
+
+func sourceConfigApprovalActionForStatus(input store.SourceConfigRecord, status string) string {
+	input.Status = strings.TrimSpace(status)
+	return sourceConfigApprovalAction(input)
+}
+
+func sourceValidationApprovalAction(input store.SourceConfigRecord) string {
+	if sourceValidationUsesServerCredentialEnv(input) {
+		return "connector_enable"
+	}
+	return ""
+}
+
+func sourceValidationUsesServerCredentialEnv(input store.SourceConfigRecord) bool {
+	return strings.TrimSpace(configString(input.Config, "bearer_token_env")) != "" || len(configStringMap(input.Config, "header_env")) > 0
+}
+
 func sourceConfigApprovalTarget(input store.SourceConfigRecord) string {
 	if id := strings.TrimSpace(input.ID); id != "" {
 		return id
@@ -142,11 +218,43 @@ func validateSourceConfigInput(input store.SourceConfigRecord) error {
 		SourceType:     ingest.SourceType(strings.TrimSpace(input.SourceType)),
 		Name:           strings.TrimSpace(input.Name),
 		BaseURL:        strings.TrimSpace(input.BaseURL),
+		ConnectorKind:  strings.TrimSpace(input.ConnectorKind),
 		Authority:      strings.TrimSpace(input.Authority),
 		AuthorityScore: input.AuthorityScore,
 		Config:         input.Config,
 		Metadata:       input.Metadata,
 	}.ValidateIngestContract()
+}
+
+func configString(config map[string]any, key string) string {
+	if config == nil {
+		return ""
+	}
+	value, _ := config[key].(string)
+	return strings.TrimSpace(value)
+}
+
+func configStringMap(config map[string]any, key string) map[string]string {
+	if config == nil {
+		return nil
+	}
+	switch raw := config[key].(type) {
+	case map[string]string:
+		return raw
+	case map[string]any:
+		values := map[string]string{}
+		for rawKey, rawValue := range raw {
+			key := strings.TrimSpace(rawKey)
+			value, _ := rawValue.(string)
+			value = strings.TrimSpace(value)
+			if key != "" && value != "" {
+				values[key] = value
+			}
+		}
+		return values
+	default:
+		return nil
+	}
 }
 
 func validateSourceFreshness(policy map[string]any, schedule string) error {

@@ -15,6 +15,7 @@ type EnqueueIngestionJobInput struct {
 	SourceConfigID string         `json:"source_config_id"`
 	TriggerType    string         `json:"trigger_type"`
 	CreatedBy      string         `json:"created_by"`
+	ApprovalID     string         `json:"approval_id,omitempty"`
 	MaxAttempts    int            `json:"max_attempts"`
 	Metadata       map[string]any `json:"metadata"`
 }
@@ -72,6 +73,9 @@ func (s *Store) EnqueueIngestionJob(ctx context.Context, input EnqueueIngestionJ
 	metadata := mergeMetadata(input.Metadata, map[string]any{
 		"queued_at": time.Now().UTC().Format(time.RFC3339Nano),
 	})
+	if approvalID := strings.TrimSpace(input.ApprovalID); approvalID != "" {
+		metadata["approval_id"] = approvalID
+	}
 	jobID := stableID("job", input.SourceConfigID, triggerType, time.Now().UTC().Format(time.RFC3339Nano))
 	tag, err := s.pool.Exec(ctx, `
 		INSERT INTO ingestion_jobs (

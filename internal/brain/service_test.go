@@ -776,6 +776,32 @@ func TestRedactKeepsNonSecretDomainTokens(t *testing.T) {
 	}
 }
 
+func TestRedactObservationValueRedactsNestedTranscriptContent(t *testing.T) {
+	got := redactObservationValue(map[string]any{
+		"content": "Contact me at person@example.com and use REGISTRY_PASSWORD from vault.",
+		"nested": map[string]any{
+			"turns": []any{
+				"Call +6281234567890",
+				map[string]any{"text": "credential TOKEN_SECRET is rotated"},
+			},
+		},
+		"count": 2,
+	})
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(encoded)
+	for _, leaked := range []string{"person@example.com", "+6281234567890", "REGISTRY_PASSWORD", "TOKEN_SECRET"} {
+		if strings.Contains(text, leaked) {
+			t.Fatalf("redacted value leaked %q: %s", leaked, text)
+		}
+	}
+	if got["count"] != 2 {
+		t.Fatalf("non-string value changed: %#v", got)
+	}
+}
+
 type storeLevelKeySummary struct {
 	level   string
 	key     string

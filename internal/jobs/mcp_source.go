@@ -24,6 +24,34 @@ type mcpDocument struct {
 	Metadata        map[string]any `json:"metadata"`
 }
 
+type MCPValidationDocument struct {
+	SourceType   string `json:"source_type"`
+	SourceURL    string `json:"source_url"`
+	SourceID     string `json:"source_id,omitempty"`
+	Title        string `json:"title"`
+	Scope        string `json:"scope"`
+	ContentBytes int    `json:"content_bytes"`
+}
+
+func ValidateMCPSource(ctx context.Context, source SourceConfig) ([]MCPValidationDocument, error) {
+	docs, err := fetchMCPDocuments(ctx, source)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]MCPValidationDocument, 0, len(docs))
+	for _, doc := range docs {
+		out = append(out, MCPValidationDocument{
+			SourceType:   doc.SourceType,
+			SourceURL:    doc.SourceURL,
+			SourceID:     doc.SourceID,
+			Title:        doc.Title,
+			Scope:        doc.Scope,
+			ContentBytes: len([]byte(doc.Content)),
+		})
+	}
+	return out, nil
+}
+
 type mcpJSONRPCResponse struct {
 	Result mcpToolResult `json:"result"`
 	Error  *struct {
@@ -55,6 +83,7 @@ func (r *Runner) runMCPSource(ctx context.Context, source SourceConfig, jobID st
 		return SourceStats{}, err
 	}
 	stats := SourceStats{DocumentsSeen: len(docs)}
+	changedInputs := make([]IngestDocumentInput, 0, minInt(len(docs), r.options.MaxChangedDocumentsPerSource))
 	for _, doc := range docs {
 		if err := sourceCtx.Err(); err != nil {
 			if heartbeatErr := heartbeatLoopErr(heartbeatErrs); heartbeatErr != nil {
@@ -73,20 +102,24 @@ func (r *Runner) runMCPSource(ctx context.Context, source SourceConfig, jobID st
 			stats.DocumentsSkipped++
 			continue
 		}
-		if stats.DocumentsChanged >= r.options.MaxChangedDocumentsPerSource {
+		if len(changedInputs) >= r.options.MaxChangedDocumentsPerSource {
 			stats.DocumentsDeferred++
 			continue
 		}
-		result, err := r.ingestor.IngestDocument(sourceCtx, doc.ingestInput(source, jobID))
-		if err != nil {
-			if heartbeatErr := heartbeatLoopErr(heartbeatErrs); heartbeatErr != nil {
-				return stats, heartbeatErr
-			}
-			return stats, fmt.Errorf("ingest %s: %w", doc.SourceURL, err)
+		changedInputs = append(changedInputs, doc.ingestInput(source, jobID))
+	}
+	results, err := r.ingestDocumentBatch(sourceCtx, changedInputs)
+	if err != nil {
+		if heartbeatErr := heartbeatLoopErr(heartbeatErrs); heartbeatErr != nil {
+			return stats, heartbeatErr
 		}
-		stats.DocumentsChanged++
-		stats.ChunksWritten += result.Chunks
-		stats.ClaimsWritten += result.Claims
+		return stats, err
+	}
+	accumulateResults(&stats, results)
+	if len(results) > 0 {
+		if err := r.heartbeatJob(sourceCtx, jobID); err != nil {
+			return stats, err
+		}
 	}
 	if heartbeatErr := heartbeatLoopErr(heartbeatErrs); heartbeatErr != nil {
 		return SourceStats{}, heartbeatErr

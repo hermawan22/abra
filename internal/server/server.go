@@ -14,6 +14,7 @@ import (
 	"github.com/hermawan22/abra/internal/ai"
 	"github.com/hermawan22/abra/internal/brain"
 	"github.com/hermawan22/abra/internal/config"
+	"github.com/hermawan22/abra/internal/ingest"
 	"github.com/hermawan22/abra/internal/memory"
 	"github.com/hermawan22/abra/internal/observability"
 	"github.com/hermawan22/abra/internal/policy"
@@ -71,8 +72,10 @@ func New(cfg config.Config, db *store.Store) (http.Handler, error) {
 	mux.HandleFunc("GET /learning/proposals", handler.auth(handler.listLearningProposals))
 	mux.HandleFunc("POST /learning/proposals", handler.auth(handler.createLearningProposal))
 	mux.HandleFunc("POST /learning/proposals/{proposalId}/decide", handler.auth(handler.decideLearningProposal))
+	mux.HandleFunc("POST /learning/proposals/{proposalId}/apply", handler.auth(handler.applyLearningProposalHTTP))
 	mux.HandleFunc("GET /sources/configs", handler.auth(handler.listSourceConfigs))
 	mux.HandleFunc("POST /sources/configs", handler.auth(handler.upsertSourceConfig))
+	mux.HandleFunc("POST /sources/configs/validate", handler.auth(handler.validateSourceConfig))
 	mux.HandleFunc("GET /sources/configs/{sourceConfigId}", handler.auth(handler.getSourceConfig))
 	mux.HandleFunc("POST /sources/configs/{sourceConfigId}/pause", handler.auth(handler.pauseSourceConfig))
 	mux.HandleFunc("POST /sources/configs/{sourceConfigId}/resume", handler.auth(handler.resumeSourceConfig))
@@ -332,6 +335,9 @@ func (h *handler) ingestDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !h.requireAccess(w, r, authActionWrite, input.Scope) {
+		return
+	}
+	if !h.requireIngestApproval(w, r, input.Scope, input.ApprovalID) {
 		return
 	}
 	result, err := h.brain.IngestDocument(r.Context(), input)
@@ -938,6 +944,43 @@ func (h *handler) decideLearningProposal(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]any{"learning_proposal": decided, "apply_plan": buildLearningApplyPlan(decided, h.cfg.ApprovalMode)})
 }
 
+func (h *handler) applyLearningProposalHTTP(w http.ResponseWriter, r *http.Request) {
+	proposal, err := h.db.GetLearningProposal(r.Context(), r.PathValue("proposalId"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if !h.requireAccess(w, r, authActionWrite, proposal.Scope) {
+		return
+	}
+	var input applyLearningProposalInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil && !errors.Is(err, io.EOF) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
+		return
+	}
+	if !h.requireLearningApplyApproval(w, r, proposal, input) {
+		return
+	}
+	applyResult, err := h.applyLearningProposal(r.Context(), proposal, input)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	applied, err := h.db.MarkLearningProposalApplied(r.Context(), proposal.ID, store.ApplyLearningProposalInput{
+		AppliedBy:  firstNonEmpty(strings.TrimSpace(input.AppliedBy), proposal.ReviewedBy, proposal.CreatedBy, "api"),
+		ApprovalID: firstNonEmpty(strings.TrimSpace(input.ApprovalID), proposal.ApprovalID),
+		Metadata: mergeWebhookMetadata(input.Metadata, map[string]any{
+			"apply_result": applyResult,
+		}),
+	})
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	h.auditLearningApplied(r.Context(), applied, "http", applyResult)
+	writeJSON(w, http.StatusOK, map[string]any{"learning_proposal": applied, "apply_plan": buildLearningApplyPlan(applied, h.cfg.ApprovalMode), "apply_result": applyResult})
+}
+
 func (h *handler) listSourceConfigs(w http.ResponseWriter, r *http.Request) {
 	scope := strings.TrimSpace(r.URL.Query().Get("scope"))
 	if !h.requireAccess(w, r, authActionRead, scope) {
@@ -984,8 +1027,8 @@ func (h *handler) upsertSourceConfig(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAccess(w, r, authActionWrite, input.Scope) {
 		return
 	}
-	if sourceAuthorityApprovalRequired(input) && !h.requireRiskApproval(w, r, approvalRequirement{
-		Action:     "source_authority_change",
+	if approvalAction := sourceConfigApprovalAction(input); approvalAction != "" && !h.requireRiskApproval(w, r, approvalRequirement{
+		Action:     approvalAction,
 		Scope:      input.Scope,
 		TargetType: "source_config",
 		TargetID:   sourceConfigApprovalTarget(input),
@@ -1043,7 +1086,7 @@ func (h *handler) setSourceConfigStatus(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	if status == "active" && !h.requireRiskApproval(w, r, approvalRequirement{
-		Action:     "source_authority_change",
+		Action:     sourceConfigApprovalActionForStatus(source, status),
 		Scope:      source.Scope,
 		TargetType: "source_config",
 		TargetID:   sourceConfigApprovalTarget(source),
@@ -1213,6 +1256,9 @@ func (h *handler) mcpToolCall(w http.ResponseWriter, r *http.Request, id any, pa
 		if !h.requireAccess(w, r, authActionWrite, doc.Scope) {
 			return
 		}
+		if !h.requireIngestApproval(w, r, doc.Scope, doc.ApprovalID) {
+			return
+		}
 		result, err = h.brain.IngestDocument(r.Context(), doc)
 	case "ingest_documents":
 		docs, parseErr := mcpDocumentInputs(args)
@@ -1228,6 +1274,9 @@ func (h *handler) mcpToolCall(w http.ResponseWriter, r *http.Request, id any, pa
 			if !h.requireAccess(w, r, authActionWrite, doc.Scope) {
 				return
 			}
+		}
+		if !h.requireIngestDocumentsApproval(w, r, docs, stringArg(args, "approval_id")) {
+			return
 		}
 		if !continueOnError {
 			ingested, ingestErr := h.brain.IngestDocuments(r.Context(), docs)
@@ -1805,8 +1854,8 @@ func (h *handler) mcpToolCall(w http.ResponseWriter, r *http.Request, id any, pa
 		if !h.requireAccess(w, r, authActionWrite, sourceConfig.Scope) {
 			return
 		}
-		if sourceAuthorityApprovalRequired(sourceConfig) && !h.requireRiskApproval(w, r, approvalRequirement{
-			Action:     "source_authority_change",
+		if approvalAction := sourceConfigApprovalAction(sourceConfig); approvalAction != "" && !h.requireRiskApproval(w, r, approvalRequirement{
+			Action:     approvalAction,
 			Scope:      sourceConfig.Scope,
 			TargetType: "source_config",
 			TargetID:   sourceConfigApprovalTarget(sourceConfig),
@@ -1835,6 +1884,53 @@ func (h *handler) mcpToolCall(w http.ResponseWriter, r *http.Request, id any, pa
 			break
 		}
 		result = map[string]any{"source_config_id": id, "status": "upserted"}
+	case "validate_mcp_source":
+		sourceConfig := store.SourceConfigRecord{
+			ID:              stringArg(args, "id"),
+			Scope:           stringArg(args, "scope"),
+			SourceType:      string(ingest.SourceTypeMCP),
+			Name:            firstNonEmpty(stringArg(args, "name"), "mcp-validation"),
+			BaseURL:         firstNonEmpty(stringArg(args, "base_url"), stringArg(args, "mcp_url"), stringArg(args, "server_url")),
+			ConnectorKind:   stringArg(args, "connector_kind"),
+			Authority:       stringArg(args, "authority"),
+			AuthorityScore:  floatArg(args, "authority_score", 0),
+			FreshnessPolicy: mapArg(args, "freshness_policy"),
+			ScheduleCron:    stringArg(args, "schedule_cron"),
+			Config:          mapArg(args, "config"),
+			Metadata:        mapArg(args, "metadata"),
+			CreatedBy:       stringArg(args, "created_by"),
+			ApprovalID:      stringArg(args, "approval_id"),
+		}
+		if sourceConfig.Config == nil {
+			sourceConfig.Config = map[string]any{}
+		}
+		serverURL, _ := sourceConfig.Config["server_url"].(string)
+		if sourceConfig.BaseURL != "" && strings.TrimSpace(serverURL) == "" {
+			sourceConfig.Config["server_url"] = sourceConfig.BaseURL
+		}
+		if tool := stringArg(args, "tool"); tool != "" {
+			sourceConfig.Config["tool"] = tool
+		}
+		if arguments := mapArg(args, "arguments"); len(arguments) > 0 {
+			sourceConfig.Config["arguments"] = arguments
+		}
+		if bearerTokenEnv := stringArg(args, "bearer_token_env"); bearerTokenEnv != "" {
+			sourceConfig.Config["bearer_token_env"] = bearerTokenEnv
+		}
+		if headerEnv := stringMapArg(args, "header_env"); len(headerEnv) > 0 {
+			sourceConfig.Config["header_env"] = headerEnv
+		}
+		if documentSourceType := stringArg(args, "document_source_type"); documentSourceType != "" {
+			sourceConfig.Config["document_source_type"] = documentSourceType
+		}
+		var ok bool
+		result, ok, err = h.validateMCPSourceRecord(w, r, sourceConfig)
+		if !ok {
+			return
+		}
+		if err != nil {
+			break
+		}
 	case "list_source_configs":
 		scope := stringArg(args, "scope")
 		if !h.requireAccess(w, r, authActionRead, scope) {
@@ -1864,7 +1960,7 @@ func (h *handler) mcpToolCall(w http.ResponseWriter, r *http.Request, id any, pa
 			return
 		}
 		if status == "active" && !h.requireRiskApproval(w, r, approvalRequirement{
-			Action:     "source_authority_change",
+			Action:     sourceConfigApprovalActionForStatus(source, status),
 			Scope:      source.Scope,
 			TargetType: "source_config",
 			TargetID:   sourceConfigApprovalTarget(source),
@@ -1909,10 +2005,20 @@ func (h *handler) mcpToolCall(w http.ResponseWriter, r *http.Request, id any, pa
 		if !h.requireAccess(w, r, authActionWrite, source.Scope) {
 			return
 		}
+		if strings.TrimSpace(stringArg(args, "trigger_type")) == "backfill" && !h.requireRiskApproval(w, r, approvalRequirement{
+			Action:     "backfill",
+			Scope:      source.Scope,
+			TargetType: "source_config",
+			TargetID:   sourceConfigApprovalTarget(source),
+			ApprovalID: stringArg(args, "approval_id"),
+		}) {
+			return
+		}
 		result, err = h.db.EnqueueIngestionJob(r.Context(), store.EnqueueIngestionJobInput{
 			SourceConfigID: sourceConfigID,
 			TriggerType:    stringArg(args, "trigger_type"),
 			CreatedBy:      stringArg(args, "created_by"),
+			ApprovalID:     stringArg(args, "approval_id"),
 			MaxAttempts:    intArg(args, "max_attempts", 0),
 			Metadata:       mapArg(args, "metadata"),
 		})
@@ -2023,6 +2129,43 @@ func (h *handler) mcpToolCall(w http.ResponseWriter, r *http.Request, id any, pa
 		}
 		h.auditLearningDecided(r.Context(), decided, "mcp")
 		result = map[string]any{"learning_proposal": decided, "apply_plan": buildLearningApplyPlan(decided, h.cfg.ApprovalMode)}
+	case "apply_learning_proposal":
+		proposalID := stringArg(args, "proposal_id")
+		proposal, getErr := h.db.GetLearningProposal(r.Context(), proposalID)
+		if getErr != nil {
+			err = getErr
+			break
+		}
+		if !h.requireAccess(w, r, authActionWrite, proposal.Scope) {
+			return
+		}
+		input := applyLearningProposalInput{
+			AppliedBy:  stringArg(args, "applied_by"),
+			ApprovalID: stringArg(args, "approval_id"),
+			Payload:    mapArg(args, "payload"),
+			Metadata:   mapArg(args, "metadata"),
+		}
+		if !h.requireLearningApplyApproval(w, r, proposal, input) {
+			return
+		}
+		applyResult, applyErr := h.applyLearningProposal(r.Context(), proposal, input)
+		if applyErr != nil {
+			err = applyErr
+			break
+		}
+		applied, markErr := h.db.MarkLearningProposalApplied(r.Context(), proposal.ID, store.ApplyLearningProposalInput{
+			AppliedBy:  firstNonEmpty(strings.TrimSpace(input.AppliedBy), proposal.ReviewedBy, proposal.CreatedBy, "mcp"),
+			ApprovalID: firstNonEmpty(strings.TrimSpace(input.ApprovalID), proposal.ApprovalID),
+			Metadata: mergeWebhookMetadata(input.Metadata, map[string]any{
+				"apply_result": applyResult,
+			}),
+		})
+		if markErr != nil {
+			err = markErr
+			break
+		}
+		h.auditLearningApplied(r.Context(), applied, "mcp", applyResult)
+		result = map[string]any{"learning_proposal": applied, "apply_plan": buildLearningApplyPlan(applied, h.cfg.ApprovalMode), "apply_result": applyResult}
 	case "request_approval":
 		scope := stringArg(args, "scope")
 		if !h.requireAccess(w, r, authActionWrite, scope) {
@@ -2081,6 +2224,7 @@ func mcpTools() []map[string]any {
 				"source_type":       stringSchema(),
 				"authority":         stringSchema(),
 				"authority_score":   map[string]any{"type": "number", "minimum": 0, "maximum": 1},
+				"approval_id":       stringSchema(),
 				"metadata":          map[string]any{"type": "object"},
 				"source_updated_at": stringSchema(),
 				"continue_on_error": map[string]any{"type": "boolean"},
@@ -2360,7 +2504,7 @@ func mcpTools() []map[string]any {
 		},
 		{
 			"name":        "upsert_source_config",
-			"description": "Create or update a source config. Core worker scheduling supports markdown, local_repo, git_repo, and mcp sources. The mcp source type calls a configured HTTP MCP tool that returns normalized Abra documents. Deployment overlays may store other source types and own their scheduling. Trusted authority changes require approval when enforcement is active.",
+			"description": "Create or update a source config. Core worker scheduling supports markdown, local_repo, git_repo, and mcp sources. The mcp source type calls a configured HTTP MCP tool that returns normalized Abra documents. Deployment overlays may store other source types and own their scheduling. Connector enablement and trusted authority changes may require approval when enforcement is active.",
 			"inputSchema": objectSchema([]string{"scope", "source_type", "name"}, map[string]any{
 				"id":               stringSchema(),
 				"scope":            stringSchema(),
@@ -2377,6 +2521,29 @@ func mcpTools() []map[string]any {
 				"metadata":         map[string]any{"type": "object"},
 				"created_by":       stringSchema(),
 				"approval_id":      stringSchema(),
+			}),
+		},
+		{
+			"name":        "validate_mcp_source",
+			"description": "Dry-run a user-owned HTTP MCP source tool and validate that it returns normalized Abra documents without creating a source config or queueing ingestion.",
+			"inputSchema": objectSchema([]string{"scope", "tool"}, map[string]any{
+				"id":                   stringSchema(),
+				"scope":                stringSchema(),
+				"name":                 stringSchema(),
+				"base_url":             stringSchema(),
+				"mcp_url":              stringSchema(),
+				"server_url":           stringSchema(),
+				"tool":                 stringSchema(),
+				"arguments":            map[string]any{"type": "object"},
+				"connector_kind":       stringSchema(),
+				"authority":            stringSchema(),
+				"authority_score":      map[string]any{"type": "number", "minimum": 0, "maximum": 1},
+				"document_source_type": stringSchema(),
+				"bearer_token_env":     stringSchema(),
+				"header_env":           map[string]any{"type": "object"},
+				"config":               map[string]any{"type": "object"},
+				"metadata":             map[string]any{"type": "object"},
+				"approval_id":          stringSchema(),
 			}),
 		},
 		{
@@ -2412,6 +2579,7 @@ func mcpTools() []map[string]any {
 				"source_config_id": stringSchema(),
 				"trigger_type":     map[string]any{"type": "string", "enum": []string{"manual", "schedule", "webhook", "backfill", "revalidate"}},
 				"created_by":       stringSchema(),
+				"approval_id":      stringSchema(),
 				"max_attempts":     map[string]any{"type": "integer", "minimum": 1, "maximum": 20},
 				"metadata":         map[string]any{"type": "object"},
 			}),
@@ -2484,6 +2652,17 @@ func mcpTools() []map[string]any {
 			}),
 		},
 		{
+			"name":        "apply_learning_proposal",
+			"description": "Apply an accepted learning proposal through Abra's first-party executor, then mark the proposal applied. Requires write access and any approval required by the apply plan.",
+			"inputSchema": objectSchema([]string{"proposal_id"}, map[string]any{
+				"proposal_id": stringSchema(),
+				"applied_by":  stringSchema(),
+				"approval_id": stringSchema(),
+				"payload":     map[string]any{"type": "object"},
+				"metadata":    map[string]any{"type": "object"},
+			}),
+		},
+		{
 			"name":        "request_approval",
 			"description": "Create an operator approval request for risky agent writes or source changes.",
 			"inputSchema": objectSchema([]string{"action", "scope", "reason"}, map[string]any{
@@ -2503,7 +2682,7 @@ func mcpTools() []map[string]any {
 
 func mcpToolTraceName(name string) string {
 	switch name {
-	case "recall", "ingest_document", "ingest_documents", "remember_claim", "capture_observation", "list_observations", "challenge", "forget", "brain_sources", "brain_summaries", "brain_think", "memory_health", "discover_scopes", "rebuild_summaries", "policy_plan", "working_memory_compose", "list_conflicts", "resolve_conflict", "upsert_acl_policy", "list_acl_policies", "acl_decision", "upsert_agent_policy", "list_agent_policies", "agent_policy_decision", "upsert_agent_profile", "list_agent_profiles", "upsert_source_config", "list_source_configs", "get_source_config", "set_source_config_status", "enqueue_ingestion_job", "list_ingestion_jobs", "retry_ingestion_job", "cancel_ingestion_job", "propose_learning", "list_learning_proposals", "decide_learning_proposal", "request_approval":
+	case "recall", "ingest_document", "ingest_documents", "remember_claim", "capture_observation", "list_observations", "challenge", "forget", "brain_sources", "brain_summaries", "brain_think", "memory_health", "discover_scopes", "rebuild_summaries", "policy_plan", "working_memory_compose", "list_conflicts", "resolve_conflict", "upsert_acl_policy", "list_acl_policies", "acl_decision", "upsert_agent_policy", "list_agent_policies", "agent_policy_decision", "upsert_agent_profile", "list_agent_profiles", "upsert_source_config", "validate_mcp_source", "list_source_configs", "get_source_config", "set_source_config_status", "enqueue_ingestion_job", "list_ingestion_jobs", "retry_ingestion_job", "cancel_ingestion_job", "propose_learning", "list_learning_proposals", "decide_learning_proposal", "apply_learning_proposal", "request_approval":
 		return name
 	default:
 		return "unknown"
@@ -2553,6 +2732,7 @@ func documentSchemaProperties() map[string]any {
 		"source_updated_at": stringSchema(),
 		"authority":         stringSchema(),
 		"authority_score":   map[string]any{"type": "number", "minimum": 0, "maximum": 1},
+		"approval_id":       stringSchema(),
 		"metadata":          map[string]any{"type": "object"},
 	}
 }
@@ -2592,6 +2772,23 @@ func mapArg(args map[string]any, key string) map[string]any {
 	return raw
 }
 
+func stringMapArg(args map[string]any, key string) map[string]string {
+	raw, ok := args[key].(map[string]any)
+	if !ok {
+		return nil
+	}
+	values := map[string]string{}
+	for rawKey, rawValue := range raw {
+		key := strings.TrimSpace(rawKey)
+		value, _ := rawValue.(string)
+		value = strings.TrimSpace(value)
+		if key != "" && value != "" {
+			values[key] = value
+		}
+	}
+	return values
+}
+
 func mcpDocumentInput(args map[string]any, defaults map[string]any) brain.IngestDocumentInput {
 	metadata := mergeWebhookMetadata(mapArg(defaults, "metadata"), mapArg(args, "metadata"))
 	authority := firstNonEmpty(stringArg(args, "authority"), stringArg(defaults, "authority"))
@@ -2610,6 +2807,7 @@ func mcpDocumentInput(args map[string]any, defaults map[string]any) brain.Ingest
 		Scope:           firstNonEmpty(stringArg(args, "scope"), stringArg(defaults, "scope")),
 		Content:         stringArg(args, "content"),
 		SourceUpdatedAt: firstNonEmpty(stringArg(args, "source_updated_at"), stringArg(defaults, "source_updated_at")),
+		ApprovalID:      firstNonEmpty(stringArg(args, "approval_id"), stringArg(defaults, "approval_id")),
 		Metadata:        metadata,
 	}
 }

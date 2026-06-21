@@ -22,8 +22,16 @@ To move an observation into review without trusting it, create a learning propos
 
 ```sh
 abra observe "Agents should rerun release checks before tagging" --scope repo:demo --propose --source-url file://release-runbook.md
+abra observe conversation --file transcript.md --scope repo:demo --propose
 abra observations propose <observation-id> --scope repo:demo --claim "Agents should rerun release checks before tagging." --source-url file://release-runbook.md
 ```
+
+`observe conversation` is the CLI transcript adapter for governed self-learning:
+it accepts `User:` / `Assistant:` plain text or JSON `messages`, captures
+preference-like user turns as raw `preference` observations by default, and
+queues proposals with `--propose` without writing trusted memory. Use
+`--all-turns` only when a gateway intentionally wants full episodic transcript
+capture.
 
 MCP clients use the existing `propose_learning` tool with `target_type="observation"` and `target_id="<observation-id>"`. Accepted proposals return an apply plan; they still do not auto-write claims.
 
@@ -37,7 +45,7 @@ Agents / agent runtimes
       -> Auto-ingestion Worker
 ```
 
-Source systems are ingested through the API, signed webhooks, or `source_configs` consumed by the worker. The OSS build supports generic document ingestion, local repo ingestion, provider-neutral remote Git ingestion, and MCP-backed sources that call an existing HTTP MCP tool returning normalized Abra documents. Deployment extensions can add event connectors for Confluence, Jira, Slack decisions, Drive, or other systems by exposing an MCP document-export tool or pushing normalized documents into Abra.
+Source systems are ingested through the API, signed webhooks, or `source_configs` consumed by the worker. The OSS build supports generic document ingestion, local repo ingestion, provider-neutral remote Git ingestion, and MCP-backed sources that call an existing HTTP MCP tool returning normalized Abra documents. Use `abra source mcp --dry-run` to validate a user-owned MCP export tool before registering it. Deployment extensions can add event connectors for Confluence, Jira, Slack decisions, Drive, or other systems by exposing an MCP document-export tool or pushing normalized documents into Abra.
 
 ## 3-Minute CLI Install
 
@@ -221,11 +229,12 @@ the launching shell. To avoid scope mismatches, run this in each project:
 abra agents bootstrap --agent codex
 ```
 
-The manual bootstrap path is:
+The manual setup path is:
 
 ```sh
 abra scope
-abra ingest . --code --scope <scope-from-abra-scope>
+abra agents verify . --scope <scope-from-abra-scope>
+abra ingest . --code --scope <scope-from-abra-scope>   # only if verify reports missing scope or empty memory
 abra agents verify . --scope <scope-from-abra-scope>
 ```
 
@@ -242,7 +251,7 @@ reports that the exact scope is missing or source-backed memory is empty.
 Prompt pattern:
 
 ```text
-Use Abra MCP first. Exact scope: repo:<project>. Call discover_scopes with expected_scope="repo:<project>", then call working_memory_compose with task=<current task>, scope="repo:<project>", and agent="codex" before answering or changing code. If Abra MCP tools are unavailable, run abra doctor, fix the MCP/token warning, fully restart the AI client, and retry before re-ingesting. If discover_scopes does not show repo:<project> or working_memory_compose returns no source-backed context, run abra scope, ingest the project with that exact scope, rerun abra agents verify . --scope repo:<project> --agent codex, then retry with this exact scope.
+Use Abra MCP first. Exact scope: repo:<project>. Call discover_scopes with expected_scope="repo:<project>", then call working_memory_compose with task=<current task>, scope="repo:<project>", and agent="codex" before answering or changing code. If Abra MCP tools are unavailable or the AI client says Abra has no context, run abra agents verify . --scope repo:<project> --agent codex --json first. Run abra doctor and repair MCP/API/token/model readiness when verify reports readiness errors; when server_ready=true but agent_ready=false, reinstall/restart the AI client MCP integration. Re-ingest only when verify proves the exact scope is missing or source-backed memory is empty, then rerun verify with this exact scope.
 ```
 
 Stop the stack and the default local embedding runner:
@@ -571,8 +580,8 @@ MCP prompts:
 MCP tools:
 
 - `recall(query, scope, limit?, include_unverified?)`
-- `ingest_document(source_type, source_url, title, scope, content, source_id?, source_updated_at?, authority?, authority_score?, metadata?)`
-- `ingest_documents(documents, scope?, source_type?, source_updated_at?, authority?, authority_score?, metadata?, continue_on_error?)`
+- `ingest_document(source_type, source_url, title, scope, content, source_id?, source_updated_at?, authority?, authority_score?, approval_id?, metadata?)`
+- `ingest_documents(documents, scope?, source_type?, source_updated_at?, authority?, authority_score?, approval_id?, metadata?, continue_on_error?)`
 - `remember_claim(claim, scope, source_url?, source_type?, authority?)`
 - `capture_observation(scope, observation_text, observation_type?, status?, source_url?, source_type?, source_id?, observed_at?, created_by?, approval_id?, value?, metadata?)`
 - `list_observations(scope, query?, observation_type?, status?, since?, until?, limit?)`
@@ -597,10 +606,11 @@ MCP tools:
 - `upsert_agent_profile(scope, profile_key, display_name, agent_type?, status?, principal_ref?, default_scope?, allowed_scopes?, denied_scopes?, permissions?, memory_preferences?, created_by?, metadata?, approval_id?)`
 - `list_agent_profiles(scope, status?, limit?)`
 - `upsert_source_config(scope, source_type, name, id?, base_url?, connector_kind?, status?, authority?, authority_score?, config?, metadata?, created_by?, approval_id?)`
+- `validate_mcp_source(scope, tool, id?, name?, base_url?, mcp_url?, server_url?, arguments?, connector_kind?, authority?, authority_score?, document_source_type?, bearer_token_env?, header_env?, config?, metadata?, approval_id?)`
 - `list_source_configs(scope, limit?)`
 - `get_source_config(source_config_id)`
 - `set_source_config_status(source_config_id, status, created_by?, approval_id?, metadata?)`
-- `enqueue_ingestion_job(source_config_id, trigger_type?, created_by?, max_attempts?, metadata?)`
+- `enqueue_ingestion_job(source_config_id, trigger_type?, created_by?, approval_id?, max_attempts?, metadata?)`
 - `list_ingestion_jobs(scope, source_config_id?, limit?)`
 - `retry_ingestion_job(job_id, created_by?, max_attempts?, metadata?)`
 - `cancel_ingestion_job(job_id, reason?, created_by?, metadata?)`
@@ -636,6 +646,7 @@ MCP tools:
 - `POST /learning/proposals/:proposalId/decide`
 - `GET /sources/configs`
 - `POST /sources/configs`
+- `POST /sources/configs/validate`
 - `GET /sources/configs/:sourceConfigId`
 - `GET /ingestion/jobs`
 - `POST /ingestion/jobs`
@@ -943,7 +954,7 @@ Default agent behavior should be conservative:
 - Claims without a source remain `unverified` and must not be presented as settled fact.
 - Source-backed ingestion and claim writes run deterministic contradiction checks for supported policy assertions and open conflicts when incompatible memory is found.
 - Agents may challenge claims when a newer or stronger source conflicts with memory.
-- Forgetting, broad-scope writes, source authority changes, ACL changes, connector enables, and backfills are risky operations. Abra records approval requests through HTTP and MCP, and `ABRA_APPROVAL_MODE=enforce` makes first-class risky memory endpoints reject requests without a matching approved `approval_id`.
+- Forgetting, broad-scope writes, direct ingestion writes, source authority changes, ACL changes, connector enables, and backfills are risky operations. Abra records approval requests through HTTP and MCP, and `ABRA_APPROVAL_MODE=enforce` makes first-class risky memory endpoints reject requests without a matching approved `approval_id`.
 - Keep `ABRA_APPROVAL_MODE=advisory` for permissive local development. Use `enforce` for production agent credentials, and still handle deployment-specific ACL, connector, and backfill gates in an agent gateway or private overlay.
 - Recall responses should include citations and uncertainty when claims are inferred, stale, or unverified.
 
@@ -975,7 +986,7 @@ Approval records are an operator review surface. In advisory mode they only make
 
 1. The agent calls `request_approval` or `POST /approvals` with `action`, `scope`, `reason`, optional target fields, and a payload describing the proposed change.
 2. The operator lists pending requests with `GET /approvals?scope=...&status=pending`, verifies source evidence, scope, blast radius, and requester identity, then approves or rejects the request.
-3. If approved and `ABRA_APPROVAL_MODE=enforce` or a stored agent-action policy returns `require_review`, the caller retries the risky operation with `approval_id`. Supported gates are `agent_write` for `POST /claims`, `forget_claim`, `challenge_claim`, `backfill`, `acl_change`, and `source_authority_change` for trusted source config writes.
+3. If approved and `ABRA_APPROVAL_MODE=enforce` or a stored agent-action policy returns `require_review`, the caller retries the risky operation with `approval_id`. Supported gates are `agent_write` for `POST /claims`, `POST /ingest/documents`, MCP `ingest_document(s)`, `forget_claim`, `challenge_claim`, `backfill`, `acl_change`, `connector_enable` for active source config writes/resume, and `source_authority_change` for trusted source config writes.
 4. The operator records the approval ID, operation request ID, and result in incident or change notes.
 
 Do not give autonomous agents all-scope `admin` credentials. Give them scoped writer credentials with approval enforcement enabled, or request-only wrapper tools when a private overlay owns the final operation.
@@ -990,9 +1001,9 @@ The OSS surface is generic document ingestion through `POST /ingest/documents` o
 - Preserve ACL and scope metadata before records become available to agents.
 - Keep connector-specific auth and normalization in a private overlay, fork, or MCP source tool.
 
-Worker runs are written to `ingestion_jobs` and exposed through `GET /ingestion/jobs`. Signed webhook documents also create durable queued jobs so slow embedding providers do not block webhook responses. Operators and agent gateways can manually enqueue a source with `POST /ingestion/jobs` or MCP `enqueue_ingestion_job`, list jobs with `list_ingestion_jobs`, retry failed/canceled jobs with `POST /ingestion/jobs/:jobId/retry` or MCP `retry_ingestion_job`, and cancel queued/retry jobs with `POST /ingestion/jobs/:jobId/cancel` or MCP `cancel_ingestion_job`. Source configs can be written and listed through both HTTP and MCP (`upsert_source_config`, `list_source_configs`), and read directly over HTTP with `GET /sources/configs/:sourceConfigId`. Source configs also keep the latest success/error timestamps for quick operator checks over HTTP or MCP. Source config upserts write `source_config.upserted` audit events; pause/resume status changes write `source_config.status_changed` events so operators can review lifecycle changes through `GET /audit/events`.
+Worker runs are written to `ingestion_jobs` and exposed through `GET /ingestion/jobs`. Signed webhook documents also create durable queued jobs so slow embedding providers do not block webhook responses. Operators and agent gateways can manually enqueue a source with `POST /ingestion/jobs` or MCP `enqueue_ingestion_job`; backfill triggers require `approval_id` when approval enforcement or stored agent policy requires review. They can list jobs with `list_ingestion_jobs`, retry failed/canceled jobs with `POST /ingestion/jobs/:jobId/retry` or MCP `retry_ingestion_job`, and cancel queued/retry jobs with `POST /ingestion/jobs/:jobId/cancel` or MCP `cancel_ingestion_job`. Source configs can be validated, written, and listed through both HTTP and MCP (`POST /sources/configs/validate`, `validate_mcp_source`, `upsert_source_config`, `list_source_configs`), and read directly over HTTP with `GET /sources/configs/:sourceConfigId`. Source configs also keep the latest success/error timestamps for quick operator checks over HTTP or MCP. Source config upserts write `source_config.upserted` audit events; pause/resume status changes write `source_config.status_changed` events so operators can review lifecycle changes through `GET /audit/events`.
 
-From the CLI, inspect connector health with `abra sources status <source-config-id>` and job history with `abra sources logs <source-config-id>`. Queue an existing source again with `abra sources sync <source-config-id> --scope <scope> --wait --wait-timeout 10m`, or record an explicit historical reprocess with `abra sources backfill <source-config-id> --scope <scope> --wait --wait-timeout 10m`. Manual sync and backfill bypass source due checks so operators can force a refresh after an incident, source migration, credential rotation, or normalization change. Pause or resume a source without rewriting its connector config with `abra sources pause <source-config-id>` and `abra sources resume <source-config-id> --approval-id <approval-id>`; resume may require approval when enforcement is active.
+From the CLI, inspect connector health with `abra sources status <source-config-id>` and job history with `abra sources logs <source-config-id>`. Queue an existing source again with `abra sources sync <source-config-id> --scope <scope> --wait --wait-timeout 10m`, or record an explicit historical reprocess with `abra sources backfill <source-config-id> --scope <scope> --approval-id <approval-id> --wait --wait-timeout 10m`. Manual sync and backfill bypass source due checks so operators can force a refresh after an incident, source migration, credential rotation, or normalization change. Pause or resume a source without rewriting its connector config with `abra sources pause <source-config-id>` and `abra sources resume <source-config-id> --approval-id <approval-id>`; active source config writes and resume may require approval when enforcement is active.
 
 ### Git/local-repo source configs
 
@@ -1000,7 +1011,7 @@ OSS repo ingestion supports mounted paths through `local_repo` and provider-neut
 
 Set `include_code=true` to add deterministic structural code graph extraction. Code ingestion is opt-in so large repositories do not get indexed accidentally. Code files create chunks, graph relations, and deterministic summaries; they do not create verified natural-language claims from raw source text or comments. The extractor records file, route, package, component, symbol, import, export, dependency, and Go package/symbol relations without calling an LLM.
 
-Core scheduled sources are `markdown`, `local_repo`, `git_repo`, and `mcp`. `markdown` and `local_repo` must point at a local path or `file://` URL visible to the worker. `git_repo` accepts `base_url` or `config.repository_url` / `config.remote_url` / `config.git_remote_url`, plus optional `branch`, `git_depth`, `provider`, and `project_path`. `mcp` accepts `base_url` or `config.server_url`, `config.tool`, optional `config.arguments`, optional `config.bearer_token_env`, and optional `config.document_source_type`; the MCP tool must return normalized Abra documents as JSON in `structuredContent` or a text content item. Source configs can set `freshness_policy.max_age_seconds` / `max_age_minutes` / `max_age_hours` / `max_age_days` and `schedule_cron` values of `@hourly`, `@daily`, or `@every <N><s|m|h|d>`. The scheduler only queues due sources and skips sources with active queued, retry, or running jobs. `WORKER_CONCURRENCY` runs multiple claimed ingestion jobs in one worker process while serializing jobs with the same source ID; keep it at `1` for the default local Qwen runner and raise it only after provider and database capacity are measured. Private connector overlays are still the right place for Confluence, Jira, Slack, provider-specific webhook diffing, ACL normalization, and token rotation when those systems do not already expose an MCP document-export tool; after normalization they can push documents through `POST /ingest/documents` / `POST /ingest/webhooks` or be called through an `mcp` source config.
+Core scheduled sources are `markdown`, `local_repo`, `git_repo`, and `mcp`. `markdown` and `local_repo` must point at a local path or `file://` URL visible to the worker. `git_repo` accepts `base_url` or `config.repository_url` / `config.remote_url` / `config.git_remote_url`, plus optional `branch`, `git_depth`, `provider`, and `project_path`. `mcp` accepts `base_url` or `config.server_url`, `config.tool`, optional `config.arguments`, optional `config.bearer_token_env`, optional `config.header_env`, and optional `config.document_source_type`; the MCP tool must return normalized Abra documents as JSON in `structuredContent` or a text content item. Before registering a user-owned MCP tool as a source, run `abra source mcp --scope <scope> --mcp-url <url> --tool <tool> --dry-run`, call `POST /sources/configs/validate`, or use MCP `validate_mcp_source`; validation calls the upstream MCP server, validates the normalized documents, and exits without creating a source config or queueing a job. Server-side validation that uses `bearer_token_env` or `header_env` can require `approval_id` for `connector_enable` when approval enforcement is active. Source configs can set `freshness_policy.max_age_seconds` / `max_age_minutes` / `max_age_hours` / `max_age_days` and `schedule_cron` values of `@hourly`, `@daily`, or `@every <N><s|m|h|d>`. The scheduler only queues due sources and skips sources with active queued, retry, or running jobs. `WORKER_CONCURRENCY` runs multiple claimed ingestion jobs in one worker process while serializing jobs with the same source ID; keep it at `1` for the default local Qwen runner and raise it only after provider and database capacity are measured. Private connector overlays are still the right place for Confluence, Jira, Slack, provider-specific webhook diffing, ACL normalization, and token rotation when those systems do not already expose an MCP document-export tool; after normalization they can push documents through `POST /ingest/documents` / `POST /ingest/webhooks` or be called through an `mcp` source config.
 
 Non-core source types such as `jira`, `confluence`, or deployment-specific names may still be stored as overlay source configs, but the OSS worker will not schedule those vendor-specific types directly. Use `mcp` when an existing MCP server can export normalized documents; otherwise the overlay owns discovery, credentials, ACL normalization, diffing, and retries while Abra owns the durable memory contract after normalized documents arrive.
 

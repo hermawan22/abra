@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 	"time"
 
 	ingestpkg "github.com/hermawan22/abra/internal/ingest"
+	jobspkg "github.com/hermawan22/abra/internal/jobs"
 	internalversion "github.com/hermawan22/abra/internal/version"
 )
 
@@ -702,8 +704,8 @@ func up(ctx context.Context, args cliArgs) error {
 	if err := ensureEnv(args); err != nil {
 		return err
 	}
-	if _, err := exec.LookPath("docker"); err != nil {
-		return errors.New("missing required command: docker")
+	if err := ensureDockerDaemon(); err != nil {
+		return err
 	}
 	env, err := filepath.Abs(envPath(args))
 	if err != nil {
@@ -851,6 +853,7 @@ func status(ctx context.Context, args cliArgs) error {
 func doctor(ctx context.Context, args cliArgs) error {
 	checks := []map[string]any{}
 	checks = append(checks, commandCheck("docker"))
+	checks = append(checks, dockerDaemonCheck())
 	checks = append(checks, commandCheck("curl"))
 	checks = append(checks, commandCheck("sh"))
 	checks = append(checks, map[string]any{"name": "go_native_cli", "ok": true, "version": version})
@@ -890,6 +893,50 @@ func commandCheck(name string) map[string]any {
 		return map[string]any{"name": "command_" + name, "ok": true, "path": path}
 	}
 	return map[string]any{"name": "command_" + name, "ok": false, "hint": "install " + name}
+}
+
+func ensureDockerDaemon() error {
+	if _, err := exec.LookPath("docker"); err != nil {
+		return errors.New("missing required command: docker")
+	}
+	output, err := commandOutput("docker", "info", "--format", "{{.ServerVersion}}")
+	if err == nil {
+		return nil
+	}
+	detail := strings.TrimSpace(output)
+	if detail != "" {
+		detail = ": " + detail
+	}
+	return fmt.Errorf("Docker daemon is not reachable%s\nStart Docker Desktop or OrbStack, then rerun `abra up`.\nDiagnose with `abra doctor`.", detail)
+}
+
+func dockerDaemonCheck() map[string]any {
+	if _, err := exec.LookPath("docker"); err != nil {
+		return map[string]any{
+			"name":   "docker_daemon",
+			"ok":     false,
+			"detail": "docker command is not installed",
+			"hint":   "install Docker Desktop or OrbStack",
+		}
+	}
+	output, err := commandOutput("docker", "info", "--format", "{{.ServerVersion}}")
+	if err != nil {
+		detail := strings.TrimSpace(output)
+		if detail == "" {
+			detail = err.Error()
+		}
+		return map[string]any{
+			"name":   "docker_daemon",
+			"ok":     false,
+			"detail": detail,
+			"hint":   "start Docker Desktop or OrbStack, then run: abra up",
+		}
+	}
+	return map[string]any{
+		"name":   "docker_daemon",
+		"ok":     true,
+		"detail": "server_version=" + strings.TrimSpace(output),
+	}
 }
 
 func envFileCheck(path string) map[string]any {
@@ -1495,6 +1542,9 @@ func ingestCommand(ctx context.Context, args cliArgs) error {
 		"content":     content,
 		"authority":   flag(args, "authority", "official-doc"),
 	}
+	if approvalID := flag(args, "approval-id", ""); approvalID != "" {
+		body["approval_id"] = approvalID
+	}
 	result, err := postJSONWithTimeout(ctx, args, "/ingest/documents", body, cliTimeout(args, defaultIngestTimeout))
 	if err != nil {
 		return friendlyProviderError(err)
@@ -1753,6 +1803,11 @@ func sourceIngest(ctx context.Context, args cliArgs) error {
 		if envName := flag(args, "bearer-token-env", ""); envName != "" {
 			config["bearer_token_env"] = envName
 		}
+		if headerEnv, err := parseHeaderEnvFlag(flag(args, "header-env", "")); err != nil {
+			return err
+		} else if len(headerEnv) > 0 {
+			config["header_env"] = headerEnv
+		}
 		if docSourceType := flag(args, "document-source-type", ""); docSourceType != "" {
 			config["document_source_type"] = docSourceType
 		}
@@ -1767,6 +1822,9 @@ func sourceIngest(ctx context.Context, args cliArgs) error {
 		scopeHint = abs
 	}
 	scope := scopeOrDefault(args, scopeHint)
+	if sourceType == "mcp" && (boolFlag(args, "dry-run") || boolFlag(args, "validate")) {
+		return validateMCPSource(ctx, args, scope, sourceURL, config)
+	}
 	if sourceType != "mcp" {
 		if include := csv(flag(args, "include", "")); len(include) > 0 {
 			config["include"] = include
@@ -1835,6 +1893,7 @@ func sourceIngest(ctx context.Context, args cliArgs) error {
 		"source_config_id": sourceID,
 		"trigger_type":     flag(args, "trigger", "manual"),
 		"created_by":       flag(args, "created-by", "abra-cli"),
+		"approval_id":      flag(args, "approval-id", ""),
 		"max_attempts":     intFlag(args, "max-attempts", 3),
 		"metadata":         map[string]any{"channel": "cli"},
 	})
@@ -1926,6 +1985,7 @@ func enqueueSourceJob(ctx context.Context, args cliArgs, command, triggerType st
 		"source_config_id": sourceID,
 		"trigger_type":     triggerType,
 		"created_by":       flag(args, "created-by", "abra-cli"),
+		"approval_id":      flag(args, "approval-id", ""),
 		"max_attempts":     intFlag(args, "max-attempts", 3),
 		"metadata":         map[string]any{"channel": "cli", "command": "sources " + command},
 	})
@@ -2156,12 +2216,53 @@ func listJobs(ctx context.Context, args cliArgs) error {
 	return nil
 }
 
+func validateMCPSource(ctx context.Context, args cliArgs, scope, sourceURL string, config map[string]any) error {
+	source := jobspkg.SourceConfig{
+		ID:             "cli-dry-run",
+		Scope:          scope,
+		SourceType:     ingestpkg.SourceTypeMCP,
+		Name:           flag(args, "name", "mcp-dry-run"),
+		BaseURL:        sourceURL,
+		ConnectorKind:  flag(args, "connector", "mcp"),
+		Authority:      flag(args, "authority", "manual-unverified"),
+		AuthorityScore: floatFlag(args, "authority-score", 0.35),
+		Config:         config,
+		Metadata:       map[string]any{"channel": "cli", "dry_run": true},
+	}
+	timeout := cliTimeout(args, defaultHTTPTimeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	docs, err := jobspkg.ValidateMCPSource(ctx, source)
+	if err != nil {
+		return err
+	}
+	if boolFlag(args, "json") {
+		return printJSON(map[string]any{"status": "ok", "documents": docs, "count": len(docs)})
+	}
+	fmt.Printf("MCP source valid: %d document(s)\n", len(docs))
+	for i, doc := range docs {
+		if i >= 5 {
+			fmt.Printf("- ... %d more document(s)\n", len(docs)-i)
+			break
+		}
+		fmt.Printf("- %s  %s  %s  bytes=%d\n", doc.Scope, doc.SourceType, doc.Title, doc.ContentBytes)
+	}
+	return nil
+}
+
 func ingest(ctx context.Context, args cliArgs, body map[string]any) error {
 	_, err := postJSONWithTimeout(ctx, args, "/ingest/documents", body, cliTimeout(args, defaultIngestTimeout))
 	return err
 }
 
 func observe(ctx context.Context, args cliArgs) error {
+	if len(args.Rest) > 0 {
+		mode := strings.ToLower(strings.TrimSpace(args.Rest[0]))
+		if mode == "conversation" || mode == "transcript" {
+			args.Rest = args.Rest[1:]
+			return observeConversation(ctx, args)
+		}
+	}
 	text := strings.TrimSpace(strings.Join(args.Rest, " "))
 	if text == "" {
 		text = strings.TrimSpace(flag(args, "text", ""))
@@ -2221,6 +2322,287 @@ func observe(ctx context.Context, args cliArgs) error {
 	fmt.Println("status: " + stringValue(observation["status"], stringValue(body["status"], "raw")))
 	fmt.Println("trusted: no, promote through review before treating as a claim")
 	return nil
+}
+
+type conversationTurn struct {
+	Role    string
+	Content string
+	Index   int
+}
+
+func observeConversation(ctx context.Context, args cliArgs) error {
+	raw, sourceURL, err := conversationInput(args)
+	if err != nil {
+		return err
+	}
+	turns := parseConversationTurns(raw)
+	if len(turns) == 0 {
+		return errors.New("observe conversation found no transcript turns")
+	}
+	scope := scopeOrDefault(args, ".")
+	conversationID := firstNonEmpty(flag(args, "conversation-id", ""), stableConversationID(sourceURL, raw))
+	observations := []any{}
+	proposals := []any{}
+	for _, turn := range turns {
+		if !boolFlag(args, "all-turns") && !isPreferenceTurn(turn) {
+			continue
+		}
+		observationType := flag(args, "type", flag(args, "observation-type", "preference"))
+		if boolFlag(args, "all-turns") && flag(args, "type", flag(args, "observation-type", "")) == "" {
+			observationType = "conversation"
+		}
+		body := map[string]any{
+			"scope":            scope,
+			"observation_text": turn.Content,
+			"observation_type": observationType,
+			"status":           flag(args, "status", "raw"),
+			"authority":        flag(args, "authority", "conversation-unverified"),
+			"authority_score":  floatFlag(args, "authority-score", 0.3),
+			"confidence":       floatFlag(args, "confidence", 0.4),
+			"source_url":       sourceURL,
+			"source_type":      flag(args, "source-type", "conversation"),
+			"source_id":        firstNonEmpty(flag(args, "source-id", ""), conversationID),
+			"created_by":       flag(args, "created-by", "abra-cli"),
+			"approval_id":      flag(args, "approval-id", ""),
+			"value": map[string]any{
+				"role":            turn.Role,
+				"content":         turn.Content,
+				"turn_index":      turn.Index,
+				"conversation_id": conversationID,
+			},
+			"metadata": map[string]any{
+				"channel":         "cli",
+				"adapter":         "conversation",
+				"conversation_id": conversationID,
+				"turn_index":      turn.Index,
+				"role":            turn.Role,
+			},
+		}
+		result, err := postJSON(ctx, args, "/observations", body)
+		if err != nil {
+			return err
+		}
+		observations = append(observations, result["observation"])
+		if boolFlag(args, "propose") {
+			observation, _ := result["observation"].(map[string]any)
+			observationID := stringValue(observation["id"], "")
+			proposed, err := proposeObservation(ctx, args, observationID, turn.Content)
+			if err != nil {
+				return err
+			}
+			proposals = append(proposals, proposed["learning_proposal"])
+		}
+	}
+	if len(observations) == 0 {
+		return errors.New("observe conversation found no preference-like user turns; use --all-turns to capture every transcript turn")
+	}
+	if boolFlag(args, "json") {
+		payload := map[string]any{"observations": observations, "conversation_id": conversationID}
+		if boolFlag(args, "propose") {
+			payload["learning_proposals"] = proposals
+		}
+		return printJSON(payload)
+	}
+	fmt.Printf("Conversation observations captured: %d\n", len(observations))
+	if boolFlag(args, "propose") {
+		fmt.Printf("Conversation observations proposed: %d\n", len(proposals))
+		fmt.Println("trusted: no, accepted proposals still require explicit apply")
+	} else {
+		fmt.Println("trusted: no, promote through review before treating as claims")
+	}
+	fmt.Println("conversation: " + conversationID)
+	fmt.Println("scope: " + scope)
+	return nil
+}
+
+func conversationInput(args cliArgs) (string, string, error) {
+	sourceURL := strings.TrimSpace(flag(args, "source-url", ""))
+	file := firstNonEmpty(flag(args, "file", ""), flag(args, "transcript-file", ""))
+	if file != "" {
+		bytes, err := os.ReadFile(file)
+		if err != nil {
+			return "", "", err
+		}
+		if sourceURL == "" {
+			abs, err := filepath.Abs(file)
+			if err != nil {
+				return "", "", err
+			}
+			sourceURL = localFileURL(filepath.Dir(abs), filepath.Base(abs))
+		}
+		return string(bytes), sourceURL, nil
+	}
+	raw := strings.TrimSpace(flag(args, "text", ""))
+	if raw == "" {
+		raw = strings.TrimSpace(strings.Join(args.Rest, " "))
+	}
+	if raw == "" {
+		return "", "", errors.New("observe conversation requires --file, --text, or transcript text")
+	}
+	if sourceURL == "" {
+		sourceURL = "conversation://" + timestamp()
+	}
+	return raw, sourceURL, nil
+}
+
+func parseConversationTurns(raw string) []conversationTurn {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	if turns := parseJSONConversationTurns(raw); len(turns) > 0 {
+		return turns
+	}
+	lines := strings.Split(strings.ReplaceAll(raw, "\r\n", "\n"), "\n")
+	turns := []conversationTurn{}
+	current := conversationTurn{Role: "unknown"}
+	for _, line := range lines {
+		role, content, ok := splitConversationLine(line)
+		if ok {
+			if strings.TrimSpace(current.Content) != "" {
+				current.Index = len(turns)
+				current.Content = strings.TrimSpace(current.Content)
+				turns = append(turns, current)
+			}
+			current = conversationTurn{Role: role, Content: strings.TrimSpace(content)}
+			continue
+		}
+		if strings.TrimSpace(line) == "" && strings.TrimSpace(current.Content) == "" {
+			continue
+		}
+		if current.Content != "" {
+			current.Content += "\n"
+		}
+		current.Content += line
+	}
+	if strings.TrimSpace(current.Content) != "" {
+		current.Index = len(turns)
+		current.Content = strings.TrimSpace(current.Content)
+		turns = append(turns, current)
+	}
+	return turns
+}
+
+func parseJSONConversationTurns(raw string) []conversationTurn {
+	var payload any
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return nil
+	}
+	switch value := payload.(type) {
+	case []any:
+		return turnsFromJSONArray(value)
+	case map[string]any:
+		for _, key := range []string{"messages", "turns", "conversation"} {
+			if items, ok := value[key].([]any); ok {
+				return turnsFromJSONArray(items)
+			}
+		}
+	}
+	return nil
+}
+
+func turnsFromJSONArray(items []any) []conversationTurn {
+	turns := []conversationTurn{}
+	for _, raw := range items {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		role := firstNonEmpty(stringValue(item["role"], ""), stringValue(item["speaker"], ""), stringValue(item["author"], ""), "unknown")
+		content := firstNonEmpty(stringValue(item["content"], ""), stringValue(item["text"], ""), stringValue(item["message"], ""))
+		content = strings.TrimSpace(content)
+		if content == "" {
+			continue
+		}
+		turns = append(turns, conversationTurn{Role: normalizeConversationRole(role), Content: content, Index: len(turns)})
+	}
+	return turns
+}
+
+func splitConversationLine(line string) (string, string, bool) {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return "", "", false
+	}
+	idx := strings.Index(trimmed, ":")
+	if idx <= 0 {
+		return "", "", false
+	}
+	role := normalizeConversationRole(trimmed[:idx])
+	if !knownConversationRole(role) {
+		return "", "", false
+	}
+	return role, trimmed[idx+1:], true
+}
+
+func normalizeConversationRole(role string) string {
+	role = strings.ToLower(strings.TrimSpace(role))
+	switch role {
+	case "human", "customer", "operator":
+		return "user"
+	case "ai", "assistant", "agent", "codex":
+		return "assistant"
+	default:
+		return role
+	}
+}
+
+func knownConversationRole(role string) bool {
+	switch role {
+	case "user", "assistant", "system", "developer":
+		return true
+	default:
+		return false
+	}
+}
+
+func isPreferenceTurn(turn conversationTurn) bool {
+	if normalizeConversationRole(turn.Role) != "user" {
+		return false
+	}
+	text := strings.ToLower(turn.Content)
+	if hasPreferenceNegation(text) {
+		return false
+	}
+	for _, marker := range []string{
+		"i prefer", "i like", "i want", "i don't want", "i do not want",
+		"please", "my preference", "my taste", "style",
+		"saya prefer", "saya suka", "aku suka", "lebih suka", "preferensi",
+		"jangan", "tolong", "mending", "harusnya", "sebaiknya",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasPreferenceNegation(text string) bool {
+	for _, marker := range []string{
+		"no preference",
+		"not a preference",
+		"not preference",
+		"without preference",
+		"tanpa preferensi",
+		"bukan preferensi",
+		"tidak ada preferensi",
+		"nggak ada preferensi",
+		"gak ada preferensi",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func stableConversationID(sourceURL, raw string) string {
+	seed := firstNonEmpty(sourceURL, raw)
+	if len(seed) > 512 {
+		seed = seed[:512]
+	}
+	sum := sha256.Sum256([]byte(seed))
+	return "conversation-" + fmt.Sprintf("%x", sum[:8])
 }
 
 func listObservations(ctx context.Context, args cliArgs) error {
@@ -2314,7 +2696,7 @@ func proposeObservation(ctx context.Context, args cliArgs, observationID, candid
 	}
 	body := map[string]any{
 		"scope":         scope,
-		"proposal_type": flag(args, "proposal-type", flag(args, "type", "claim")),
+		"proposal_type": flag(args, "proposal-type", "claim"),
 		"title":         flag(args, "title", ""),
 		"rationale":     flag(args, "rationale", ""),
 		"target_type":   "observation",
@@ -2502,8 +2884,12 @@ func composeMemory(ctx context.Context, args cliArgs) error {
 	}
 	if len(stats) > 0 && intValue(stats["facts"])+intValue(stats["supporting_documents"])+intValue(stats["summaries"])+intValue(stats["graph_relations"]) == 0 {
 		fmt.Println("No source-backed context found for this scope.")
-		fmt.Println("Confirm the project scope: abra scope")
-		fmt.Println("Then ingest the project with that exact scope: abra ingest . --code --scope " + scope)
+		if composeResultHasReadinessWarning(result) {
+			fmt.Println("Retrieval or memory-health warnings are present; run `abra doctor` and `abra models status` before re-ingesting.")
+		} else {
+			fmt.Println("Confirm the project scope: abra scope")
+			fmt.Println("Then ingest the project with that exact scope: abra ingest . --code --scope " + scope)
+		}
 	}
 	return nil
 }
@@ -2618,7 +3004,7 @@ func scopeCommand(args cliArgs) error {
 				"think":           "abra think \"what should I know before changing this project?\" --scope " + scope,
 				"codex":           agentReadyPrompt(scope),
 				"compose":         "abra compose \"ship this change\" --scope " + scope + " --agent codex",
-				"troubleshooting": "If an AI client says Abra has no context, run agents_verify first. Reinstall/restart MCP when server_ready is true but agent_ready is false; ingest only when verify proves the exact scope or source-backed memory is missing.",
+				"troubleshooting": "If an AI client says Abra has no context, run agents_verify --json first. Run abra doctor and repair MCP/API/token/model readiness when verify reports readiness errors. Ingest only when verify proves the exact scope or source-backed memory is missing.",
 			},
 		})
 	}
@@ -2627,11 +3013,11 @@ func scopeCommand(args cliArgs) error {
 	fmt.Println("Bootstrap: abra agents bootstrap " + shellQuote(path) + " --agent codex --scope " + shellQuote(scope))
 	fmt.Println("MCP:    abra mcp install-codex")
 	fmt.Println("Agent:  abra agents init " + shellQuote(path) + " --agent codex --scope " + shellQuote(scope))
-	fmt.Println("Ingest: abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope))
 	fmt.Println("Check:  abra agents verify " + shellQuote(path) + " --scope " + shellQuote(scope))
+	fmt.Println("Ingest only if Check proves missing scope or empty memory: abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope))
 	fmt.Println("Think:  abra think \"what should I know before changing this project?\" --scope " + scope)
 	fmt.Println("Codex:  " + agentReadyPrompt(scope))
-	fmt.Println("Fix:    If Codex says Abra has no context, run Check first. Reinstall/restart MCP when server is ready but agent_ready=false; run Ingest only when Check proves missing scope or empty memory.")
+	fmt.Println("Fix:    If Codex says Abra has no context, run Check first. Run abra doctor for readiness errors, reinstall/restart MCP when server_ready=true but agent_ready=false, and ingest only when Check proves missing scope or empty memory.")
 	return nil
 }
 
@@ -2683,8 +3069,8 @@ func agentsCommand(ctx context.Context, args cliArgs) error {
 	} else {
 		fmt.Println("MCP:    abra mcp > .tmp/abra.mcp.json")
 	}
-	fmt.Println("Ingest: abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope))
 	fmt.Println("Check:  abra agents verify " + shellQuote(path) + " --scope " + shellQuote(scope) + " --agent " + shellQuote(agent))
+	fmt.Println("Ingest only if Check proves missing scope or empty memory: abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope))
 	fmt.Println("Then:   tell your AI agent to read AGENTS.md or CLAUDE.md before changing code.")
 	return nil
 }
@@ -2747,7 +3133,7 @@ func verifyAgentContext(ctx context.Context, args cliArgs, path, scope string) e
 	strict := boolFlag(args, "strict")
 	agent := normalizedAgentFlag(args)
 	checks := []map[string]any{
-		agentFileCheck(filepath.Join(path, "AGENTS.md"), scope, []string{"working_memory_compose", "discover_scopes", `expected_scope: "` + scope + `"`, "current task", `agent: "` + agent + `"`}),
+		agentFileCheck(filepath.Join(path, "AGENTS.md"), scope, []string{"working_memory_compose", "discover_scopes", `expected_scope: "` + scope + `"`, "current task", `agent: "` + agent + `"`, "agent_ready", "abra doctor", "ingest only when verify"}),
 		optionalAgentFileCheck(filepath.Join(path, "CLAUDE.md"), "@AGENTS.md"),
 	}
 	if filesOnly {
@@ -2885,7 +3271,7 @@ func agentReadyPrompt(scope string, agents ...string) string {
 	if len(agents) > 0 && strings.TrimSpace(agents[0]) != "" {
 		agent = strings.ToLower(strings.TrimSpace(agents[0]))
 	}
-	return `Use Abra MCP first. Exact scope: ` + scope + `. Call discover_scopes with expected_scope="` + scope + `", then call working_memory_compose with task=<current task>, scope="` + scope + `", and agent="` + agent + `" before answering or changing code. If Abra MCP tools are unavailable, run abra doctor, fix the MCP/token warning, fully restart the AI client, and retry before re-ingesting. If discover_scopes does not show ` + scope + ` or working_memory_compose returns no source-backed context, run abra scope, ingest the project with that exact scope, rerun abra agents verify . --scope ` + scope + ` --agent ` + agent + `, then retry with this exact scope.`
+	return `Use Abra MCP first. Exact scope: ` + scope + `. Call discover_scopes with expected_scope="` + scope + `", then call working_memory_compose with task=<current task>, scope="` + scope + `", and agent="` + agent + `" before answering or changing code. If Abra MCP tools are unavailable or the AI client says Abra has no context, run abra agents verify . --scope ` + scope + ` --agent ` + agent + ` --json first. Run abra doctor and repair MCP/API/token/model readiness when verify reports readiness errors; when server_ready=true but agent_ready=false, reinstall/restart the AI client MCP integration. Re-ingest only when verify proves the exact scope is missing or source-backed memory is empty, then rerun verify with this exact scope.`
 }
 
 func normalizedAgentFlag(args cliArgs) string {
@@ -2917,13 +3303,13 @@ func agentVerifyNextSteps(path, scope, agent string, ok, filesOnly bool, checks 
 	if hasFailedCheck(checks, "AGENTS.md") || hasFailedCheck(checks, "CLAUDE.md") {
 		steps = append(steps, "Run `abra agents init "+shellQuote(path)+" --agent "+shellQuote(agent)+" --scope "+shellQuote(scope)+"` if instruction files are missing or stale.")
 	}
-	if hasFailedCheck(checks, "mcp") || failedCheckHasError(checks, "scope_discovery") || failedCheckHasError(checks, "working_memory") {
+	if hasFailedCheck(checks, "mcp") || failedCheckHasError(checks, "scope_discovery") || failedCheckHasError(checks, "working_memory") || failedCheckHasReadinessIssue(checks, "working_memory") {
 		steps = append(steps,
 			"Run `abra doctor` to check API, MCP, token, and local model readiness.",
 			"If this is Codex, run `abra mcp install-codex`, fully quit and reopen Codex, then retry.",
 		)
 	}
-	if hasFailedCheckWithoutError(checks, "scope_discovery") || hasFailedCheckWithoutError(checks, "working_memory") {
+	if hasFailedCheckWithoutError(checks, "scope_discovery") || (hasFailedCheckWithoutError(checks, "working_memory") && !failedCheckHasReadinessIssue(checks, "working_memory")) {
 		steps = append(steps, "Run `abra ingest "+shellQuote(path)+" --code --scope "+shellQuote(scope)+"` only because verify proved the exact scope or source-backed memory is missing.")
 	}
 	if len(steps) == 0 {
@@ -2971,6 +3357,15 @@ func hasFailedCheck(checks []map[string]any, name string) bool {
 func failedCheckHasError(checks []map[string]any, name string) bool {
 	for _, check := range checks {
 		if stringValue(check["name"], "") == name && !boolValue(check["ok"], false) && stringValue(check["error"], "") != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func failedCheckHasReadinessIssue(checks []map[string]any, name string) bool {
+	for _, check := range checks {
+		if stringValue(check["name"], "") == name && !boolValue(check["ok"], false) && boolValue(check["readiness_issue"], false) {
 			return true
 		}
 	}
@@ -3114,12 +3509,37 @@ func workingMemoryContextCheck(ctx context.Context, args cliArgs, scope, agent s
 			"detail": fmt.Sprintf("facts=%d documents=%d summaries=%d graph=%d", facts, documents, summaries, graph),
 		}
 	}
+	if composeResultHasReadinessWarning(result) {
+		return map[string]any{
+			"name":            "working_memory",
+			"ok":              false,
+			"detail":          fmt.Sprintf("facts=%d documents=%d summaries=%d graph=%d with retrieval or memory-health warnings", facts, documents, summaries, graph),
+			"hint":            "run `abra doctor` and `abra models status`, then retry `abra agents verify`; re-ingest only if readiness is healthy and memory is still empty",
+			"readiness_issue": true,
+		}
+	}
 	return map[string]any{
 		"name":   "working_memory",
 		"ok":     false,
 		"detail": fmt.Sprintf("facts=%d documents=%d summaries=%d graph=%d", facts, documents, summaries, graph),
 		"hint":   "run `abra ingest . --code --scope " + scope + "`, then retry `abra agents verify . --scope " + scope + "`",
 	}
+}
+
+func composeResultHasReadinessWarning(result map[string]any) bool {
+	if lenSlice(result["retrieval_warnings"]) > 0 {
+		return true
+	}
+	if health, _ := result["memory_health"].(map[string]any); health != nil {
+		status := strings.ToLower(strings.TrimSpace(stringValue(health["status"], "")))
+		if status != "" && status != "healthy" {
+			return true
+		}
+		if lenSlice(health["signals"]) > 0 && status == "" {
+			return true
+		}
+	}
+	return false
 }
 
 func memoryContextCounts(result map[string]any) (facts, documents, summaries, graph int) {
@@ -3208,8 +3628,8 @@ Before answering architecture questions or changing code in this repository, use
 2. If discovering scopes first, call ` + "`discover_scopes`" + ` with ` + "`expected_scope: \"" + scope + "\"`" + ` so this repo is not hidden by unrelated scopes.
 3. Call ` + "`working_memory_compose`" + ` with the current task, scope ` + "`" + scope + "`" + `, and ` + "`agent: \"" + agent + "\"`" + ` before implementation work.
 4. Follow the returned ` + "`agent_decision`" + `, verification, memory health, conflicts, impact map, and validation plan.
-5. If Abra MCP tools are unavailable, run ` + "`abra doctor`" + `, fix the MCP/token warning, fully restart the AI client, and retry before re-ingesting.
-6. If the packet has no source-backed context or the exact scope is missing from discovery, run ` + "`abra scope`" + `, then ` + "`abra ingest . --code --scope " + scope + "`" + `, then ` + "`abra agents verify . --scope " + scope + " --agent " + agent + "`" + `, and retry the MCP call.
+5. If Abra MCP tools are unavailable or an AI client says Abra has no context, run ` + "`abra agents verify . --scope " + scope + " --agent " + agent + " --json`" + ` first, then run ` + "`abra doctor`" + ` and fix MCP/API/token/model readiness before re-ingesting.
+6. If ` + "`server_ready=true`" + ` but ` + "`agent_ready=false`" + `, reinstall/restart the AI client's MCP integration, fully restart the AI client, and retry before re-ingesting. Run ingest only when verify proves the exact scope is missing or source-backed memory is empty: ` + "`abra ingest . --code --scope " + scope + "`" + `.
 7. Do not include secrets, API keys, local tokens, or private business context in committed files.
 `
 }
@@ -3560,7 +3980,8 @@ func printReady(args cliArgs) {
 	fmt.Println("Next:      cd /path/to/project && abra agents bootstrap --agent codex")
 	fmt.Println("Restart:   fully quit and reopen Codex Desktop after bootstrap")
 	fmt.Println(`Then:      abra think "What should I know before changing this project?" --scope <scope>`)
-	fmt.Println("Manual:    abra mcp install-codex && abra agents init --agent codex && abra ingest . --code --scope <scope> && abra agents verify . --scope <scope>")
+	fmt.Println("Manual:    abra mcp install-codex && abra agents init --agent codex && abra agents verify . --scope <scope>")
+	fmt.Println("Ingest:    abra ingest . --code --scope <scope>   # only if verify reports missing scope or empty memory")
 }
 
 func runCommand(name string, args ...string) error {
@@ -3862,6 +4283,29 @@ func parseJSONObjectFlag(raw, flagName string) (map[string]any, error) {
 		value = map[string]any{}
 	}
 	return value, nil
+}
+
+func parseHeaderEnvFlag(raw string) (map[string]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	values := map[string]string{}
+	for _, item := range strings.Split(raw, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		parts := strings.SplitN(item, "=", 2)
+		if len(parts) != 2 {
+			parts = strings.SplitN(item, ":", 2)
+		}
+		if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+			return nil, fmt.Errorf("--header-env entries must be HEADER=ENV_NAME, got %q", item)
+		}
+		values[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+	}
+	return values, nil
 }
 
 func scopeOrDefault(args cliArgs, pathHint string) string {
@@ -4230,11 +4674,12 @@ Usage:
   abra seed [--scope repo:demo]
   abra ingest . [--code] [--continue-on-error] [--quiet]
   abra ingest ./notes.md
-  abra ingest --scope repo:demo --text "Agents should use Abra" [--title Intro]
+  abra ingest --scope repo:demo --text "Agents should use Abra" [--title Intro] [--approval-id approval...]
   abra ingest --git https://github.com/owner/repo.git [--ref main] [--scope repo:demo]
   abra watch local --scope repo:demo --path . [--freshness-seconds 3600] [--schedule "@every 1h"] [--wait]
   abra watch git --scope repo:demo --git https://github.com/owner/repo.git [--ref main] [--freshness-seconds 3600] [--wait]
-  abra source mcp --scope team:platform --mcp-url https://mcp.example/mcp --tool export_documents [--schedule "@every 10m"] [--wait]
+  abra source mcp --scope team:platform --mcp-url https://mcp.example/mcp --tool export_documents --dry-run
+  abra source mcp --scope team:platform --mcp-url https://mcp.example/mcp --tool export_documents [--header-env Header=ENV] [--schedule "@every 10m"] [--wait]
   abra sources [--scope repo:demo]
   abra jobs [--scope repo:demo]
   abra observe "Agents should rerun release checks before tagging" [--scope repo:demo] [--propose]
@@ -4267,7 +4712,7 @@ func commandUsage(command string) string {
 		return `Usage:
   abra ingest . [--code] [--continue-on-error] [--quiet]
   abra ingest ./notes.md
-  abra ingest --text "source-backed content" [--title Intro]
+  abra ingest --text "source-backed content" [--title Intro] [--approval-id approval...]
   abra ingest --git https://github.com/owner/repo.git [--ref main] [--wait]
 
 Manual document flags:
@@ -4277,6 +4722,7 @@ Manual document flags:
   --title          document title
   --source-url     stable source URL
   --source-type    default markdown
+  --approval-id    approved agent_write request for enforced production writes
 
 Source ingestion flags:
   --path           local repository or directory to ingest from the CLI
@@ -4355,13 +4801,17 @@ onboarding, or abra up for non-interactive stack startup.
 		return `Usage:
   abra watch local --scope repo:demo --path . [--include "**/*.md"] [--code] [--freshness-seconds 3600] [--schedule "@every 1h"] [--wait]
   abra watch git --scope repo:demo --git https://github.com/owner/repo.git [--ref main] [--freshness-seconds 3600] [--wait]
-  abra source mcp --scope team:platform --mcp-url https://mcp.example/mcp --tool export_documents [--arguments-json '{"space":"ENG"}'] [--document-source-type confluence] [--schedule "@every 10m"] [--wait]
+  abra source mcp --scope team:platform --mcp-url https://mcp.example/mcp --tool export_documents --dry-run
+  abra source mcp --scope team:platform --mcp-url https://mcp.example/mcp --tool export_documents [--arguments-json '{"space":"ENG"}'] [--document-source-type confluence] [--bearer-token-env TOKEN_ENV] [--header-env Header=ENV] [--schedule "@every 10m"] [--wait]
 
 This creates or updates a source config, then enqueues an ingestion job.
 The OSS worker supports markdown, local_repo, git_repo, and MCP HTTP sources
 whose configured tool returns normalized Abra documents. External systems such
 as Jira, Confluence, Slack, and Drive can either expose an MCP document-export
 tool or push normalized documents through the HTTP/MCP ingestion API.
+Use --dry-run or --validate with MCP sources to call the upstream MCP tool,
+validate its normalized documents, and exit without registering or queueing.
+Use --bearer-token-env and --header-env Header=ENV for MCP credentials.
 Use --freshness-seconds for max source age and --schedule for @hourly, @daily,
 or @every <N><s|m|h|d> worker refresh cadence. Manual sync still bypasses the
 due check.
@@ -4371,14 +4821,14 @@ Use --wait-timeout or ABRA_CLI_WAIT_TIMEOUT for slow local model or large repo r
 		return `Usage:
   abra sources [--scope repo:demo] [--limit 50] [--json]
   abra sources sync <source-config-id> [--scope repo:demo] [--wait] [--wait-timeout 10m] [--json]
-  abra sources backfill <source-config-id> [--scope repo:demo] [--wait] [--wait-timeout 10m] [--json]
+  abra sources backfill <source-config-id> [--scope repo:demo] [--approval-id approval...] [--wait] [--wait-timeout 10m] [--json]
   abra sources status <source-config-id> [--json]
   abra sources logs <source-config-id> [--limit 20] [--json]
   abra sources pause <source-config-id> [--json]
   abra sources resume <source-config-id> [--approval-id approval...] [--json]
 
 Lists configured ingestion sources, queues sync/backfill jobs, inspects source status/logs, or pauses/resumes a source.
-Resume is treated as connector enablement and may require approval when enforcement is active.
+Resume and backfill may require approval when enforcement is active.
 `
 	case "jobs":
 		return `Usage:
@@ -4391,11 +4841,13 @@ Lists worker ingestion jobs for a scope.
   abra observe "Agents should rerun release checks before tagging" [--scope repo:demo]
   abra observe --text "..." --type episode --source-url file://notes.md --confidence 0.7 [--json]
   abra observe "..." --propose --scope repo:demo --source-url file://runbook.md
+  abra observe conversation --file transcript.md --scope repo:demo [--propose] [--all-turns]
 
 Captures a raw observation. Observations are scoped, searchable, audited, and
 not trusted claims until a review/promote flow explicitly turns them into one.
 Use --propose to immediately create a pending learning proposal from the
-captured observation without writing trusted memory.
+captured observation without writing trusted memory. Conversation capture
+defaults to preference-like user turns; use --all-turns for full episodic capture.
 `
 	case "observations", "episodes":
 		return `Usage:
