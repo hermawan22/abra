@@ -26,6 +26,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 
 ### Changed
 
+- Infer embedding dimensions for known compatible models and require `--dimensions` for unknown compatible providers instead of silently defaulting every custom endpoint to OpenAI dimensions.
 - Redact and bound provider error bodies and transport causes before exposing them through API, CLI, MCP, logs, or job metadata.
 - Make batched embedding ingestion preserve batch range and token estimates on provider failures for easier local model and custom provider troubleshooting.
 - Keep `ingest_documents(continue_on_error=true)` on per-document ingestion so partial connector overlays still receive stable success/error entries while the default fail-fast path gets cross-document embedding efficiency.

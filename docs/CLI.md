@@ -52,7 +52,7 @@ abra config model openai --api-key-stdin
 abra config model compatible --base-url https://api.example.com/v1 --model embedding-model --dimensions 1024
 ```
 
-For non-interactive local setup, use `abra setup --yes`. For authenticated compatible providers during onboarding, use `printf '%s' "$PROVIDER_API_KEY" | abra setup --compatible --embedding-base-url https://api.example.com/v1 --embedding-model embedding-model --api-key-stdin`. For OpenAI, non-interactive setup requires `--api-key-stdin` or `OPENAI_API_KEY`.
+For non-interactive local setup, use `abra setup --yes`. For authenticated compatible providers during onboarding, use `printf '%s' "$PROVIDER_API_KEY" | abra setup --compatible --embedding-base-url https://api.example.com/v1 --embedding-model embedding-model --dimensions 1024 --api-key-stdin`. The CLI infers dimensions for known OpenAI, Qwen, BGE, Nomic, and Gemini embedding model names; pass `--dimensions` for unknown compatible models. For OpenAI, non-interactive setup requires `--api-key-stdin` or `OPENAI_API_KEY`.
 Use `abra setup --yes --no-models` only when you intentionally manage the embedding endpoint yourself; otherwise the default local provider is started for you by setup or `abra up`.
 
 Make the current repo Codex-ready after setup:

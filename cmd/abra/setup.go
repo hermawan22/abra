@@ -336,9 +336,9 @@ func setupLocalNeuralEmbeddings(args cliArgs, reader *bufio.Reader, interactive 
 }
 
 func setupOpenAIEmbeddings(args cliArgs, reader *bufio.Reader, interactive bool) error {
+	args.Bools["openai"] = true
 	args.Flags["embedding-base-url"] = setupEmbeddingBaseURL(args, "https://api.openai.com/v1")
 	args.Flags["embedding-model"] = setupEmbeddingModel(args, "text-embedding-3-small")
-	args.Flags["dimensions"] = firstNonEmpty(flag(args, "dimensions", ""), "1536")
 	if flag(args, "api-key", "") == "" && !boolFlag(args, "api-key-stdin") {
 		if envKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY")); envKey != "" {
 			args.Flags["api-key"] = envKey
@@ -350,9 +350,17 @@ func setupOpenAIEmbeddings(args cliArgs, reader *bufio.Reader, interactive bool)
 }
 
 func setupCompatibleEmbeddings(args cliArgs, reader *bufio.Reader, interactive bool) error {
+	if (!interactive || boolFlag(args, "yes")) && !boolFlag(args, "openai") {
+		if strings.TrimSpace(flag(args, "embedding-base-url", "")) == "" && strings.TrimSpace(flag(args, "base-url", "")) == "" {
+			return errors.New("setup --compatible requires --embedding-base-url in non-interactive mode; use --openai for OpenAI")
+		}
+		if strings.TrimSpace(flag(args, "embedding-model", "")) == "" && strings.TrimSpace(flag(args, "model", "")) == "" {
+			return errors.New("setup --compatible requires --embedding-model in non-interactive mode; use --openai for OpenAI")
+		}
+	}
 	baseURL := setupEmbeddingBaseURL(args, "https://api.openai.com/v1")
 	model := setupEmbeddingModel(args, "text-embedding-3-small")
-	dimensions := firstNonEmpty(flag(args, "dimensions", ""), "1536")
+	dimensions := firstNonEmpty(flag(args, "dimensions", ""), inferEmbeddingDimensions(model))
 	apiKey := flag(args, "api-key", "")
 	if apiKey == "" && boolFlag(args, "api-key-stdin") {
 		bytes, err := io.ReadAll(os.Stdin)
@@ -381,6 +389,9 @@ func setupCompatibleEmbeddings(args cliArgs, reader *bufio.Reader, interactive b
 				return err
 			}
 		}
+	}
+	if strings.TrimSpace(dimensions) == "" {
+		return fmt.Errorf("embedding dimensions are required for compatible model %q; pass --dimensions <size> so Abra can validate vector storage correctly", strings.TrimSpace(model))
 	}
 	baseURL = containerReachableBaseURL(strings.TrimSpace(baseURL))
 	if err := updateEnvValues(args, map[string]string{

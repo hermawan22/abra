@@ -445,9 +445,6 @@ func configModel(args cliArgs) error {
 		if flag(args, "model", "") == "" {
 			args.Flags["model"] = "text-embedding-3-small"
 		}
-		if flag(args, "dimensions", "") == "" {
-			args.Flags["dimensions"] = "1536"
-		}
 		return configModelCompatible(args, "OpenAI embeddings")
 	case "compatible", "openai-compatible":
 		return configModelCompatible(args, "compatible embeddings")
@@ -507,13 +504,17 @@ func configModelCompatible(args cliArgs, label string) error {
 	if baseURL == "" || model == "" {
 		return errors.New("config model compatible requires --base-url and --model; add --api-key or --api-key-stdin when the provider requires auth")
 	}
+	dimensions, err := resolveCompatibleEmbeddingDimensions(args, model)
+	if err != nil {
+		return err
+	}
 	baseURL = containerReachableBaseURL(strings.TrimSpace(baseURL))
 	if err := updateEnvValues(args, map[string]string{
 		"EMBEDDING_PROVIDER":                     "compatible",
 		"EMBEDDING_BASE_URL":                     baseURL,
 		"EMBEDDING_API_KEY":                      apiKey,
 		"EMBEDDING_MODEL":                        model,
-		"EMBEDDING_DIMENSIONS":                   flag(args, "dimensions", "1536"),
+		"EMBEDDING_DIMENSIONS":                   dimensions,
 		"EMBEDDING_TIMEOUT":                      flag(args, "embedding-timeout", "30s"),
 		"ABRA_AI_PROVIDER_CONCURRENCY":           flag(args, "provider-concurrency", "4"),
 		"RERANKER_PROVIDER":                      "",
@@ -530,6 +531,43 @@ func configModelCompatible(args cliArgs, label string) error {
 	fmt.Println("Model config updated: " + label)
 	printRestartHint(args)
 	return nil
+}
+
+func resolveCompatibleEmbeddingDimensions(args cliArgs, model string) (string, error) {
+	if dimensions := strings.TrimSpace(flag(args, "dimensions", "")); dimensions != "" {
+		return dimensions, nil
+	}
+	if dimensions := inferEmbeddingDimensions(model); dimensions != "" {
+		return dimensions, nil
+	}
+	return "", fmt.Errorf("embedding dimensions are required for compatible model %q; pass --dimensions <size> so Abra can validate vector storage correctly", strings.TrimSpace(model))
+}
+
+func inferEmbeddingDimensions(model string) string {
+	normalized := strings.ToLower(strings.TrimSpace(model))
+	normalized = strings.ReplaceAll(normalized, "_", "-")
+	switch {
+	case normalized == "":
+		return ""
+	case strings.Contains(normalized, "text-embedding-3-small"):
+		return "1536"
+	case strings.Contains(normalized, "text-embedding-3-large"):
+		return "3072"
+	case strings.Contains(normalized, "qwen3-embedding-0.6b"):
+		return "1024"
+	case strings.Contains(normalized, "qwen3-embedding-4b"):
+		return "2560"
+	case strings.Contains(normalized, "qwen3-embedding-8b"):
+		return "4096"
+	case strings.Contains(normalized, "bge-m3"):
+		return "1024"
+	case strings.Contains(normalized, "nomic-embed-text"):
+		return "768"
+	case strings.Contains(normalized, "embedding-001") || strings.Contains(normalized, "text-embedding-004"):
+		return "768"
+	default:
+		return ""
+	}
 }
 
 func updateEnvValues(args cliArgs, updates map[string]string) error {
@@ -2607,7 +2645,7 @@ func agentVerifyNextSteps(path, scope, agent string, ok, filesOnly bool) []strin
 	if ok {
 		return []string{
 			"Give the ready_prompt to the AI client.",
-			"If the AI client still says Abra has no context, fully restart that client and rerun `abra agents verify " + shellQuote(path) + " --scope " + shellQuote(scope) + "`.",
+			"If the AI client still says Abra has no context, fully restart that client and rerun `abra agents verify " + shellQuote(path) + " --scope " + shellQuote(scope) + " --agent " + shellQuote(agent) + "`.",
 		}
 	}
 	return []string{
@@ -3941,7 +3979,7 @@ Source ingestion flags:
   abra config path
   abra config model local [--base-url http://host.docker.internal:8080/v1] [--runner-image image@sha256:...] [--pull-policy missing] [--readiness-timeout 10s]
   abra config model openai --api-key-stdin
-  abra config model compatible --base-url <url> --model <model> [--api-key-stdin] [--dimensions 1536]
+  abra config model compatible --base-url <url> --model <model> --dimensions <size> [--api-key-stdin]
 
 Config edits the Abra runtime env file used by abra up. It intentionally only
 exposes core runtime settings needed for local operation and embedding/reranker connection.
@@ -4120,8 +4158,8 @@ preflight checks that should exit non-zero when any check is not ok.
   abra setup --yes --no-models
   abra setup --local
   abra setup --openai --api-key-stdin
-  abra setup --compatible --embedding-base-url <url> --embedding-model <model> [--api-key-stdin]
-  abra setup --provider compatible --embedding-base-url <url> --embedding-model <model>
+  abra setup --compatible --embedding-base-url <url> --embedding-model <model> --dimensions <size> [--api-key-stdin]
+  abra setup --provider compatible --embedding-base-url <url> --embedding-model <model> --dimensions <size>
   abra setup --yes --no-start
 
 Guided first-run onboarding. It checks prerequisites, creates the runtime env,
@@ -4139,7 +4177,7 @@ Common setup flags:
   --base-url            legacy alias for --embedding-base-url during setup
   --embedding-model     embedding model name
   --model               provider selector or legacy embedding model alias
-  --dimensions          embedding dimensions
+  --dimensions          embedding dimensions; required for unknown compatible models, inferred for known OpenAI/Qwen/BGE/Nomic/Gemini models
   --embedding-timeout   provider timeout, default 10m for local and 30s for compatible
   --provider-concurrency provider call concurrency, default 1 for local and 4 for compatible
   --api-key             embedding provider API key

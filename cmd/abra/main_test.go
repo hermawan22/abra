@@ -917,6 +917,9 @@ func TestAgentsVerifyUsesSelectedAgent(t *testing.T) {
 	if !strings.Contains(output, `agent="claude"`) || strings.Contains(output, "codex_mcp_client") {
 		t.Fatalf("claude verify output did not use selected agent cleanly:\n%s", output)
 	}
+	if !strings.Contains(output, "abra agents verify "+shellQuote(root)+" --scope "+shellQuote(wantScope)+" --agent "+shellQuote("claude")) {
+		t.Fatalf("claude verify next steps should preserve selected agent:\n%s", output)
+	}
 }
 
 func TestAgentsVerifyJSONIncludesReadyPromptAndNextSteps(t *testing.T) {
@@ -2415,7 +2418,7 @@ func TestSetupCompatibleNoStartDoesNotSuggestLocalModels(t *testing.T) {
 	t.Chdir(root)
 
 	output := captureStdout(t, func() {
-		if err := run(context.Background(), []string{"setup", "--compatible", "--base-url", "http://localhost:9999/v1", "--embedding-model", "custom-embedding", "--api-key", "compatible-key", "--no-start"}); err != nil {
+		if err := run(context.Background(), []string{"setup", "--compatible", "--base-url", "http://localhost:9999/v1", "--embedding-model", "custom-embedding", "--dimensions", "768", "--api-key", "compatible-key", "--no-start"}); err != nil {
 			t.Fatalf("setup compatible error = %v", err)
 		}
 	})
@@ -2437,6 +2440,29 @@ func TestSetupCompatibleNoStartDoesNotSuggestLocalModels(t *testing.T) {
 	}
 	if !strings.Contains(output, "rewritten so Abra containers can reach the host service") {
 		t.Fatalf("compatible loopback setup should explain host rewrite:\n%s", output)
+	}
+}
+
+func TestSetupCompatibleNonInteractiveRequiresExplicitEndpointAndModel(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+
+	err := run(context.Background(), []string{"setup", "--compatible", "--yes", "--no-start"})
+	if err == nil {
+		t.Fatal("expected explicit endpoint error")
+	}
+	if !strings.Contains(err.Error(), "--embedding-base-url") || !strings.Contains(err.Error(), "--openai") {
+		t.Fatalf("error = %v", err)
+	}
+
+	err = run(context.Background(), []string{"setup", "--compatible", "--yes", "--embedding-base-url", "http://localhost:9999/v1", "--no-start"})
+	if err == nil {
+		t.Fatal("expected explicit model error")
+	}
+	if !strings.Contains(err.Error(), "--embedding-model") || !strings.Contains(err.Error(), "--openai") {
+		t.Fatalf("error = %v", err)
 	}
 }
 
@@ -2474,7 +2500,7 @@ func TestSetupOpenAIModelAliasIsEmbeddingModel(t *testing.T) {
 	_, _ = writer.WriteString("openai-test-key\n")
 	_ = writer.Close()
 
-	if err := run(context.Background(), []string{"setup", "--openai", "--model", "custom-embedding", "--api-key-stdin", "--no-start"}); err != nil {
+	if err := run(context.Background(), []string{"setup", "--openai", "--model", "custom-embedding", "--dimensions", "2048", "--api-key-stdin", "--no-start"}); err != nil {
 		t.Fatalf("setup openai error = %v", err)
 	}
 	values, err := readEnvValues(filepath.Join(home, "quickstart.env"))
@@ -2483,6 +2509,9 @@ func TestSetupOpenAIModelAliasIsEmbeddingModel(t *testing.T) {
 	}
 	if values["EMBEDDING_MODEL"] != "custom-embedding" {
 		t.Fatalf("model = %q", values["EMBEDDING_MODEL"])
+	}
+	if values["EMBEDDING_DIMENSIONS"] != "2048" {
+		t.Fatalf("dimensions = %q", values["EMBEDDING_DIMENSIONS"])
 	}
 }
 
@@ -2520,6 +2549,7 @@ func TestConfigModelCompatibleUpdatesEnv(t *testing.T) {
 		"--base-url", "https://models.example/v1",
 		"--api-key", "secret-model-key",
 		"--model", "embed-1536",
+		"--dimensions", "1536",
 	})
 	if err != nil {
 		t.Fatalf("config model compatible error = %v", err)
@@ -2540,11 +2570,60 @@ func TestConfigModelCompatibleUpdatesEnv(t *testing.T) {
 	if values["EMBEDDING_MODEL"] != "embed-1536" {
 		t.Fatalf("model = %q", values["EMBEDDING_MODEL"])
 	}
+	if values["EMBEDDING_DIMENSIONS"] != "1536" {
+		t.Fatalf("dimensions = %q", values["EMBEDDING_DIMENSIONS"])
+	}
 	if values["ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION"] != "false" {
 		t.Fatalf("local production guard = %q", values["ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION"])
 	}
 	if values["ABRA_AI_PROVIDER_CONCURRENCY"] != "4" {
 		t.Fatalf("provider concurrency = %q", values["ABRA_AI_PROVIDER_CONCURRENCY"])
+	}
+}
+
+func TestConfigModelCompatibleInfersKnownDimensions(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+
+	err := run(context.Background(), []string{
+		"config",
+		"model",
+		"compatible",
+		"--base-url", "http://localhost:9999/v1",
+		"--model", defaultServedModelName,
+	})
+	if err != nil {
+		t.Fatalf("config model compatible error = %v", err)
+	}
+	values, err := readEnvValues(filepath.Join(home, "quickstart.env"))
+	if err != nil {
+		t.Fatalf("read env: %v", err)
+	}
+	if values["EMBEDDING_DIMENSIONS"] != "1024" {
+		t.Fatalf("dimensions = %q", values["EMBEDDING_DIMENSIONS"])
+	}
+}
+
+func TestConfigModelCompatibleRequiresDimensionsForUnknownModel(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+
+	err := run(context.Background(), []string{
+		"config",
+		"model",
+		"compatible",
+		"--base-url", "http://localhost:9999/v1",
+		"--model", "custom-embedding",
+	})
+	if err == nil {
+		t.Fatal("expected dimensions error")
+	}
+	if !strings.Contains(err.Error(), "embedding dimensions are required") || !strings.Contains(err.Error(), "--dimensions") {
+		t.Fatalf("error = %v", err)
 	}
 }
 
@@ -2632,6 +2711,61 @@ func TestConfigModelOpenAIDefaults(t *testing.T) {
 	}
 }
 
+func TestConfigModelOpenAIInfersLargeDimensions(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+
+	err := run(context.Background(), []string{
+		"config",
+		"model",
+		"openai",
+		"--api-key", "openai-test-key",
+		"--model", "text-embedding-3-large",
+	})
+	if err != nil {
+		t.Fatalf("config model openai error = %v", err)
+	}
+	values, err := readEnvValues(filepath.Join(home, "quickstart.env"))
+	if err != nil {
+		t.Fatalf("read env: %v", err)
+	}
+	if values["EMBEDDING_MODEL"] != "text-embedding-3-large" {
+		t.Fatalf("model = %q", values["EMBEDDING_MODEL"])
+	}
+	if values["EMBEDDING_DIMENSIONS"] != "3072" {
+		t.Fatalf("dimensions = %q", values["EMBEDDING_DIMENSIONS"])
+	}
+}
+
+func TestSetupOpenAIInfersLargeDimensions(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+
+	if err := run(context.Background(), []string{
+		"setup",
+		"--openai",
+		"--embedding-model", "text-embedding-3-large",
+		"--api-key", "openai-test-key",
+		"--no-start",
+	}); err != nil {
+		t.Fatalf("setup openai error = %v", err)
+	}
+	values, err := readEnvValues(filepath.Join(home, "quickstart.env"))
+	if err != nil {
+		t.Fatalf("read env: %v", err)
+	}
+	if values["EMBEDDING_MODEL"] != "text-embedding-3-large" {
+		t.Fatalf("model = %q", values["EMBEDDING_MODEL"])
+	}
+	if values["EMBEDDING_DIMENSIONS"] != "3072" {
+		t.Fatalf("dimensions = %q", values["EMBEDDING_DIMENSIONS"])
+	}
+}
+
 func TestConfigModelLocalRestoresQwenDefaults(t *testing.T) {
 	root := t.TempDir()
 	home := t.TempDir()
@@ -2643,6 +2777,7 @@ func TestConfigModelLocalRestoresQwenDefaults(t *testing.T) {
 		"--base-url", "https://models.example/v1",
 		"--api-key", "secret-model-key",
 		"--model", "embed-1536",
+		"--dimensions", "1536",
 	}); err != nil {
 		t.Fatalf("config model compatible error = %v", err)
 	}
