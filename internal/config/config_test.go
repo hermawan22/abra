@@ -5,6 +5,33 @@ import (
 	"time"
 )
 
+func TestLoadDefaultsApprovalModeByEnvironment(t *testing.T) {
+	allowUnauthenticatedDev(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ApprovalMode != "advisory" {
+		t.Fatalf("development ApprovalMode = %q, want advisory", cfg.ApprovalMode)
+	}
+
+	t.Setenv("NODE_ENV", "production")
+	t.Setenv("ABRA_UNAUTHENTICATED_DEV", "")
+	t.Setenv("ABRA_API_KEYS", "unit-production-secret-alpha")
+	t.Setenv("ABRA_WEBHOOK_SECRETS", "webhook-secret-production-123")
+	t.Setenv("EMBEDDING_PROVIDER", "compatible")
+	t.Setenv("EMBEDDING_BASE_URL", "https://embedding.example/v1")
+
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ApprovalMode != "enforce" {
+		t.Fatalf("production ApprovalMode = %q, want enforce", cfg.ApprovalMode)
+	}
+}
+
 func TestLoadAcceptsApprovalModeEnforce(t *testing.T) {
 	allowUnauthenticatedDev(t)
 	t.Setenv("ABRA_APPROVAL_MODE", "enforce")
@@ -15,6 +42,23 @@ func TestLoadAcceptsApprovalModeEnforce(t *testing.T) {
 	}
 	if cfg.ApprovalMode != "enforce" {
 		t.Fatalf("ApprovalMode = %q, want enforce", cfg.ApprovalMode)
+	}
+}
+
+func TestLoadAllowsExplicitProductionAdvisoryApprovalMode(t *testing.T) {
+	t.Setenv("NODE_ENV", "production")
+	t.Setenv("ABRA_API_KEYS", "unit-production-secret-alpha")
+	t.Setenv("ABRA_WEBHOOK_SECRETS", "webhook-secret-production-123")
+	t.Setenv("EMBEDDING_PROVIDER", "compatible")
+	t.Setenv("EMBEDDING_BASE_URL", "https://embedding.example/v1")
+	t.Setenv("ABRA_APPROVAL_MODE", "advisory")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ApprovalMode != "advisory" {
+		t.Fatalf("ApprovalMode = %q, want advisory", cfg.ApprovalMode)
 	}
 }
 
@@ -475,6 +519,44 @@ func TestLoadRejectsPlaceholderProductionAPIKeys(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsMalformedProductionAPIKeyOptions(t *testing.T) {
+	tests := []struct {
+		name string
+		keys string
+	}{
+		{name: "unknown role", keys: "unit-production-secret-alpha|roles=readre;scopes=team:a"},
+		{name: "empty scopes", keys: "unit-production-secret-alpha|roles=reader;scopes="},
+		{name: "unknown option", keys: "unit-production-secret-alpha|roles=reader;scopess=team:a"},
+		{name: "missing roles", keys: "unit-production-secret-alpha|scopes=team:a"},
+		{name: "missing scopes", keys: "unit-production-secret-alpha|roles=reader"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("NODE_ENV", "production")
+			t.Setenv("ABRA_API_KEYS", tt.keys)
+			t.Setenv("ABRA_WEBHOOK_SECRETS", "webhook-secret-production-123")
+			t.Setenv("EMBEDDING_PROVIDER", "compatible")
+			t.Setenv("EMBEDDING_BASE_URL", "https://embedding.example/v1")
+
+			if _, err := Load(); err == nil {
+				t.Fatal("expected malformed production API key options to be rejected")
+			}
+		})
+	}
+}
+
+func TestLoadAllowsExplicitProductionAPIKeyOptions(t *testing.T) {
+	t.Setenv("NODE_ENV", "production")
+	t.Setenv("ABRA_API_KEYS", "unit-production-secret-alpha|roles=reader;scopes=team:a")
+	t.Setenv("ABRA_WEBHOOK_SECRETS", "webhook-secret-production-123")
+	t.Setenv("EMBEDDING_PROVIDER", "compatible")
+	t.Setenv("EMBEDDING_BASE_URL", "https://embedding.example/v1")
+
+	if _, err := Load(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestLoadRejectsMissingProductionWebhookSecrets(t *testing.T) {
 	t.Setenv("NODE_ENV", "production")
 	t.Setenv("ABRA_API_KEYS", "unit-production-secret-alpha")
@@ -495,6 +577,56 @@ func TestLoadRejectsPlaceholderProductionWebhookSecrets(t *testing.T) {
 
 	if _, err := Load(); err == nil {
 		t.Fatal("expected placeholder production webhook secret to be rejected")
+	}
+}
+
+func TestLoadRejectsDevWebhookSecretInProduction(t *testing.T) {
+	t.Setenv("NODE_ENV", "production")
+	t.Setenv("ABRA_API_KEYS", "unit-production-secret-alpha")
+	t.Setenv("ABRA_WEBHOOK_SECRETS", "dev-webhook-secret")
+	t.Setenv("EMBEDDING_PROVIDER", "compatible")
+	t.Setenv("EMBEDDING_BASE_URL", "https://embedding.example/v1")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected dev webhook secret to be rejected in production")
+	}
+}
+
+func TestLoadRejectsPlaintextRemoteEmbeddingProviderInProduction(t *testing.T) {
+	t.Setenv("NODE_ENV", "production")
+	t.Setenv("ABRA_API_KEYS", "unit-production-secret-alpha")
+	t.Setenv("ABRA_WEBHOOK_SECRETS", "webhook-secret-production-123")
+	t.Setenv("EMBEDDING_PROVIDER", "compatible")
+	t.Setenv("EMBEDDING_BASE_URL", "http://embedding.example/v1")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected plaintext remote embedding provider to be rejected in production")
+	}
+}
+
+func TestLoadAllowsLoopbackPlaintextEmbeddingProviderInProduction(t *testing.T) {
+	t.Setenv("NODE_ENV", "production")
+	t.Setenv("ABRA_API_KEYS", "unit-production-secret-alpha")
+	t.Setenv("ABRA_WEBHOOK_SECRETS", "webhook-secret-production-123")
+	t.Setenv("EMBEDDING_PROVIDER", "compatible")
+	t.Setenv("EMBEDDING_BASE_URL", "http://127.0.0.1:8080/v1")
+
+	if _, err := Load(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLoadRejectsPlaintextRemoteRerankerProviderInProduction(t *testing.T) {
+	t.Setenv("NODE_ENV", "production")
+	t.Setenv("ABRA_API_KEYS", "unit-production-secret-alpha")
+	t.Setenv("ABRA_WEBHOOK_SECRETS", "webhook-secret-production-123")
+	t.Setenv("EMBEDDING_PROVIDER", "compatible")
+	t.Setenv("EMBEDDING_BASE_URL", "https://embedding.example/v1")
+	t.Setenv("RERANKER_PROVIDER", "compatible")
+	t.Setenv("RERANKER_BASE_URL", "http://rerank.example/v1")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected plaintext remote reranker provider to be rejected in production")
 	}
 }
 

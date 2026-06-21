@@ -23,7 +23,8 @@ spec:
           type: RuntimeDefault
       containers:
         - name: worker
-          image: ghcr.io/hermawan22/abra:0.3.7
+          # Replace the all-zero placeholder with the release IMAGE_DIGEST.
+          image: ghcr.io/hermawan22/abra@sha256:0000000000000000000000000000000000000000000000000000000000000000
           imagePullPolicy: IfNotPresent
           command: ["/app/abra-worker"]
           securityContext:

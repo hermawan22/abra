@@ -28,7 +28,7 @@ running the managed full gate.
 Run security checks:
 
 ```sh
-go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+go run golang.org/x/vuln/cmd/govulncheck@v1.4.0 ./...
 npm audit --audit-level=high
 ```
 
@@ -70,6 +70,12 @@ digest rather than relying only on mutable tags.
 All external GitHub Actions used by CI, security, release-gate, and release
 workflows must be pinned to full commit SHAs. The OSS hygiene gate rejects
 mutable action tags or branches before release.
+
+Set `ABRA_OSS_PRIVATE_CONTEXT_PATTERNS` to a comma-separated or newline-separated
+list of local regex patterns when preparing a public release from a private
+working copy. Keep that local denylist out of git; the committed scanner only
+contains generic secret, local-path, registry-credential, workflow-ref, and
+installer-URL checks.
 
 ## Tagging
 

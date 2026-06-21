@@ -1,0 +1,6 @@
+# Abra is not distributed through npm. Keep npm packaging intentionally tiny
+# so private developer scripts cannot become an accidental release artifact.
+*
+!package.json
+!README.md
+!LICENSE

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"net/netip"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -96,8 +97,10 @@ func Load() (Config, error) {
 
 	nodeEnv := env("NODE_ENV", "development")
 	defaultBindAddress := "127.0.0.1"
+	defaultApprovalMode := "advisory"
 	if nodeEnv == "production" {
 		defaultBindAddress = "0.0.0.0"
+		defaultApprovalMode = "enforce"
 	}
 	cfg := Config{
 		NodeEnv:                           nodeEnv,
@@ -112,7 +115,7 @@ func Load() (Config, error) {
 		AllowUnsignedWebhooksInProduction: boolEnv("ABRA_ALLOW_UNSIGNED_WEBHOOKS_IN_PRODUCTION", false),
 		AllowLocalEmbeddingsInProduction:  boolEnv("ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION", false),
 		RedactPII:                         boolEnv("REDACT_PII", true),
-		ApprovalMode:                      strings.ToLower(env("ABRA_APPROVAL_MODE", "advisory")),
+		ApprovalMode:                      strings.ToLower(env("ABRA_APPROVAL_MODE", defaultApprovalMode)),
 		AuditSink: AuditSinkConfig{
 			URL:       os.Getenv("ABRA_AUDIT_SINK_URL"),
 			Token:     os.Getenv("ABRA_AUDIT_SINK_TOKEN"),
@@ -183,9 +186,12 @@ func Load() (Config, error) {
 			return Config{}, err
 		}
 	}
-	if cfg.NodeEnv == "production" && isRemoteCompatibleProvider(cfg.Embedding.Provider) {
+	if cfg.NodeEnv == "production" && isRemoteCompatibleProvider(cfg.Embedding.Provider) && !isLocalNeuralProvider(cfg.Embedding.Provider) {
 		if strings.TrimSpace(cfg.Embedding.BaseURL) == "" {
 			return Config{}, errors.New("EMBEDDING_BASE_URL is required when NODE_ENV=production and EMBEDDING_PROVIDER=compatible")
+		}
+		if err := validateProductionAIProviderURL("EMBEDDING_BASE_URL", cfg.Embedding.BaseURL); err != nil {
+			return Config{}, err
 		}
 	}
 	if cfg.NodeEnv == "production" && isLocalNeuralProvider(cfg.Embedding.Provider) && !cfg.AllowLocalEmbeddingsInProduction {
@@ -208,6 +214,11 @@ func Load() (Config, error) {
 	}
 	if strings.TrimSpace(cfg.Reranker.Provider) != "" && isRemoteCompatibleProvider(cfg.Reranker.Provider) && strings.TrimSpace(cfg.Reranker.BaseURL) == "" {
 		return Config{}, errors.New("RERANKER_BASE_URL is required when RERANKER_PROVIDER is configured")
+	}
+	if cfg.NodeEnv == "production" && strings.TrimSpace(cfg.Reranker.Provider) != "" && isRemoteCompatibleProvider(cfg.Reranker.Provider) && !isLocalNeuralProvider(cfg.Reranker.Provider) {
+		if err := validateProductionAIProviderURL("RERANKER_BASE_URL", cfg.Reranker.BaseURL); err != nil {
+			return Config{}, err
+		}
 	}
 	if cfg.Embedding.Dimensions < 1 {
 		return Config{}, errors.New("EMBEDDING_DIMENSIONS must be positive")
@@ -271,13 +282,83 @@ func Load() (Config, error) {
 
 func validateProductionAPIKeys(keys []string) error {
 	for _, spec := range keys {
-		token, _, _ := strings.Cut(strings.TrimSpace(spec), "|")
+		token, rawOptions, hasOptions := strings.Cut(strings.TrimSpace(spec), "|")
 		token = strings.TrimSpace(token)
 		if err := validateProductionSecret("ABRA_API_KEYS", token); err != nil {
 			return err
 		}
+		if hasOptions {
+			if err := validateProductionAPIKeyOptions(rawOptions); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
+}
+
+func validateProductionAPIKeyOptions(raw string) error {
+	if strings.TrimSpace(raw) == "" {
+		return errors.New("ABRA_API_KEYS production key options must include explicit roles and scopes")
+	}
+	seenRoles := false
+	seenScopes := false
+	for _, option := range strings.FieldsFunc(raw, func(r rune) bool { return r == ';' || r == '|' }) {
+		option = strings.TrimSpace(option)
+		if option == "" {
+			continue
+		}
+		key, value, ok := strings.Cut(option, "=")
+		if !ok {
+			return fmt.Errorf("ABRA_API_KEYS production key option %q must use key=value", option)
+		}
+		key = strings.ToLower(strings.TrimSpace(key))
+		values := splitAuthOptionValues(value)
+		if len(values) == 0 {
+			return fmt.Errorf("ABRA_API_KEYS production key option %q must not be empty", key)
+		}
+		switch key {
+		case "role", "roles":
+			seenRoles = true
+			for _, role := range values {
+				if !isKnownAPIKeyRole(role) {
+					return fmt.Errorf("ABRA_API_KEYS contains unknown production role %q", role)
+				}
+			}
+		case "scope", "scopes":
+			seenScopes = true
+		default:
+			return fmt.Errorf("ABRA_API_KEYS contains unknown production key option %q", key)
+		}
+	}
+	if !seenRoles {
+		return errors.New("ABRA_API_KEYS production key options must include explicit roles")
+	}
+	if !seenScopes {
+		return errors.New("ABRA_API_KEYS production key options must include explicit scopes; use scopes=* only when all-scope access is intentional")
+	}
+	return nil
+}
+
+func splitAuthOptionValues(raw string) []string {
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ' ' || r == '+' || r == ','
+	})
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if value := strings.ToLower(strings.TrimSpace(part)); value != "" {
+			values = append(values, value)
+		}
+	}
+	return values
+}
+
+func isKnownAPIKeyRole(role string) bool {
+	switch role {
+	case "admin", "writer", "reader", "ops":
+		return true
+	default:
+		return false
+	}
 }
 
 func validateProductionSecrets(name string, values []string) error {
@@ -295,13 +376,34 @@ func validateProductionSecret(name, value string) error {
 		return fmt.Errorf("%s contains an empty value", name)
 	}
 	lower := strings.ToLower(value)
-	if strings.Contains(lower, "replace") || strings.Contains(lower, "example") || strings.Contains(lower, "changeme") || strings.Contains(lower, "dev-token") || strings.Contains(lower, "test-key") {
+	if strings.Contains(lower, "replace") || strings.Contains(lower, "example") || strings.Contains(lower, "changeme") || strings.Contains(lower, "dev-token") || strings.Contains(lower, "dev-webhook-secret") || strings.Contains(lower, "test-key") {
 		return fmt.Errorf("%s contains a placeholder value; generate a unique production secret", name)
 	}
 	if len(value) < 16 {
 		return fmt.Errorf("%s production values must be at least 16 characters", name)
 	}
 	return nil
+}
+
+func validateProductionAIProviderURL(name, raw string) error {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return fmt.Errorf("%s must be a valid http or https URL", name)
+	}
+	if parsed.Scheme == "https" {
+		return nil
+	}
+	if parsed.Scheme != "http" {
+		return fmt.Errorf("%s must use http or https", name)
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if host == "localhost" {
+		return nil
+	}
+	if addr, err := netip.ParseAddr(host); err == nil && addr.IsLoopback() {
+		return nil
+	}
+	return fmt.Errorf("%s must use https for non-loopback production providers", name)
 }
 
 func validateEnvSyntax() error {

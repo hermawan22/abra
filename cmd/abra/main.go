@@ -1949,7 +1949,7 @@ func scopeCommand(args cliArgs) error {
 				"agents_verify":   "abra agents verify " + shellQuote(path) + " --scope " + shellQuote(scope),
 				"ingest":          "abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope),
 				"think":           "abra think \"what should I know before changing this project?\" --scope " + scope,
-				"codex":           "Use Abra MCP first. Exact scope: " + scope + ". Call discover_scopes with expected_scope=\"" + scope + "\", then call working_memory_compose with that exact scope before answering or changing code. If discover_scopes does not show " + scope + " or working_memory_compose returns no source-backed context, run: abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope) + " && abra agents verify " + shellQuote(path) + " --scope " + shellQuote(scope),
+				"codex":           "Use Abra MCP first. Exact scope: " + scope + ". Call discover_scopes with expected_scope=\"" + scope + "\", then call working_memory_compose with task=<current task>, scope=\"" + scope + "\", and agent=\"codex\" before answering or changing code. If discover_scopes does not show " + scope + " or working_memory_compose returns no source-backed context, run: abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope) + " && abra agents verify " + shellQuote(path) + " --scope " + shellQuote(scope),
 				"compose":         "abra compose \"ship this change\" --scope " + scope + " --agent codex",
 				"troubleshooting": "If an AI client says Abra has no context, run the ingest example with the exact scope above, then run agents_verify and retry the agent task.",
 			},
@@ -1963,8 +1963,8 @@ func scopeCommand(args cliArgs) error {
 	fmt.Println("Ingest: abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope))
 	fmt.Println("Check:  abra agents verify " + shellQuote(path) + " --scope " + shellQuote(scope))
 	fmt.Println("Think:  abra think \"what should I know before changing this project?\" --scope " + scope)
-	fmt.Println("Codex:  Use Abra MCP first. Exact scope: " + scope + `. Call discover_scopes with expected_scope="` + scope + `", then call working_memory_compose.`)
-	fmt.Println("Fix:    If Codex says Abra has no context, run Ingest, then Check, then retry with the exact scope.")
+	fmt.Println("Codex:  Use Abra MCP first. Exact scope: " + scope + `. Call discover_scopes with expected_scope="` + scope + `", then call working_memory_compose with task=<current task>, scope="` + scope + `", and agent="codex".`)
+	fmt.Println("Fix:    If Codex says Abra has no context, run Ingest, then Check, then retry with the Codex prompt above.")
 	return nil
 }
 
@@ -2165,7 +2165,7 @@ func verifyAgentContext(ctx context.Context, args cliArgs, path, scope string) e
 }
 
 func agentReadyPrompt(scope string) string {
-	return `Use Abra MCP first. Exact scope: ` + scope + `. Call discover_scopes with expected_scope="` + scope + `", then call working_memory_compose with that exact scope before answering or changing code. If discover_scopes does not show ` + scope + ` or working_memory_compose returns no source-backed context, run abra scope, ingest the project with that exact scope, rerun abra agents verify, then retry with this exact scope.`
+	return `Use Abra MCP first. Exact scope: ` + scope + `. Call discover_scopes with expected_scope="` + scope + `", then call working_memory_compose with task=<current task>, scope="` + scope + `", and agent="codex" before answering or changing code. If discover_scopes does not show ` + scope + ` or working_memory_compose returns no source-backed context, run abra scope, ingest the project with that exact scope, rerun abra agents verify, then retry with this exact scope.`
 }
 
 func agentVerifyNextSteps(path, scope string, ok, filesOnly bool) []string {
@@ -2439,11 +2439,10 @@ func installCodexMCP(ctx context.Context, args cliArgs) error {
 	if runtime.GOOS != "darwin" {
 		fmt.Println("Set " + tokenEnv + " in the shell that starts Codex, then retry.")
 	}
-	fmt.Println("Verify with: abra doctor")
-	fmt.Println("Fully quit and reopen Codex Desktop after installing or changing the token env.")
-	fmt.Println("Opening a new thread is enough only when the env var was already available to the Codex process.")
-	fmt.Println("Scope hint: run `abra scope` in each project, compare it with discover_scopes in Codex, and pass the exact scope to working_memory_compose.")
-	fmt.Println("If Codex says Abra has no context: run `abra ingest . --code --scope <scope-from-abra-scope>` and `abra agents verify . --scope <scope-from-abra-scope>`.")
+	fmt.Println("Verify runtime: abra doctor")
+	fmt.Println("For each repo: cd /path/to/project && abra agents bootstrap --agent codex")
+	fmt.Println("If Codex says Abra has no context: cd into the repo, run `abra scope`, `abra ingest . --code --scope <scope-from-abra-scope>`, then `abra agents verify . --scope <scope-from-abra-scope>`.")
+	fmt.Println("Then fully quit and reopen Codex Desktop and retry with the `Prompt:` printed by verify.")
 	return nil
 }
 
@@ -2742,10 +2741,11 @@ func printReady(args cliArgs) {
 	fmt.Println()
 	fmt.Println("Abra is ready")
 	fmt.Println("MCP:       " + strings.TrimRight(cfg(args).BaseURL, "/") + "/mcp")
-	fmt.Println("Token:     " + cfg(args).Token)
+	fmt.Println("Token env: ABRA_API_TOKEN (configured; value not printed)")
 	fmt.Println("Codex:     abra mcp install-codex")
 	fmt.Println("Scope:     cd /path/to/project && abra scope")
-	fmt.Println("Agent:     cd /path/to/project && abra agents init --agent codex")
+	fmt.Println("Agent:     cd /path/to/project && abra agents bootstrap --agent codex")
+	fmt.Println("Init:      cd /path/to/project && abra agents init --agent codex")
 	fmt.Println("Next:      cd /path/to/project && abra ingest . --code --scope <scope>")
 	fmt.Println("Check:     cd /path/to/project && abra agents verify . --scope <scope>")
 	fmt.Println(`Then:      abra think "What should I know before changing this project?" --scope <scope>`)

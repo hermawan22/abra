@@ -31,6 +31,7 @@ ABRA_RELEASE_PROFILE=full ABRA_RELEASE_MANAGE_STACK=1 npm run release:gate
 - Keep public APIs, MCP tools, migrations, and deployment manifests backward-compatible unless the change is explicitly documented.
 - Do not commit secrets, database dumps, embeddings, source-system exports, audit logs, or organization-specific policies.
 - Use generic examples in docs. Avoid company names, real repository URLs, tokens, private domains, incident details, or customer data.
+- For local/private denylist terms, run `npm run check:oss` with `ABRA_OSS_PRIVATE_CONTEXT_PATTERNS` instead of committing private words to the scanner.
 
 ## Design Principles
 

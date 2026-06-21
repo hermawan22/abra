@@ -48,6 +48,9 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 
 ### Changed
 
+- Default `ABRA_APPROVAL_MODE` to `enforce` when `NODE_ENV=production` while keeping local development on `advisory` unless explicitly overridden.
+- Validate production `ABRA_API_KEYS` role/scope options instead of allowing malformed option strings to fall back to admin all-scope access.
+- Reject plaintext non-loopback production embedding and reranker provider URLs while still allowing loopback self-hosted endpoints.
 - Default local neural providers to one in-flight AI provider call and compatible remote providers to four, reducing single-runner Qwen overload while preserving tuneable provider scaling.
 - Make `discover_scopes` accept `expected_scope` and `query` hints so agents can find the exact project scope even when release or perf scopes crowd the first page.
 - Make `abra mcp` generate bearer-token environment variable config by default, with literal token output only behind `--literal-token`.
@@ -107,6 +110,9 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Treat summary-only and graph/context-only packets as usable source-backed context in CLI and governed think output.
 - Align stale public release metadata in lockfile, Helm examples, and supported-version docs.
 - Mark npm metadata as private developer tooling while adding standard repository, license, issue, and homepage fields.
+- Keep npm packaging intentionally minimal so private developer scripts cannot become an accidental npm distribution artifact.
+- Pin `govulncheck` to a reviewed module version in release documentation and GitHub workflows.
+- Use digest-pinned image placeholders in raw Kubernetes examples instead of mutable version tags.
 
 ### Security
 
@@ -118,6 +124,8 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Omit example env files from the production runtime image so fixed demo credentials stay in source documentation and release archives, not deployed containers.
 - Reject unsigned production webhooks by default unless explicitly overridden for deployments that disable webhook ingestion or verify signatures upstream.
 - Fail startup on malformed numeric, boolean, duration, tracing sample, port, and bind-address configuration.
+- Remove committed private-context literals from the OSS hygiene scanner and allow local/private denylist patterns through `ABRA_OSS_PRIVATE_CONTEXT_PATTERNS`.
+- Scan package lockfiles in OSS hygiene checks so private registry metadata cannot hide in dependency locks.
 
 ## 0.3.7 - 2026-06-19
 

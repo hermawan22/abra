@@ -10,9 +10,7 @@ const ignoredPathPatterns = [
   /^node_modules\//,
   /^dist\//,
   /^\.tmp\//,
-  /^coverage\//,
-  /^scripts\/abra-oss-hygiene\.mjs$/,
-  /(^|\/)package-lock\.json$/
+  /^coverage\//
 ];
 
 const forbiddenPatterns = [
@@ -52,16 +50,24 @@ const forbiddenPatterns = [
     message: "developer-local absolute workspace path detected"
   },
   {
-    id: "private_org_name",
-    pattern: /\bAmartha\b|creafilo\.com|support@creafilo\.com|next-insurance|bitbucket\.org\/Amartha/i,
-    message: "private organization context detected"
-  },
-  {
     id: "private_registry_credentials",
     pattern: /\bNEXUS_(?:USER|PASSWORD|TOKEN)\b/,
     message: "private registry credential name detected"
   }
 ];
+
+function extraForbiddenPatterns() {
+  const raw = process.env.ABRA_OSS_PRIVATE_CONTEXT_PATTERNS || "";
+  return raw
+    .split(/\r?\n|,/)
+    .map((pattern) => pattern.trim())
+    .filter(Boolean)
+    .map((pattern, index) => ({
+      id: `private_context_${index + 1}`,
+      pattern: new RegExp(pattern, "i"),
+      message: "private context pattern detected"
+    }));
+}
 
 function trackedFiles() {
   const output = execFileSync("git", ["ls-files", "-z"], { encoding: "utf8" });
@@ -91,7 +97,7 @@ function scanFile(file) {
     return [];
   }
   const findings = [];
-  for (const rule of forbiddenPatterns) {
+  for (const rule of [...forbiddenPatterns, ...extraForbiddenPatterns()]) {
     rule.pattern.lastIndex = 0;
     let match;
     while ((match = rule.pattern.exec(content)) !== null) {
@@ -218,7 +224,7 @@ function runSelfTest() {
       "bad-install.md",
       [
         "# Bad installer docs",
-        "curl -fsSL https://raw.githubusercontent.com/example/abra/main/scripts/install.sh | sh",
+        "curl -fsSL https://raw.githubusercontent.com/" + "example/abra/main/scripts/install.sh | sh",
         ""
       ].join("\n")
     );
