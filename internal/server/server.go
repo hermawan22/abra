@@ -1406,7 +1406,7 @@ func (h *handler) mcpToolCall(w http.ResponseWriter, r *http.Request, id any, pa
 			"candidate_limit":     candidateLimit,
 			"candidate_truncated": len(scopes) >= candidateLimit,
 			"filtered_by_token":   !principal.allScopes,
-			"hint":                "Use one exact scope value with brain_think, recall, policy_plan, and working_memory_compose. When you already know the project scope from `abra scope`, call discover_scopes with expected_scope set to that exact value. If the expected project is missing or candidate_truncated is true, run `abra scope` in that project, then `abra ingest . --code --scope <scope>` with the printed scope.",
+			"hint":                "Use one exact scope value with brain_think, recall, policy_plan, and working_memory_compose. When you already know the project scope from `abra scope`, call discover_scopes with expected_scope set to that exact value. If an AI client says Abra has no context, run `abra agents verify . --scope <scope> --agent <agent>` first; repair MCP/token/client readiness when server_ready is true but agent_ready is false, and ingest only when verify proves the exact scope or source-backed memory is missing.",
 		}
 	case "rebuild_summaries":
 		scope := stringArg(args, "scope")

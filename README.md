@@ -221,7 +221,7 @@ the launching shell. To avoid scope mismatches, run this in each project:
 abra agents bootstrap --agent codex
 ```
 
-The manual recovery path is:
+The manual bootstrap path is:
 
 ```sh
 abra scope
@@ -229,9 +229,15 @@ abra ingest . --code --scope <scope-from-abra-scope>
 abra agents verify . --scope <scope-from-abra-scope>
 ```
 
-If `abra agents verify` says ready but Codex still says Abra has no context,
-restart that Codex client so it reloads MCP config and token environment, then
-rerun the same verify command and retry with the printed ready prompt.
+The no-context recovery path starts with verification, not re-ingestion:
+
+```sh
+abra agents verify . --scope <scope-from-abra-scope> --agent codex --json
+```
+
+If `server_ready=true` but `agent_ready=false`, repair MCP/token visibility and
+fully restart that AI client before trying again. Re-ingest only when verify
+reports that the exact scope is missing or source-backed memory is empty.
 
 Prompt pattern:
 

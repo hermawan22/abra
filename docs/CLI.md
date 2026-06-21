@@ -213,10 +213,11 @@ abra scope, ingest the project with that exact scope, rerun abra agents verify .
 --scope repo:<project> --agent codex, then retry with this exact scope.`
 
 `abra scope` also prints the exact `abra agents bootstrap`, `abra agents init`,
-`abra ingest`, and `abra agents verify` commands for the current project. Use
-those printed commands when Codex or another AI client says Abra has no context;
-the usual cause is that the agent queried a different scope than the one used
-during ingestion.
+`abra ingest`, and `abra agents verify` commands for the current project. When
+Codex or another AI client says Abra has no context, run the printed verify
+command first. If `server_ready=true` but `agent_ready=false`, repair MCP/token
+visibility and fully restart that client. Re-ingest only when verify proves the
+exact scope or source-backed memory is missing.
 
 Stop the local stack and default local embedding runner:
 

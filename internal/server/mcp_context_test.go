@@ -54,7 +54,12 @@ func TestAgentWorkflowGuideExplainsScopeRecovery(t *testing.T) {
 		t.Fatalf("contents = %#v", result["contents"])
 	}
 	text, _ := contents[0]["text"].(string)
-	if !strings.Contains(text, "discover_scopes") || !strings.Contains(text, "expected_scope") {
+	for _, want := range []string{"discover_scopes", "expected_scope", "abra agents verify", "agent_ready=false", "ingest only when verify proves"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("guide text missing %q: %q", want, text)
+		}
+	}
+	if strings.Contains(text, "ingest with the printed scope") {
 		t.Fatalf("guide text = %q", text)
 	}
 }

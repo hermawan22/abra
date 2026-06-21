@@ -17,6 +17,21 @@ import (
 	"github.com/hermawan22/abra/internal/store"
 )
 
+func TestNewEmbeddingProviderRejectsCustomHTTPProvider(t *testing.T) {
+	_, err := newEmbeddingProvider(config.Config{
+		Embedding: config.AIProviderConfig{
+			Provider:   "custom-http",
+			BaseURL:    "https://provider.example/embed",
+			Model:      "custom-model",
+			Dimensions: 1024,
+			Timeout:    time.Second,
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), `unsupported embedding provider "custom-http"`) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestCodeIntelligenceSummariesAddRepoAndEntityLayers(t *testing.T) {
 	input := summaryInput{
 		DocumentID: "doc-1",

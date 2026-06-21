@@ -468,7 +468,7 @@ func printSetupNext(args cliArgs) {
 	fmt.Println("  abra ingest . --code --scope <scope-from-abra-scope>")
 	fmt.Println("  abra agents verify . --scope <scope-from-abra-scope>")
 	fmt.Println("  abra mcp install-codex")
-	fmt.Println("If Codex says Abra has no context, rerun `abra scope`, ingest with the printed exact scope, run `abra agents verify`, fully restart Codex, then retry with the printed ready prompt.")
+	fmt.Println("If Codex says Abra has no context, run `abra agents verify --json` first. Reinstall/restart MCP when server_ready=true but agent_ready=false; re-ingest only if verify reports missing scope or empty source-backed memory.")
 }
 
 func setupConfiguredValues(args cliArgs) map[string]string {

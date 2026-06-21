@@ -2363,7 +2363,7 @@ func scopeCommand(args cliArgs) error {
 				"think":           "abra think \"what should I know before changing this project?\" --scope " + scope,
 				"codex":           agentReadyPrompt(scope),
 				"compose":         "abra compose \"ship this change\" --scope " + scope + " --agent codex",
-				"troubleshooting": "If an AI client says Abra has no context, run the ingest example with the exact scope above, then run agents_verify and retry the agent task.",
+				"troubleshooting": "If an AI client says Abra has no context, run agents_verify first. Reinstall/restart MCP when server_ready is true but agent_ready is false; ingest only when verify proves the exact scope or source-backed memory is missing.",
 			},
 		})
 	}
@@ -2376,7 +2376,7 @@ func scopeCommand(args cliArgs) error {
 	fmt.Println("Check:  abra agents verify " + shellQuote(path) + " --scope " + shellQuote(scope))
 	fmt.Println("Think:  abra think \"what should I know before changing this project?\" --scope " + scope)
 	fmt.Println("Codex:  " + agentReadyPrompt(scope))
-	fmt.Println("Fix:    If Codex says Abra has no context, run Ingest, then Check, then retry with the Codex prompt above.")
+	fmt.Println("Fix:    If Codex says Abra has no context, run Check first. Reinstall/restart MCP when server is ready but agent_ready=false; run Ingest only when Check proves missing scope or empty memory.")
 	return nil
 }
 
@@ -2528,7 +2528,7 @@ func verifyAgentContext(ctx context.Context, args cliArgs, path, scope string) e
 	serverReady, clientReady, clientWarnings := agentReadinessSummary(checks, filesOnly)
 	agentReady := serverReady && clientReady
 	readyPrompt := agentReadyPrompt(scope, agent)
-	nextSteps := agentVerifyNextSteps(path, scope, agent, ok, filesOnly)
+	nextSteps := agentVerifyNextSteps(path, scope, agent, ok, filesOnly, checks)
 	if ok && !filesOnly && !clientReady {
 		nextSteps = append([]string{"Fix the client warning(s) above before relying on the active AI client, then fully restart that client."}, nextSteps...)
 	}
@@ -2589,7 +2589,7 @@ func verifyAgentContext(ctx context.Context, args cliArgs, path, scope string) e
 		if filesOnly {
 			return errors.New("agent instruction verification failed; run `abra agents init --force` after confirming local custom instructions are backed up")
 		}
-		return errors.New("agent context verification failed; run `abra agents init`, `abra ingest . --code --scope " + scope + "`, and `abra doctor`")
+		return errors.New("agent context verification failed; follow the printed Next steps and rerun `abra agents verify`")
 	}
 	if filesOnly {
 		fmt.Println("Ready: agent instruction files are ready for scope " + scope + ".")
@@ -2645,7 +2645,7 @@ func isCodexAgent(agent string) bool {
 	return strings.EqualFold(strings.TrimSpace(agent), "codex")
 }
 
-func agentVerifyNextSteps(path, scope, agent string, ok, filesOnly bool) []string {
+func agentVerifyNextSteps(path, scope, agent string, ok, filesOnly bool, checks []map[string]any) []string {
 	if ok && filesOnly {
 		return []string{
 			"Run `abra agents verify " + shellQuote(path) + " --scope " + shellQuote(scope) + " --agent " + shellQuote(agent) + "` against a live Abra MCP server before giving the prompt to an AI client.",
@@ -2658,12 +2658,77 @@ func agentVerifyNextSteps(path, scope, agent string, ok, filesOnly bool) []strin
 			"If the AI client still says Abra has no context, fully restart that client and rerun `abra agents verify " + shellQuote(path) + " --scope " + shellQuote(scope) + " --agent " + shellQuote(agent) + "`.",
 		}
 	}
-	return []string{
-		"Run `abra agents init " + shellQuote(path) + " --agent " + shellQuote(agent) + " --scope " + shellQuote(scope) + "` if instruction files are missing or stale.",
-		"Run `abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope) + "` if scope discovery or working memory is empty.",
-		"Run `abra doctor` to check API, MCP, token, and local model readiness.",
-		"Rerun `abra agents verify " + shellQuote(path) + " --scope " + shellQuote(scope) + " --agent " + shellQuote(agent) + "`.",
+	steps := []string{}
+	if hasFailedCheck(checks, "AGENTS.md") || hasFailedCheck(checks, "CLAUDE.md") {
+		steps = append(steps, "Run `abra agents init "+shellQuote(path)+" --agent "+shellQuote(agent)+" --scope "+shellQuote(scope)+"` if instruction files are missing or stale.")
 	}
+	if hasFailedCheck(checks, "mcp") || failedCheckHasError(checks, "scope_discovery") || failedCheckHasError(checks, "working_memory") {
+		steps = append(steps,
+			"Run `abra doctor` to check API, MCP, token, and local model readiness.",
+			"If this is Codex, run `abra mcp install-codex`, fully quit and reopen Codex, then retry.",
+		)
+	}
+	if hasFailedCheckWithoutError(checks, "scope_discovery") || hasFailedCheckWithoutError(checks, "working_memory") {
+		steps = append(steps, "Run `abra ingest "+shellQuote(path)+" --code --scope "+shellQuote(scope)+"` only because verify proved the exact scope or source-backed memory is missing.")
+	}
+	if len(steps) == 0 {
+		steps = append(steps, "Run `abra doctor` to check API, MCP, token, local model readiness, and agent setup.")
+	}
+	steps = appendUniqueStrings(steps, "Rerun `abra agents verify "+shellQuote(path)+" --scope "+shellQuote(scope)+" --agent "+shellQuote(agent)+"`.")
+	return steps
+}
+
+func appendUniqueStrings(values []string, extra ...string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values)+len(extra))
+	for _, value := range values {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	for _, value := range extra {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func hasFailedCheck(checks []map[string]any, name string) bool {
+	for _, check := range checks {
+		if stringValue(check["name"], "") == name && !boolValue(check["ok"], false) {
+			return true
+		}
+	}
+	return false
+}
+
+func failedCheckHasError(checks []map[string]any, name string) bool {
+	for _, check := range checks {
+		if stringValue(check["name"], "") == name && !boolValue(check["ok"], false) && stringValue(check["error"], "") != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasFailedCheckWithoutError(checks []map[string]any, name string) bool {
+	for _, check := range checks {
+		if stringValue(check["name"], "") == name && !boolValue(check["ok"], false) && stringValue(check["error"], "") == "" {
+			return true
+		}
+	}
+	return false
 }
 
 func agentClientAdvisoryChecks(args cliArgs) []map[string]any {
@@ -2745,7 +2810,7 @@ func discoverScopeCheck(ctx context.Context, args cliArgs, scope string) map[str
 		return map[string]any{
 			"name":  "scope_discovery",
 			"ok":    false,
-			"hint":  "run `abra ingest . --code --scope " + scope + "` and retry",
+			"hint":  "repair Abra MCP/API/token readiness with `abra doctor`, then rerun `abra agents verify`; re-ingest only if discovery succeeds but the exact scope is missing",
 			"error": err.Error(),
 		}
 	}
@@ -2782,7 +2847,7 @@ func workingMemoryContextCheck(ctx context.Context, args cliArgs, scope, agent s
 		return map[string]any{
 			"name":  "working_memory",
 			"ok":    false,
-			"hint":  "run `abra ingest . --code --scope " + scope + "`, then retry `abra agents verify . --scope " + scope + "`",
+			"hint":  "repair Abra MCP/API/token readiness with `abra doctor`, then rerun `abra agents verify`; re-ingest only if compose succeeds but returns no source-backed context",
 			"error": err.Error(),
 		}
 	}
@@ -4108,9 +4173,9 @@ review proposals and requires write access.
 
 Prints the stable memory scope for a project path and shows the exact commands
 and agent prompt to use. Use this when an AI client says Abra has no context:
-the usual cause is a scope mismatch between ingest and working_memory_compose.
-Compare this output with discover_scopes in the MCP client; if the exact scope
-is missing, ingest the project with the printed command and retry.
+first run agents verify with the printed scope. If server_ready is true but
+agent_ready is false, repair MCP/token/client restart before re-ingesting. Only
+run ingest when verify proves the exact scope or source-backed memory is missing.
 `
 	case "agents", "agent":
 		return `Usage:

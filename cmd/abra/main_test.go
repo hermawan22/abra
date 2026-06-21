@@ -241,10 +241,16 @@ func TestScopeCommandPrintsAgentGuidance(t *testing.T) {
 		"abra agents verify " + shellQuote(root) + " --scope " + shellQuote(wantScope),
 		"abra ingest " + shellQuote(root) + " --code --scope " + shellQuote(wantScope),
 		"If Codex says Abra has no context",
+		"run Check first",
+		"agent_ready=false",
+		"run Ingest only when Check proves missing scope or empty memory",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("scope output missing %q:\n%s", want, output)
 		}
+	}
+	if strings.Contains(output, "run Ingest, then Check") {
+		t.Fatalf("scope output should not unconditionally suggest ingest before verify:\n%s", output)
 	}
 	ingestIndex := strings.Index(output, "Ingest: abra ingest")
 	checkIndex := strings.Index(output, "Check:  abra agents verify")
@@ -283,6 +289,15 @@ func TestScopeCommandJSON(t *testing.T) {
 	}
 	if stringValue(examples["codex"], "") != agentReadyPrompt(wantScope) {
 		t.Fatalf("codex example = %#v", examples["codex"])
+	}
+	troubleshooting := stringValue(examples["troubleshooting"], "")
+	for _, want := range []string{"run agents_verify first", "agent_ready is false", "ingest only when verify proves"} {
+		if !strings.Contains(troubleshooting, want) {
+			t.Fatalf("troubleshooting missing %q: %s", want, troubleshooting)
+		}
+	}
+	if strings.Contains(troubleshooting, "run the ingest example") {
+		t.Fatalf("troubleshooting should not lead with ingest: %s", troubleshooting)
 	}
 }
 
@@ -846,6 +861,88 @@ func TestAgentReadinessSummarySeparatesClientWarnings(t *testing.T) {
 	}
 	if !checksOK(checks, false) || checksOK(checks, true) {
 		t.Fatalf("checksOK should pass non-strict and fail strict for advisory warning")
+	}
+}
+
+func TestAgentVerifyNextStepsAvoidIngestForMCPToolErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		checks []map[string]any
+	}{
+		{
+			name: "scope discovery rpc error",
+			checks: []map[string]any{
+				{"name": "AGENTS.md", "ok": true},
+				{"name": "mcp", "ok": true},
+				{"name": "scope_discovery", "ok": false, "error": "jsonrpc error"},
+			},
+		},
+		{
+			name: "working memory rpc error",
+			checks: []map[string]any{
+				{"name": "AGENTS.md", "ok": true},
+				{"name": "mcp", "ok": true},
+				{"name": "scope_discovery", "ok": true},
+				{"name": "working_memory", "ok": false, "error": "jsonrpc error"},
+			},
+		},
+		{
+			name: "mcp unavailable",
+			checks: []map[string]any{
+				{"name": "AGENTS.md", "ok": true},
+				{"name": "mcp", "ok": false, "error": "connection refused"},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			steps := agentVerifyNextSteps("/repo", "repo:demo", "codex", false, false, tc.checks)
+			joined := strings.Join(steps, "\n")
+			if strings.Contains(joined, "abra ingest") {
+				t.Fatalf("tool readiness error should not suggest ingest:\n%s", joined)
+			}
+			if !strings.Contains(joined, "abra doctor") {
+				t.Fatalf("tool readiness error should suggest doctor:\n%s", joined)
+			}
+			if !strings.Contains(joined, "abra mcp install-codex") {
+				t.Fatalf("tool readiness error should suggest MCP/token repair:\n%s", joined)
+			}
+		})
+	}
+}
+
+func TestAgentVerifyNextStepsSuggestIngestOnlyForMissingMemory(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		checks []map[string]any
+	}{
+		{
+			name: "scope missing",
+			checks: []map[string]any{
+				{"name": "AGENTS.md", "ok": true},
+				{"name": "mcp", "ok": true},
+				{"name": "scope_discovery", "ok": false, "detail": "scope missing"},
+			},
+		},
+		{
+			name: "working memory empty",
+			checks: []map[string]any{
+				{"name": "AGENTS.md", "ok": true},
+				{"name": "mcp", "ok": true},
+				{"name": "scope_discovery", "ok": true},
+				{"name": "working_memory", "ok": false, "detail": "facts=0 documents=0 summaries=0 graph=0"},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			steps := agentVerifyNextSteps("/repo", "repo:demo", "codex", false, false, tc.checks)
+			joined := strings.Join(steps, "\n")
+			if !strings.Contains(joined, "abra ingest") {
+				t.Fatalf("missing memory should suggest ingest:\n%s", joined)
+			}
+			if !strings.Contains(joined, "only because verify proved") {
+				t.Fatalf("ingest step should be conditional and evidence-based:\n%s", joined)
+			}
+		})
 	}
 }
 
@@ -1898,6 +1995,14 @@ func TestSetupYesNoStartDefaultsLocalQwen(t *testing.T) {
 		!strings.Contains(output, `abra think "What should I know before changing this project?" --scope <scope-from-abra-scope>`) {
 		t.Fatalf("setup next steps should defer scope until after cd and abra scope:\n%s", output)
 	}
+	for _, want := range []string{"run `abra agents verify --json` first", "server_ready=true but agent_ready=false", "re-ingest only if verify reports missing scope or empty source-backed memory"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("setup recovery guidance missing %q:\n%s", want, output)
+		}
+	}
+	if strings.Contains(output, "rerun `abra scope`, ingest") {
+		t.Fatalf("setup recovery should not lead with re-ingest:\n%s", output)
+	}
 }
 
 func TestSetupProductionGuidesCompatibleProvider(t *testing.T) {
@@ -2520,6 +2625,21 @@ func TestSetupCompatibleNonInteractiveRequiresExplicitEndpointAndModel(t *testin
 	}
 }
 
+func TestSetupRejectsCustomHTTPProviderSelector(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+
+	err := run(context.Background(), []string{"setup", "--provider", "custom-http", "--yes", "--no-start"})
+	if err == nil {
+		t.Fatal("expected unsupported setup model error")
+	}
+	if !strings.Contains(err.Error(), `unknown setup model "custom-http"`) || !strings.Contains(err.Error(), "use local, compatible, or openai") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestSetupRejectsConflictingProviders(t *testing.T) {
 	root := t.TempDir()
 	home := t.TempDir()
@@ -2677,6 +2797,23 @@ func TestConfigModelCompatibleRequiresDimensionsForUnknownModel(t *testing.T) {
 		t.Fatal("expected dimensions error")
 	}
 	if !strings.Contains(err.Error(), "embedding dimensions are required") || !strings.Contains(err.Error(), "--dimensions") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestConfigModelRejectsCustomHTTPSelector(t *testing.T) {
+	err := run(context.Background(), []string{
+		"config",
+		"model",
+		"custom-http",
+		"--base-url", "https://provider.example/embed",
+		"--model", "custom-model",
+		"--dimensions", "1024",
+	})
+	if err == nil {
+		t.Fatal("expected unsupported model config error")
+	}
+	if !strings.Contains(err.Error(), `unknown model config "custom-http"`) {
 		t.Fatalf("error = %v", err)
 	}
 }
