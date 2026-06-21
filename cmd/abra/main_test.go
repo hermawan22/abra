@@ -617,10 +617,107 @@ func TestAgentsVerifyIncludesCodexClientAdvisory(t *testing.T) {
 			t.Fatalf("agents verify error = %v", err)
 		}
 	})
-	for _, want := range []string{"Ready: MCP clients can use scope", "warn  codex_mcp_client", "ABRA_API_TOKEN is not set", "fully quit and reopen Codex Desktop"} {
+	for _, want := range []string{"Ready: Abra server can use scope", "AI client readiness has", "warn  codex_mcp_client", "ABRA_API_TOKEN is not set", "Fix the client warning(s) above"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("verify output missing %q:\n%s", want, output)
 		}
+	}
+}
+
+func TestAgentsVerifyJSONSeparatesServerAndClientReadiness(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "demo project")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wantScope := "repo:" + slug(filepath.Base(root))
+	if err := run(context.Background(), []string{"agents", "init", root, "--agent", "codex"}); err != nil {
+		t.Fatalf("agents init error = %v", err)
+	}
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	mustWrite(t, codexPath, "#!/bin/sh\nif [ \"$1 $2\" = 'mcp list' ]; then printf 'abra http://127.0.0.1:18080/mcp\\n'; exit 0; fi\nexit 1\n")
+	if err := os.Chmod(codexPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ABRA_CODEX_COMMAND", codexPath)
+	t.Setenv("ABRA_API_TOKEN", "")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var rpc map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&rpc); err != nil {
+			t.Fatalf("decode rpc: %v", err)
+		}
+		switch rpc["method"] {
+		case "tools/list":
+			writeTestJSON(t, w, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      rpc["id"],
+				"result": map[string]any{"tools": []map[string]any{
+					{"name": "discover_scopes"},
+					{"name": "working_memory_compose"},
+				}},
+			})
+		case "tools/call":
+			params, _ := rpc["params"].(map[string]any)
+			var payload []byte
+			switch params["name"] {
+			case "discover_scopes":
+				payload, _ = json.Marshal(map[string]any{
+					"recommended_scope": wantScope,
+					"matches":           []map[string]any{{"scope": wantScope}},
+				})
+			case "working_memory_compose":
+				payload, _ = json.Marshal(map[string]any{
+					"stats": map[string]any{
+						"facts":                1,
+						"supporting_documents": 1,
+						"summaries":            1,
+						"graph_relations":      1,
+					},
+				})
+			default:
+				t.Fatalf("unexpected tool %v", params["name"])
+			}
+			writeTestJSON(t, w, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      rpc["id"],
+				"result":  map[string]any{"content": []map[string]any{{"type": "text", "text": string(payload)}}},
+			})
+		default:
+			t.Fatalf("unexpected method %v", rpc["method"])
+		}
+	}))
+	defer server.Close()
+
+	output := captureStdout(t, func() {
+		if err := run(context.Background(), []string{"agents", "verify", root, "--json", "--base-url", server.URL, "--token", "test-token"}); err != nil {
+			t.Fatalf("agents verify --json error = %v", err)
+		}
+	})
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
+		t.Fatalf("decode verify json: %v\n%s", err, output)
+	}
+	if payload["ok"] != true || payload["server_ready"] != true || payload["client_ready"] != false || intValue(payload["client_warnings"]) == 0 {
+		t.Fatalf("readiness payload = %#v", payload)
+	}
+	nextSteps, _ := payload["next_steps"].([]any)
+	if len(nextSteps) == 0 || !strings.Contains(stringValue(nextSteps[0], ""), "Fix the client warning") {
+		t.Fatalf("next steps should prioritize client warning: %#v", payload["next_steps"])
+	}
+}
+
+func TestAgentReadinessSummarySeparatesClientWarnings(t *testing.T) {
+	checks := []map[string]any{
+		{"name": "AGENTS.md", "ok": true},
+		{"name": "mcp", "ok": true},
+		{"name": "working_memory", "ok": true},
+		{"name": "codex_mcp_client", "ok": true, "advisory": true, "client_ok": false, "level": "warn"},
+	}
+	serverReady, clientReady, clientWarnings := agentReadinessSummary(checks, false)
+	if !serverReady || clientReady || clientWarnings != 1 {
+		t.Fatalf("readiness = server:%t client:%t warnings:%d", serverReady, clientReady, clientWarnings)
+	}
+	if !checksOK(checks, false) || checksOK(checks, true) {
+		t.Fatalf("checksOK should pass non-strict and fail strict for advisory warning")
 	}
 }
 
@@ -717,7 +814,7 @@ func TestAgentsVerifyJSONIncludesReadyPromptAndNextSteps(t *testing.T) {
 		t.Fatalf("payload = %#v", payload)
 	}
 	readyPrompt := stringValue(payload["ready_prompt"], "")
-	for _, want := range []string{wantScope, "discover_scopes", "working_memory_compose", "task=<current task>", `agent="codex"`, "source-backed context"} {
+	for _, want := range []string{wantScope, "discover_scopes", "working_memory_compose", "task=<current task>", `agent="codex"`, "source-backed context", "abra agents verify . --scope " + wantScope + " --agent codex"} {
 		if !strings.Contains(readyPrompt, want) {
 			t.Fatalf("ready_prompt missing %q:\n%s", want, readyPrompt)
 		}

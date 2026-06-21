@@ -53,7 +53,7 @@ abra agents init --agent codex
 ```
 
 This writes `AGENTS.md` with the exact Abra scope and `CLAUDE.md` as an import for tools that read Claude Code instructions.
-After ingesting the project with the exact scope printed by `abra scope`, `abra agents verify --agent <agent>` checks both files, validates the MCP endpoint, calls `discover_scopes` with that exact project scope, and confirms `working_memory_compose` returns source-backed context for the selected agent profile. `abra agents ready` is a non-mutating alias for the same check. Both commands print a ready prompt and next steps for the AI client; `--json` returns `ready_prompt` plus `next_steps` for automation. The compose call runs in diagnostic mode, so verification does not write compose audit events or automatic learning proposals. If a coding agent says Abra has no context, run this before changing prompts or env files. If verification is ready but the agent still says there is no context, fully restart that AI client so it reloads MCP config and token environment, then rerun the same `abra agents verify ... --scope ... --agent <agent>` command.
+After ingesting the project with the exact scope printed by `abra scope`, `abra agents verify . --scope <scope-from-abra-scope> --agent <agent>` checks both files, validates the MCP endpoint, calls `discover_scopes` with that exact project scope, and confirms `working_memory_compose` returns source-backed context for the selected agent profile. `abra agents ready` is a non-mutating alias for the same check. Both commands print a ready prompt and next steps for the AI client; `--json` returns `server_ready`, `client_ready`, `ready_prompt`, and `next_steps` for automation. The compose call runs in diagnostic mode, so verification does not write compose audit events or automatic learning proposals. If a coding agent says Abra has no context, run this before changing prompts or env files. If verification is ready but the agent still says there is no context, fully restart that AI client so it reloads MCP config and token environment, then rerun the same `abra agents verify ... --scope ... --agent <agent>` command.
 For CI or release checks that should not contact a live MCP server, run
 `abra agents verify --files-only --strict`.
 
@@ -270,7 +270,7 @@ From a source checkout, run the CLI as `go run ./cmd/abra <command>`. In a relea
 | make Codex ready for the current repo | `abra agents bootstrap --agent codex` |
 | generate agent instruction files | `abra agents init --agent codex` |
 | verify agent context setup | `abra scope && abra agents verify . --scope <scope-from-abra-scope>` |
-| print machine-readable agent readiness | `abra agents ready --json` |
+| print machine-readable agent readiness | `abra scope && abra agents ready . --scope <scope-from-abra-scope> --json` |
 | verify agent instruction files in CI | `abra agents verify --files-only --strict` |
 | start local Qwen embedding runner | `abra models up` |
 | check local embedding runner | `abra models status` |

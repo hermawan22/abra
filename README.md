@@ -223,7 +223,7 @@ rerun the same verify command and retry with the printed ready prompt.
 Prompt pattern:
 
 ```text
-Use Abra MCP first. Exact scope: repo:<project>. Call discover_scopes with expected_scope="repo:<project>", then call working_memory_compose with task=<current task>, scope="repo:<project>", and agent="codex" before answering or changing code. If discover_scopes does not show repo:<project> or working_memory_compose returns no source-backed context, run abra scope, ingest the project with that exact scope, rerun abra agents verify, then retry with this exact scope.
+Use Abra MCP first. Exact scope: repo:<project>. Call discover_scopes with expected_scope="repo:<project>", then call working_memory_compose with task=<current task>, scope="repo:<project>", and agent="codex" before answering or changing code. If discover_scopes does not show repo:<project> or working_memory_compose returns no source-backed context, run abra scope, ingest the project with that exact scope, rerun abra agents verify . --scope repo:<project> --agent codex, then retry with this exact scope.
 ```
 
 Stop the stack and the default local embedding runner:

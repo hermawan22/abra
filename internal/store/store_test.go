@@ -291,6 +291,26 @@ func TestRecallRetrievalReasonsFallbackWhenScoresHidden(t *testing.T) {
 	}
 }
 
+func TestApplyBaseRankScoresDefaultsToRankScore(t *testing.T) {
+	result := RecallResult{
+		Claims: []ClaimResult{
+			{ID: "claim-1", Rank: 0.7},
+			{ID: "claim-2", Rank: 0.5, BaseRank: 0.4},
+		},
+		SupportingDocuments: []DocumentResult{
+			{ID: "doc-1", Rank: 0.6},
+			{ID: "doc-2", Rank: 0.5, BaseRank: 0.3},
+		},
+	}
+	applyBaseRankScores(&result)
+	if result.Claims[0].BaseRank != 0.7 || result.Claims[1].BaseRank != 0.4 {
+		t.Fatalf("claim base ranks = %#v", result.Claims)
+	}
+	if result.SupportingDocuments[0].BaseRank != 0.6 || result.SupportingDocuments[1].BaseRank != 0.3 {
+		t.Fatalf("document base ranks = %#v", result.SupportingDocuments)
+	}
+}
+
 func hasRetrievalReason(reasons []RetrievalReason, signal, mode string, count int) bool {
 	for _, reason := range reasons {
 		if reason.Signal == signal && reason.Mode == mode && reason.Count == count {

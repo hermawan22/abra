@@ -310,7 +310,7 @@ func TestRerankRecallSurfacesRerankerFailure(t *testing.T) {
 	if result.RetrievalMode != "hybrid" || len(result.RetrievalReasons) != 0 {
 		t.Fatalf("failed rerank should not mark mode/reasons as reranked: mode=%q reasons=%#v", result.RetrievalMode, result.RetrievalReasons)
 	}
-	if result.Claims[0].Rank != 0.8 || result.Claims[0].RerankApplied {
+	if result.Claims[0].Rank != 0.8 || result.Claims[0].BaseRank != 0.8 || result.Claims[0].RerankApplied {
 		t.Fatalf("base claim should be preserved without rerank metadata: %#v", result.Claims[0])
 	}
 }
@@ -380,7 +380,7 @@ func TestRerankRecallIgnoresInvalidRerankIndexes(t *testing.T) {
 	if result.RetrievalMode != "hybrid" || len(result.RetrievalReasons) != 0 {
 		t.Fatalf("invalid rerank indexes should not mark result reranked: mode=%q reasons=%#v", result.RetrievalMode, result.RetrievalReasons)
 	}
-	if result.Claims[0].RerankApplied || result.Claims[0].RerankScore != 0 || result.Claims[0].Rank != 0.8 {
+	if result.Claims[0].RerankApplied || result.Claims[0].RerankScore != 0 || result.Claims[0].Rank != 0.8 || result.Claims[0].BaseRank != 0.8 {
 		t.Fatalf("invalid rerank indexes should not alter claim: %#v", result.Claims[0])
 	}
 }

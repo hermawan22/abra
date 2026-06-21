@@ -2251,22 +2251,32 @@ func verifyAgentContext(ctx context.Context, args cliArgs, path, scope string) e
 		}
 	}
 	ok := checksOK(checks, strict)
+	serverReady, clientReady, clientWarnings := agentReadinessSummary(checks, filesOnly)
 	readyPrompt := agentReadyPrompt(scope, agent)
 	nextSteps := agentVerifyNextSteps(path, scope, agent, ok, filesOnly)
+	if ok && !filesOnly && !clientReady {
+		nextSteps = append([]string{"Fix the client warning(s) above before relying on the active AI client, then fully restart that client."}, nextSteps...)
+	}
 	if boolFlag(args, "json") {
 		if err := printJSON(map[string]any{
-			"ok":           ok,
-			"scope":        scope,
-			"path":         path,
-			"files_only":   filesOnly,
-			"strict":       strict,
-			"checks":       checks,
-			"ready_prompt": readyPrompt,
-			"next_steps":   nextSteps,
+			"ok":              ok,
+			"server_ready":    serverReady,
+			"client_ready":    clientReady,
+			"client_warnings": clientWarnings,
+			"scope":           scope,
+			"path":            path,
+			"files_only":      filesOnly,
+			"strict":          strict,
+			"checks":          checks,
+			"ready_prompt":    readyPrompt,
+			"next_steps":      nextSteps,
 		}); err != nil {
 			return err
 		}
 		if !ok {
+			if strict && serverReady && !clientReady {
+				return errors.New("agent client readiness failed under --strict; fix AI client advisory checks and rerun")
+			}
 			return errors.New("agent context verification failed")
 		}
 		return nil
@@ -2297,6 +2307,9 @@ func verifyAgentContext(ctx context.Context, args cliArgs, path, scope string) e
 	}
 	if !ok {
 		printAgentNextSteps(nextSteps)
+		if strict && serverReady && !clientReady {
+			return errors.New("agent client readiness failed under --strict; fix AI client advisory checks and rerun")
+		}
 		if filesOnly {
 			return errors.New("agent instruction verification failed; run `abra agents init --force` after confirming local custom instructions are backed up")
 		}
@@ -2308,10 +2321,32 @@ func verifyAgentContext(ctx context.Context, args cliArgs, path, scope string) e
 		printAgentNextSteps(nextSteps)
 		return nil
 	}
-	fmt.Println("Ready: MCP clients can use scope " + scope + " with working_memory_compose.")
+	if clientReady {
+		fmt.Println("Ready: server and configured AI client can use scope " + scope + " with working_memory_compose.")
+	} else {
+		fmt.Printf("Ready: Abra server can use scope %s with working_memory_compose, but AI client readiness has %d warning(s).\n", scope, clientWarnings)
+	}
 	fmt.Println("Prompt: " + readyPrompt)
 	printAgentNextSteps(nextSteps)
 	return nil
+}
+
+func agentReadinessSummary(checks []map[string]any, filesOnly bool) (serverReady bool, clientReady bool, clientWarnings int) {
+	serverReady = !filesOnly
+	clientReady = !filesOnly
+	for _, check := range checks {
+		if boolValue(check["advisory"], false) {
+			if stringValue(check["level"], "") == "warn" || boolValue(check["client_ok"], true) == false {
+				clientWarnings++
+				clientReady = false
+			}
+			continue
+		}
+		if !boolValue(check["ok"], false) {
+			serverReady = false
+		}
+	}
+	return serverReady, clientReady, clientWarnings
 }
 
 func agentReadyPrompt(scope string, agents ...string) string {
@@ -2319,7 +2354,7 @@ func agentReadyPrompt(scope string, agents ...string) string {
 	if len(agents) > 0 && strings.TrimSpace(agents[0]) != "" {
 		agent = strings.ToLower(strings.TrimSpace(agents[0]))
 	}
-	return `Use Abra MCP first. Exact scope: ` + scope + `. Call discover_scopes with expected_scope="` + scope + `", then call working_memory_compose with task=<current task>, scope="` + scope + `", and agent="` + agent + `" before answering or changing code. If discover_scopes does not show ` + scope + ` or working_memory_compose returns no source-backed context, run abra scope, ingest the project with that exact scope, rerun abra agents verify --agent ` + agent + `, then retry with this exact scope.`
+	return `Use Abra MCP first. Exact scope: ` + scope + `. Call discover_scopes with expected_scope="` + scope + `", then call working_memory_compose with task=<current task>, scope="` + scope + `", and agent="` + agent + `" before answering or changing code. If discover_scopes does not show ` + scope + ` or working_memory_compose returns no source-backed context, run abra scope, ingest the project with that exact scope, rerun abra agents verify . --scope ` + scope + ` --agent ` + agent + `, then retry with this exact scope.`
 }
 
 func normalizedAgentFlag(args cliArgs) string {

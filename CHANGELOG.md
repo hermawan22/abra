@@ -13,6 +13,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Add agent-aware `abra agents verify` / `ready` / `bootstrap` flows so Claude and other MCP clients can verify source-backed context with their own agent profile instead of being forced through Codex defaults.
 - Add first-class rerank warnings and per-result rerank metadata so working-memory packets expose reranker failures, bounded rerank scores, and base-vs-final ranking.
 - Add direct local `abra ingest` per-file progress in human output, with `--quiet` and `--json` keeping automation output clean.
+- Add explicit `server_ready`, `client_ready`, and `client_warnings` fields to `abra agents verify --json` so client MCP/token issues do not look like missing memory context.
 
 ### Changed
 
@@ -21,6 +22,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Keep Codex MCP installation automatic only for Codex while guiding other agents to the generic MCP config.
 - Bound reranker rank boosts instead of adding raw provider scores directly to recall ranking.
 - Omit raw rerank query text from retrieval warnings, keep rerank metadata JSON stable, and only mark recall as reranked when a returned candidate index was actually applied.
+- Default `base_rank_score` to `rank_score` for non-reranked recall results so public ranking metadata remains internally consistent.
 
 ## 0.3.8 - 2026-06-21
 

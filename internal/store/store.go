@@ -2991,6 +2991,7 @@ func (s *Store) Recall(ctx context.Context, query, scope string, limit int, incl
 		return RecallResult{}, err
 	}
 	result.GraphContext = relations
+	applyBaseRankScores(&result)
 	result.RetrievalReasons = recallRetrievalReasons(result)
 	return result, nil
 }
@@ -3053,8 +3054,25 @@ func (s *Store) RecallHybrid(ctx context.Context, query, scope string, limit int
 		return RecallResult{}, err
 	}
 	result.GraphContext = relations
+	applyBaseRankScores(&result)
 	result.RetrievalReasons = recallRetrievalReasons(result)
 	return result, nil
+}
+
+func applyBaseRankScores(result *RecallResult) {
+	if result == nil {
+		return
+	}
+	for i := range result.Claims {
+		if result.Claims[i].BaseRank == 0 && result.Claims[i].Rank != 0 {
+			result.Claims[i].BaseRank = result.Claims[i].Rank
+		}
+	}
+	for i := range result.SupportingDocuments {
+		if result.SupportingDocuments[i].BaseRank == 0 && result.SupportingDocuments[i].Rank != 0 {
+			result.SupportingDocuments[i].BaseRank = result.SupportingDocuments[i].Rank
+		}
+	}
 }
 
 func recallRetrievalReasons(result RecallResult) []RetrievalReason {

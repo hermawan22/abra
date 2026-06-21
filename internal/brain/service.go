@@ -420,6 +420,7 @@ func (s *Service) recallQueryEmbeddingCacheKey(query string) string {
 }
 
 func (s *Service) rerankRecall(ctx context.Context, query string, result store.RecallResult) store.RecallResult {
+	ensureRecallBaseRanks(&result)
 	if s.reranker == nil || strings.TrimSpace(query) == "" {
 		return result
 	}
@@ -473,6 +474,22 @@ func (s *Service) rerankRecall(ctx context.Context, query string, result store.R
 		})
 	}
 	return result
+}
+
+func ensureRecallBaseRanks(result *store.RecallResult) {
+	if result == nil {
+		return
+	}
+	for i := range result.Claims {
+		if result.Claims[i].BaseRank == 0 && result.Claims[i].Rank != 0 {
+			result.Claims[i].BaseRank = result.Claims[i].Rank
+		}
+	}
+	for i := range result.SupportingDocuments {
+		if result.SupportingDocuments[i].BaseRank == 0 && result.SupportingDocuments[i].Rank != 0 {
+			result.SupportingDocuments[i].BaseRank = result.SupportingDocuments[i].Rank
+		}
+	}
 }
 
 func applyClaimRerank(claims []store.ClaimResult, results []ai.RerankResult) int {
