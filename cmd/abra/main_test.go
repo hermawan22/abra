@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -804,7 +805,11 @@ func TestAgentsBootstrapInstallsCodexMCPBeforeFinalVerify(t *testing.T) {
 		t.Fatal(err)
 	}
 	logText := string(logBytes)
-	for _, want := range []string{"codex mcp add abra", "launchctl setenv", "launchctl getenv"} {
+	wantCommands := []string{"codex mcp add abra"}
+	if runtime.GOOS == "darwin" {
+		wantCommands = append(wantCommands, "launchctl setenv", "launchctl getenv")
+	}
+	for _, want := range wantCommands {
 		if !strings.Contains(logText, want) {
 			t.Fatalf("command log missing %q:\n%s", want, logText)
 		}
