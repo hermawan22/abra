@@ -778,6 +778,9 @@ func doctor(ctx context.Context, args cliArgs) error {
 	}
 	checks = append(checks, modelConfigCheck(args))
 	checks = append(checks, aiProviderConcurrencyCheck(args))
+	if envPath(args) != "" {
+		checks = append(checks, composeConcurrencyCheck(args))
+	}
 	checks = append(checks, localEmbeddingCheck(ctx, args))
 	checks = append(checks, codexMCPClientCheck(args))
 	checks = append(checks, codexLaunchEnvCheck(args))
@@ -998,6 +1001,54 @@ func aiProviderConcurrencyCheck(args cliArgs) map[string]any {
 		"name":   "ai_provider_concurrency",
 		"ok":     true,
 		"detail": "ABRA_AI_PROVIDER_CONCURRENCY=" + raw,
+	}
+}
+
+func composeConcurrencyCheck(args cliArgs) map[string]any {
+	values, err := readEnvValues(envPath(args))
+	if err != nil {
+		return map[string]any{
+			"name":   "compose_concurrency",
+			"ok":     false,
+			"detail": "runtime env is not readable: " + envPath(args),
+			"hint":   "run: abra setup",
+		}
+	}
+	provider := strings.TrimSpace(values["EMBEDDING_PROVIDER"])
+	recallRaw := firstNonEmpty(strings.TrimSpace(values["ABRA_COMPOSE_RECALL_CONCURRENCY"]), "1")
+	graphRaw := firstNonEmpty(strings.TrimSpace(values["ABRA_COMPOSE_GRAPH_CONCURRENCY"]), "4")
+	providerRaw := firstNonEmpty(strings.TrimSpace(values["ABRA_AI_PROVIDER_CONCURRENCY"]), defaultProviderConcurrency(provider))
+	recall, recallErr := strconv.Atoi(recallRaw)
+	graph, graphErr := strconv.Atoi(graphRaw)
+	providerConcurrency, providerErr := strconv.Atoi(providerRaw)
+	if recallErr != nil || recall < 1 || recall > 32 {
+		return map[string]any{
+			"name":   "compose_concurrency",
+			"ok":     false,
+			"detail": "ABRA_COMPOSE_RECALL_CONCURRENCY=" + recallRaw + " must be an integer between 1 and 32",
+			"hint":   "set ABRA_COMPOSE_RECALL_CONCURRENCY=1 in " + envPath(args) + ", then run: abra down && abra up",
+		}
+	}
+	if graphErr != nil || graph < 1 || graph > 32 {
+		return map[string]any{
+			"name":   "compose_concurrency",
+			"ok":     false,
+			"detail": "ABRA_COMPOSE_GRAPH_CONCURRENCY=" + graphRaw + " must be an integer between 1 and 32",
+			"hint":   "set ABRA_COMPOSE_GRAPH_CONCURRENCY=4 in " + envPath(args) + ", then run: abra down && abra up",
+		}
+	}
+	if providerErr == nil && isLocalProviderName(provider) && recall > providerConcurrency {
+		return map[string]any{
+			"name":   "compose_concurrency",
+			"ok":     true,
+			"detail": "recall=" + recallRaw + " graph=" + graphRaw + " with local provider concurrency=" + providerRaw + "; recall calls may queue behind the local model runner",
+			"hint":   "keep ABRA_COMPOSE_RECALL_CONCURRENCY=1 for the default local Qwen runner, or raise ABRA_AI_PROVIDER_CONCURRENCY only after provider capacity is measured",
+		}
+	}
+	return map[string]any{
+		"name":   "compose_concurrency",
+		"ok":     true,
+		"detail": "recall=" + recallRaw + " graph=" + graphRaw,
 	}
 }
 
@@ -1949,7 +2000,7 @@ func scopeCommand(args cliArgs) error {
 				"agents_verify":   "abra agents verify " + shellQuote(path) + " --scope " + shellQuote(scope),
 				"ingest":          "abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope),
 				"think":           "abra think \"what should I know before changing this project?\" --scope " + scope,
-				"codex":           "Use Abra MCP first. Exact scope: " + scope + ". Call discover_scopes with expected_scope=\"" + scope + "\", then call working_memory_compose with task=<current task>, scope=\"" + scope + "\", and agent=\"codex\" before answering or changing code. If discover_scopes does not show " + scope + " or working_memory_compose returns no source-backed context, run: abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope) + " && abra agents verify " + shellQuote(path) + " --scope " + shellQuote(scope),
+				"codex":           agentReadyPrompt(scope),
 				"compose":         "abra compose \"ship this change\" --scope " + scope + " --agent codex",
 				"troubleshooting": "If an AI client says Abra has no context, run the ingest example with the exact scope above, then run agents_verify and retry the agent task.",
 			},
@@ -1963,7 +2014,7 @@ func scopeCommand(args cliArgs) error {
 	fmt.Println("Ingest: abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope))
 	fmt.Println("Check:  abra agents verify " + shellQuote(path) + " --scope " + shellQuote(scope))
 	fmt.Println("Think:  abra think \"what should I know before changing this project?\" --scope " + scope)
-	fmt.Println("Codex:  Use Abra MCP first. Exact scope: " + scope + `. Call discover_scopes with expected_scope="` + scope + `", then call working_memory_compose with task=<current task>, scope="` + scope + `", and agent="codex".`)
+	fmt.Println("Codex:  " + agentReadyPrompt(scope))
 	fmt.Println("Fix:    If Codex says Abra has no context, run Ingest, then Check, then retry with the Codex prompt above.")
 	return nil
 }
@@ -2071,7 +2122,7 @@ func verifyAgentContext(ctx context.Context, args cliArgs, path, scope string) e
 	filesOnly := boolFlag(args, "files-only")
 	strict := boolFlag(args, "strict")
 	checks := []map[string]any{
-		agentFileCheck(filepath.Join(path, "AGENTS.md"), scope, []string{"working_memory_compose", "discover_scopes"}),
+		agentFileCheck(filepath.Join(path, "AGENTS.md"), scope, []string{"working_memory_compose", "discover_scopes", `expected_scope: "` + scope + `"`, "current task", `agent: "codex"`}),
 		optionalAgentFileCheck(filepath.Join(path, "CLAUDE.md"), "@AGENTS.md"),
 	}
 	if filesOnly {

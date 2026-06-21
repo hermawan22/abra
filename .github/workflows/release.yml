@@ -189,7 +189,8 @@ jobs:
           go build -trimpath \
             -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             -o dist/abra ./cmd/abra
-          tar -C dist -czf "dist/abra_${GOOS}_${GOARCH}.tar.gz" abra
+          cp LICENSE README.md dist/
+          tar -C dist -czf "dist/abra_${GOOS}_${GOARCH}.tar.gz" abra LICENSE README.md
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: abra_${{ matrix.os }}_${{ matrix.arch }}

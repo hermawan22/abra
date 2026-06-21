@@ -445,15 +445,19 @@ func printSetupNext(args cliArgs) {
 	scope := scopeOrDefault(args, ".")
 	fmt.Println("Next:")
 	fmt.Println("  abra up --env-file " + envPath(args))
+	fmt.Println("  From a source checkout, use `go run ./cmd/abra <command>` instead of `abra <command>` until the release binary is installed.")
 	if provider != "local" && provider != "" {
 		fmt.Println("  verify your " + label + " embedding endpoint is reachable from Abra")
 	}
+	fmt.Println("  cd /path/to/project")
 	fmt.Println("  abra scope")
+	fmt.Println("  abra agents bootstrap --agent codex")
 	fmt.Println("  abra agents init --agent codex")
 	fmt.Println("  abra ingest . --code --scope " + shellQuote(scope))
 	fmt.Println("  abra agents verify . --scope " + shellQuote(scope))
 	fmt.Println(`  abra think "What should I know before changing this project?" --scope ` + shellQuote(scope))
 	fmt.Println("  abra mcp install-codex")
+	fmt.Println("If Codex says Abra has no context, rerun `abra scope`, ingest with the printed exact scope, run `abra agents verify`, fully restart Codex, then retry with the printed ready prompt.")
 }
 
 func setupConfiguredValues(args cliArgs) map[string]string {

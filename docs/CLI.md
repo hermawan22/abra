@@ -246,7 +246,7 @@ From a source checkout, run the CLI as `go run ./cmd/abra <command>`. In a relea
 | guided first-run setup | `abra setup` |
 | make Codex ready for the current repo | `abra agents bootstrap --agent codex` |
 | generate agent instruction files | `abra agents init --agent codex` |
-| verify agent context setup | `abra agents verify` |
+| verify agent context setup | `abra scope && abra agents verify . --scope <scope-from-abra-scope>` |
 | print machine-readable agent readiness | `abra agents ready --json` |
 | verify agent instruction files in CI | `abra agents verify --files-only --strict` |
 | start local Qwen embedding runner | `abra models up` |

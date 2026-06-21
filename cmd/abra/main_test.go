@@ -204,7 +204,7 @@ func TestScopeCommandPrintsAgentGuidance(t *testing.T) {
 	wantScope := "repo:" + slug(filepath.Base(root))
 	for _, want := range []string{
 		wantScope,
-		"working_memory_compose",
+		agentReadyPrompt(wantScope),
 		"abra mcp install-codex",
 		"abra agents init " + shellQuote(root) + " --agent codex --scope " + shellQuote(wantScope),
 		"abra agents verify " + shellQuote(root) + " --scope " + shellQuote(wantScope),
@@ -250,7 +250,7 @@ func TestScopeCommandJSON(t *testing.T) {
 			t.Fatalf("%s example = %#v, want %q", key, examples[key], want)
 		}
 	}
-	if !strings.Contains(stringValue(examples["codex"], ""), "working_memory_compose") {
+	if stringValue(examples["codex"], "") != agentReadyPrompt(wantScope) {
 		t.Fatalf("codex example = %#v", examples["codex"])
 	}
 }
@@ -551,7 +551,7 @@ func TestAgentsVerifyJSONIncludesReadyPromptAndNextSteps(t *testing.T) {
 		t.Fatalf("payload = %#v", payload)
 	}
 	readyPrompt := stringValue(payload["ready_prompt"], "")
-	for _, want := range []string{wantScope, "discover_scopes", "working_memory_compose", "source-backed context"} {
+	for _, want := range []string{wantScope, "discover_scopes", "working_memory_compose", "task=<current task>", `agent="codex"`, "source-backed context"} {
 		if !strings.Contains(readyPrompt, want) {
 			t.Fatalf("ready_prompt missing %q:\n%s", want, readyPrompt)
 		}
@@ -870,6 +870,49 @@ func TestAIProviderConcurrencyCheckReportsDefaultsAndInvalidValues(t *testing.T)
 	}
 }
 
+func TestComposeConcurrencyCheckWarnsWhenLocalRecallExceedsProviderCapacity(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+	envFile := filepath.Join(home, "quickstart.env")
+	mustWrite(t, envFile, strings.Join([]string{
+		"EMBEDDING_PROVIDER=local",
+		"ABRA_AI_PROVIDER_CONCURRENCY=1",
+		"ABRA_COMPOSE_RECALL_CONCURRENCY=3",
+		"ABRA_COMPOSE_GRAPH_CONCURRENCY=4",
+		"",
+	}, "\n"))
+
+	check := composeConcurrencyCheck(parseArgs([]string{"doctor"}))
+	if check["ok"] != true {
+		t.Fatalf("check = %#v", check)
+	}
+	if detail := stringValue(check["detail"], ""); !strings.Contains(detail, "recall=3") || !strings.Contains(detail, "local provider concurrency=1") {
+		t.Fatalf("detail = %q", detail)
+	}
+	if hint := stringValue(check["hint"], ""); !strings.Contains(hint, "ABRA_COMPOSE_RECALL_CONCURRENCY=1") {
+		t.Fatalf("hint = %q", hint)
+	}
+}
+
+func TestComposeConcurrencyCheckRejectsInvalidValues(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+	envFile := filepath.Join(home, "quickstart.env")
+	mustWrite(t, envFile, "EMBEDDING_PROVIDER=compatible\nABRA_COMPOSE_RECALL_CONCURRENCY=33\n")
+
+	check := composeConcurrencyCheck(parseArgs([]string{"doctor"}))
+	if check["ok"] != false {
+		t.Fatalf("check = %#v", check)
+	}
+	if detail := stringValue(check["detail"], ""); !strings.Contains(detail, "between 1 and 32") {
+		t.Fatalf("detail = %q", detail)
+	}
+}
+
 func TestPrintDoctorIncludesDetailsAndHints(t *testing.T) {
 	output := captureStdout(t, func() {
 		if err := printDoctor(parseArgs([]string{"doctor"}), []map[string]any{
@@ -1171,7 +1214,7 @@ func TestSetupYesNoStartDefaultsLocalQwen(t *testing.T) {
 	if values["RERANKER_BASE_URL"] != "" {
 		t.Fatalf("reranker base url = %q", values["RERANKER_BASE_URL"])
 	}
-	for _, want := range []string{"abra up --env-file", "abra agents init --agent codex", "abra agents verify"} {
+	for _, want := range []string{"abra up --env-file", "go run ./cmd/abra <command>", "cd /path/to/project", "abra agents bootstrap --agent codex", "abra agents init --agent codex", "abra agents verify", "If Codex says Abra has no context"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("setup next steps missing %q:\n%s", want, output)
 		}
@@ -1512,6 +1555,7 @@ func TestPrintReadyShowsAgentVerificationFlow(t *testing.T) {
 	})
 	for _, want := range []string{
 		"abra mcp install-codex",
+		"abra agents bootstrap --agent codex",
 		"abra agents init --agent codex",
 		"abra agents verify",
 		"abra ingest . --code --scope <scope>",

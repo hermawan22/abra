@@ -61,6 +61,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Add `--tracked` local path ingestion for worker-visible paths while keeping direct local `abra ingest <path>` as the Docker-safe default.
 - Make setup next steps print the exact project scope for ingest and think commands.
 - Make setup and ready banners include `abra agents init` and `abra agents verify` so agent context readiness is part of the default CLI onboarding path.
+- Make setup next steps lead with `abra agents bootstrap --agent codex` and include exact-scope no-context recovery guidance.
 - Make `abra up` start the default local Qwen embedding runner automatically when the env uses `EMBEDDING_PROVIDER=local`.
 - Make `abra scope` print agent init, agent verification, MCP install, and exact-scope recovery commands when AI clients say Abra has no context.
 - Make CLI docs and generated agent instructions treat `abra scope` as the source of truth and recover empty agent context by ingesting and verifying the exact scope.
@@ -86,6 +87,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Make `abra upgrade` use published release installer URLs by default, with `--version` resolving to that pinned release's installer instead of branch `main`.
 - Raise local demo/setup and managed release-gate worker intervals to reduce background ingestion contention during recall and working-memory latency gates.
 - Warn on overly aggressive `WORKER_INTERVAL` values in `abra doctor` and normalize stale local setup env files back to the safer default.
+- Make `abra doctor` warn when local-Qwen compose recall fan-out exceeds configured AI provider concurrency.
 - Improve chunk splitting and embedding batch token estimation for oversized paragraphs, minified JSON, and dense code.
 - Expand default `--code` ingestion includes to supported code files repo-wide instead of only `src` JavaScript/TypeScript paths.
 - Gate low-confidence retrieval on lexical and semantic relevance signal instead of allowing boosted rank alone to make weak matches look strong, while preserving moderate rank-only compatibility paths.
@@ -113,6 +115,8 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Keep npm packaging intentionally minimal so private developer scripts cannot become an accidental npm distribution artifact.
 - Pin `govulncheck` to a reviewed module version in release documentation and GitHub workflows.
 - Use digest-pinned image placeholders in raw Kubernetes examples instead of mutable version tags.
+- Make Helm's default render use a digest placeholder and add an OSS hygiene guard so chart defaults do not regress to mutable image tags.
+- Include `LICENSE` and `README.md` in CLI release tarballs alongside the `abra` binary.
 
 ### Security
 

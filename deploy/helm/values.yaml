@@ -1,7 +1,8 @@
 image:
   repository: ghcr.io/hermawan22/abra
   tag: ""
-  digest: ""
+  # Replace the all-zero placeholder with the release IMAGE_DIGEST.
+  digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
   pullPolicy: IfNotPresent
 
 api:

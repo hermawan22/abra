@@ -184,6 +184,30 @@ function rawInstallerURLFindings(files) {
   return findings;
 }
 
+function helmImageDigestFindings(files) {
+  const file = "deploy/helm/values.yaml";
+  if (!files.includes(file)) {
+    return [];
+  }
+  let content;
+  try {
+    content = readFileSync(file, "utf8");
+  } catch {
+    return [];
+  }
+  const findings = [];
+  const emptyDigest = /^\s*digest:\s*["']?["']?\s*$/m.exec(content);
+  if (emptyDigest) {
+    findings.push({
+      file,
+      line: lineNumberFor(content, emptyDigest.index),
+      rule: "helm_image_digest_required",
+      message: "Helm defaults must render digest-pinned images instead of mutable version tags"
+    });
+  }
+  return findings;
+}
+
 function assertSelfTest(condition, message) {
   if (!condition) {
     throw new Error(message);
@@ -237,6 +261,8 @@ function runSelfTest() {
         ""
       ].join("\n")
     );
+    mkdirSync("deploy/helm", { recursive: true });
+    writeFileSync("deploy/helm/values.yaml", "image:\n  repository: ghcr.io/example/abra\n  digest: \"\"\n");
 
     const findings = workflowActionRefFindings([
       ".github/workflows/bad.yml",
@@ -263,6 +289,9 @@ function runSelfTest() {
     assertSelfTest(installFindings.length === 1, `expected 1 raw installer URL finding, got ${installFindings.length}`);
     assertSelfTest(installFindings[0].file === "bad-install.md", "expected bad installer docs finding");
     assertSelfTest(installFindings[0].rule === "raw_branch_installer_url", "expected raw installer URL rule");
+    const helmFindings = helmImageDigestFindings(["deploy/helm/values.yaml"]);
+    assertSelfTest(helmFindings.length === 1, `expected 1 Helm image digest finding, got ${helmFindings.length}`);
+    assertSelfTest(helmFindings[0].rule === "helm_image_digest_required", "expected Helm image digest rule");
   } finally {
     process.chdir(originalCwd);
     rmSync(root, { recursive: true, force: true });
@@ -279,7 +308,8 @@ const files = trackedFiles();
 const findings = [
   ...files.flatMap(scanFile),
   ...workflowActionRefFindings(files),
-  ...rawInstallerURLFindings(files)
+  ...rawInstallerURLFindings(files),
+  ...helmImageDigestFindings(files)
 ];
 
 if (findings.length > 0) {
