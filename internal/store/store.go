@@ -223,9 +223,12 @@ func (s *Store) PruneRateLimitBuckets(ctx context.Context, olderThan time.Durati
 func (s *Store) ExpireClaims(ctx context.Context) (int64, error) {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE claims
-		SET status = 'expired', updated_at = now()
+		SET status = 'expired',
+		    freshness_status = 'expired',
+		    freshness_checked_at = now(),
+		    updated_at = now()
 		WHERE expires_at IS NOT NULL
-		  AND expires_at < now()
+		  AND expires_at <= now()
 		  AND status NOT IN ('deprecated', 'expired')
 	`)
 	if err != nil {
@@ -312,6 +315,9 @@ type ClaimRecord struct {
 	EmbeddingProvider   string
 	EmbeddingModel      string
 	EmbeddingDimensions int
+	ValidFrom           string
+	ExpiresAt           string
+	SupersedesClaimID   string
 	SourceConfigID      string
 	IngestionJobID      string
 	AuthorityScore      float64
@@ -824,6 +830,12 @@ func (s *Store) ReplaceChunks(ctx context.Context, documentID, scope string, chu
 
 func (s *Store) InsertClaim(ctx context.Context, claim ClaimRecord) (string, error) {
 	id := stableID("claim", claim.Scope, claim.SourceURL, claim.ClaimText)
+	claim.ValidFrom = strings.TrimSpace(claim.ValidFrom)
+	claim.ExpiresAt = strings.TrimSpace(claim.ExpiresAt)
+	claim.SupersedesClaimID = strings.TrimSpace(claim.SupersedesClaimID)
+	if claim.SupersedesClaimID == id {
+		return "", fmt.Errorf("claim cannot supersede itself")
+	}
 	if claim.Authority == "" {
 		claim.Authority = "manual-unverified"
 	}
@@ -850,32 +862,38 @@ func (s *Store) InsertClaim(ctx context.Context, claim ClaimRecord) (string, err
 		  id, claim_text, scope, source_url, source_type, authority, status,
 		  confidence, embedding, last_verified_at, metadata,
 		  embedding_provider, embedding_model, embedding_dimensions,
+		  valid_from, expires_at, supersedes_claim_id,
 		  source_config_id, ingestion_job_id, authority_score
 		)
 		VALUES (
 		  $1, $2, $3, NULLIF($4, ''), NULLIF($5, ''), $6, $7, $8,
-		  $9::vector, now(), $10::jsonb, $11, $12, $13, NULLIF($14, ''), NULLIF($15, ''), $16
+		  $9::vector, now(), $10::jsonb, $11, $12, $13,
+		  NULLIF($14, '')::timestamptz, NULLIF($15, '')::timestamptz, NULLIF($16, ''),
+		  NULLIF($17, ''), NULLIF($18, ''), $19
 		)
 		ON CONFLICT DO NOTHING
-	`, id, claim.ClaimText, claim.Scope, claim.SourceURL, claim.SourceType, claim.Authority, claim.Status, claim.Confidence, vectorLiteral(claim.Embedding), jsonb(claim.Metadata), claim.EmbeddingProvider, claim.EmbeddingModel, claim.EmbeddingDimensions, claim.SourceConfigID, claim.IngestionJobID, claim.AuthorityScore)
+	`, id, claim.ClaimText, claim.Scope, claim.SourceURL, claim.SourceType, claim.Authority, claim.Status, claim.Confidence, vectorLiteral(claim.Embedding), jsonb(claim.Metadata), claim.EmbeddingProvider, claim.EmbeddingModel, claim.EmbeddingDimensions, claim.ValidFrom, claim.ExpiresAt, claim.SupersedesClaimID, claim.SourceConfigID, claim.IngestionJobID, claim.AuthorityScore)
 	if err != nil {
 		return "", err
 	}
 	_, err = s.queryRunner().Exec(ctx, `
 		UPDATE claims
-		SET source_config_id = COALESCE(NULLIF($4, ''), source_config_id),
-		    ingestion_job_id = COALESCE(NULLIF($5, ''), ingestion_job_id),
+		SET valid_from = COALESCE(NULLIF($4, '')::timestamptz, valid_from),
+		    expires_at = COALESCE(NULLIF($5, '')::timestamptz, expires_at),
+		    supersedes_claim_id = COALESCE(NULLIF($6, ''), supersedes_claim_id),
+		    source_config_id = COALESCE(NULLIF($7, ''), source_config_id),
+		    ingestion_job_id = COALESCE(NULLIF($8, ''), ingestion_job_id),
 		    authority = CASE
-		      WHEN authority = 'manual-unverified' AND NULLIF($6, '') IS NOT NULL THEN $6
+		      WHEN authority = 'manual-unverified' AND NULLIF($9, '') IS NOT NULL THEN $9
 		      ELSE authority
 		    END,
-		    authority_score = GREATEST(authority_score, $7),
+		    authority_score = GREATEST(authority_score, $10),
 		    status = CASE
-		      WHEN status = 'deprecated' AND metadata->>'source_refresh_deprecated' = 'true' THEN $9
+		      WHEN status = 'deprecated' AND metadata->>'source_refresh_deprecated' = 'true' THEN $12
 		      ELSE status
 		    END,
 		    confidence = CASE
-		      WHEN status = 'deprecated' AND metadata->>'source_refresh_deprecated' = 'true' THEN GREATEST(confidence, $10)
+		      WHEN status = 'deprecated' AND metadata->>'source_refresh_deprecated' = 'true' THEN GREATEST(confidence, $13)
 		      ELSE confidence
 		    END,
 		    last_verified_at = CASE
@@ -884,13 +902,13 @@ func (s *Store) InsertClaim(ctx context.Context, claim ClaimRecord) (string, err
 		    END,
 		    metadata = CASE
 		      WHEN status = 'deprecated' AND metadata->>'source_refresh_deprecated' = 'true'
-		        THEN (metadata - 'source_refresh_deprecated' - 'source_refresh_deprecated_at' - 'source_refresh_job_id') || $8::jsonb || jsonb_build_object('source_refresh_reactivated_at', now()::text)
-		      ELSE metadata || $8::jsonb
+		        THEN (metadata - 'source_refresh_deprecated' - 'source_refresh_deprecated_at' - 'source_refresh_job_id') || $11::jsonb || jsonb_build_object('source_refresh_reactivated_at', now()::text)
+		      ELSE metadata || $11::jsonb
 		    END
 		WHERE scope = $1
 		  AND COALESCE(source_url, '') = COALESCE(NULLIF($2, ''), '')
 		  AND claim_text = $3
-	`, claim.Scope, claim.SourceURL, claim.ClaimText, claim.SourceConfigID, claim.IngestionJobID, claim.Authority, claim.AuthorityScore, jsonb(claim.Metadata), claim.Status, claim.Confidence)
+	`, claim.Scope, claim.SourceURL, claim.ClaimText, claim.ValidFrom, claim.ExpiresAt, claim.SupersedesClaimID, claim.SourceConfigID, claim.IngestionJobID, claim.Authority, claim.AuthorityScore, jsonb(claim.Metadata), claim.Status, claim.Confidence)
 	if err != nil {
 		return "", err
 	}
@@ -1421,8 +1439,29 @@ func (s *Store) SearchClaims(ctx context.Context, query, scope, excludeID string
 	return claims, rows.Err()
 }
 
+func claimEffectiveSQL(alias string) string {
+	return fmt.Sprintf(`(%[1]s.valid_from IS NULL OR %[1]s.valid_from <= now())
+		  AND (%[1]s.expires_at IS NULL OR %[1]s.expires_at > now())
+		  AND NOT EXISTS (
+		    SELECT 1
+		    FROM claims superseding_claim
+		    WHERE superseding_claim.supersedes_claim_id = %[1]s.id
+		      AND superseding_claim.scope = %[1]s.scope
+		      AND superseding_claim.status NOT IN ('deprecated', 'expired')
+		      AND (superseding_claim.valid_from IS NULL OR superseding_claim.valid_from <= now())
+		      AND (superseding_claim.expires_at IS NULL OR superseding_claim.expires_at > now())
+		  )`, alias)
+}
+
+func activeClaimStatusSQL(alias string, includeUnverified bool) string {
+	if includeUnverified {
+		return fmt.Sprintf("%s.status NOT IN ('deprecated', 'expired')", alias)
+	}
+	return fmt.Sprintf("%s.status IN ('verified', 'inferred')", alias)
+}
+
 func searchClaimsSQL() string {
-	return `
+	return fmt.Sprintf(`
 		SELECT
 			id,
 			claim_text,
@@ -1461,6 +1500,7 @@ func searchClaimsSQL() string {
 		FROM claims
 		WHERE scope = $2
 		  AND status NOT IN ('deprecated', 'expired')
+		  AND %s
 		  AND ($3 = '' OR id != $3)
 		  AND (
 		    search_vector @@ plainto_tsquery('simple', $1)
@@ -1468,7 +1508,7 @@ func searchClaimsSQL() string {
 		  )
 		ORDER BY rank_score DESC
 		LIMIT $4
-	`
+	`, claimEffectiveSQL("claims"))
 }
 
 func (s *Store) DeprecateClaim(ctx context.Context, claimID, reason, createdBy string) (bool, error) {
@@ -3059,10 +3099,8 @@ func (s *Store) Recall(ctx context.Context, query, scope string, limit int, incl
 		limit = 5
 	}
 	anyQuery := fullTextAnyQuery(query)
-	statusFilter := "c.status IN ('verified', 'inferred')"
-	if includeUnverified {
-		statusFilter = "c.status NOT IN ('deprecated')"
-	}
+	statusFilter := activeClaimStatusSQL("c", includeUnverified)
+	lifecycleFilter := claimEffectiveSQL("c")
 
 	claimsRows, err := s.pool.Query(ctx, fmt.Sprintf(`
 		WITH ranked_claims AS (
@@ -3151,6 +3189,7 @@ func (s *Store) Recall(ctx context.Context, query, scope string, limit int, incl
 		) source_freshness ON true
 		WHERE c.scope = $2
 		  AND %s
+		  AND %s
 		  AND (
 		    c.search_vector @@ plainto_tsquery('simple', $1)
 		    OR c.search_vector @@ to_tsquery('simple', $4)
@@ -3169,7 +3208,7 @@ func (s *Store) Recall(ctx context.Context, query, scope string, limit int, incl
 		  rank_score DESC,
 		  sort_updated_at DESC
 		LIMIT $3
-	`, statusFilter), query, scope, limit, anyQuery)
+	`, statusFilter, lifecycleFilter), query, scope, limit, anyQuery)
 	if err != nil {
 		return RecallResult{}, err
 	}
@@ -3253,10 +3292,7 @@ func (s *Store) RecallHybrid(ctx context.Context, query, scope string, limit int
 		limit = 5
 	}
 	anyQuery := fullTextAnyQuery(query)
-	statusFilter := "c.status IN ('verified', 'inferred')"
-	if includeUnverified {
-		statusFilter = "c.status NOT IN ('deprecated')"
-	}
+	statusFilter := activeClaimStatusSQL("c", includeUnverified)
 	vector := vectorLiteral(queryEmbedding)
 
 	dimensions := len(queryEmbedding)
@@ -3381,6 +3417,7 @@ func recallRetrievalReasons(result RecallResult) []RetrievalReason {
 
 func hybridRecallClaimsSQL(statusFilter string, dimensions int) string {
 	embeddingExpr, queryExpr := vectorComparisonExpr("embedding", "$5", dimensions)
+	lifecycleFilter := claimEffectiveSQL("c")
 	return fmt.Sprintf(`
 		WITH text_matches AS (
 		  SELECT
@@ -3395,6 +3432,7 @@ func hybridRecallClaimsSQL(statusFilter string, dimensions int) string {
 		  FROM claims c
 		  WHERE c.scope = $2
 		    AND %s
+		    AND %s
 		    AND (
 		      c.search_vector @@ plainto_tsquery('simple', $1)
 		      OR c.search_vector @@ to_tsquery('simple', $4)
@@ -3408,6 +3446,7 @@ func hybridRecallClaimsSQL(statusFilter string, dimensions int) string {
 		    GREATEST(0, 1 - (%s <=> %s)) AS vector_score
 		  FROM claims c
 		  WHERE c.scope = $2
+		    AND %s
 		    AND %s
 		    AND c.embedding_dimensions = $6
 		  ORDER BY %s <=> %s
@@ -3508,7 +3547,7 @@ func hybridRecallClaimsSQL(statusFilter string, dimensions int) string {
 		  rank_score DESC,
 		  sort_updated_at DESC
 		LIMIT $3
-	`, statusFilter, embeddingExpr, queryExpr, statusFilter, embeddingExpr, queryExpr)
+	`, statusFilter, lifecycleFilter, embeddingExpr, queryExpr, statusFilter, lifecycleFilter, embeddingExpr, queryExpr)
 }
 
 func hybridRecallDocumentsSQL(dimensions int) string {

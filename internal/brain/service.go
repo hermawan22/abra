@@ -67,14 +67,17 @@ type IngestDocumentResult struct {
 }
 
 type RememberClaimInput struct {
-	Claim      string         `json:"claim"`
-	Scope      string         `json:"scope"`
-	SourceURL  string         `json:"source_url,omitempty"`
-	SourceType string         `json:"source_type,omitempty"`
-	Authority  string         `json:"authority,omitempty"`
-	CreatedBy  string         `json:"created_by,omitempty"`
-	ApprovalID string         `json:"approval_id,omitempty"`
-	Metadata   map[string]any `json:"metadata,omitempty"`
+	Claim             string         `json:"claim"`
+	Scope             string         `json:"scope"`
+	SourceURL         string         `json:"source_url,omitempty"`
+	SourceType        string         `json:"source_type,omitempty"`
+	Authority         string         `json:"authority,omitempty"`
+	ValidFrom         string         `json:"valid_from,omitempty"`
+	ExpiresAt         string         `json:"expires_at,omitempty"`
+	SupersedesClaimID string         `json:"supersedes_claim_id,omitempty"`
+	CreatedBy         string         `json:"created_by,omitempty"`
+	ApprovalID        string         `json:"approval_id,omitempty"`
+	Metadata          map[string]any `json:"metadata,omitempty"`
 }
 
 type RememberClaimResult struct {
@@ -964,6 +967,9 @@ func (s *Service) RememberClaim(ctx context.Context, input RememberClaimInput) (
 		EmbeddingProvider:   s.cfg.Embedding.Provider,
 		EmbeddingModel:      embedding.Model,
 		EmbeddingDimensions: embedding.Embeddings[0].Dimensions,
+		ValidFrom:           input.ValidFrom,
+		ExpiresAt:           input.ExpiresAt,
+		SupersedesClaimID:   input.SupersedesClaimID,
 		Metadata:            input.Metadata,
 	})
 	if err != nil {

@@ -156,6 +156,8 @@ func run(ctx context.Context, argv []string) error {
 		return recall(ctx, args)
 	case "compose":
 		return composeMemory(ctx, args)
+	case "memory":
+		return memoryCommand(ctx, args)
 	case "mcp", "mcp-config":
 		return mcp(ctx, args)
 	default:
@@ -3534,6 +3536,90 @@ func composeMemory(ctx context.Context, args cliArgs) error {
 	return nil
 }
 
+func memoryCommand(ctx context.Context, args cliArgs) error {
+	action := "status"
+	if len(args.Rest) > 0 {
+		action = strings.ToLower(strings.TrimSpace(args.Rest[0]))
+		args.Rest = args.Rest[1:]
+	}
+	switch action {
+	case "", "status", "health", "doctor":
+		return memoryStatus(ctx, args, action == "doctor")
+	default:
+		return fmt.Errorf("unknown memory command %q\n\n%s", action, commandUsage("memory"))
+	}
+}
+
+func memoryStatus(ctx context.Context, args cliArgs, doctor bool) error {
+	scope := scopeOrDefault(args, ".")
+	result, _, err := getJSON(ctx, args, "/memory/health?scope="+urlQueryEscape(scope))
+	if err != nil {
+		return err
+	}
+	if boolFlag(args, "json") {
+		return printJSON(result)
+	}
+	status := stringValue(result["status"], "unknown")
+	score := intValue(result["score"])
+	fmt.Printf("Memory: %s", status)
+	if score > 0 {
+		fmt.Printf(" score=%d", score)
+	}
+	fmt.Println()
+	fmt.Println("scope: " + scope)
+	printMemoryHealthSection("documents", result["documents"], []string{"total", "active", "stale", "deprecated", "deleted"})
+	printMemoryHealthSection("claims", result["claims"], []string{"total", "verified", "inferred", "unverified", "challenged", "deprecated", "expired", "stale", "with_evidence", "trusted_from_code_documents"})
+	printMemoryHealthSection("graph", result["graph"], []string{"entities", "active_entities", "relations", "active_relations", "challenged_relations", "stale_relations"})
+	printMemoryHealthSection("sources", result["sources"], []string{"total", "active", "due", "overdue", "error"})
+	printMemoryHealthSection("ingestion", result["ingestion"], []string{"queued_jobs", "running_jobs", "retry_jobs", "failed_jobs", "stale_running_jobs"})
+	printMemoryHealthSection("conflicts", result["conflicts"], []string{"total", "open", "reviewing", "blocking", "high"})
+	printMemoryHealthSection("learning", result["learning"], []string{"total", "pending", "accepted", "applied", "rejected", "duplicate_pending_groups"})
+	signals, _ := result["signals"].([]any)
+	if len(signals) == 0 {
+		fmt.Println("signals: none")
+		return nil
+	}
+	fmt.Println("signals:")
+	limit := 8
+	if doctor {
+		limit = len(signals)
+	}
+	printComposeSignals(signals, limit)
+	if !doctor && len(signals) > limit {
+		fmt.Println("Run `abra memory doctor --scope " + scope + "` for all health signals.")
+	}
+	return nil
+}
+
+func printMemoryHealthSection(name string, raw any, keys []string) {
+	section, _ := raw.(map[string]any)
+	if len(section) == 0 {
+		return
+	}
+	parts := []string{}
+	for _, key := range keys {
+		value, ok := section[key]
+		if !ok {
+			continue
+		}
+		switch typed := value.(type) {
+		case float64:
+			parts = append(parts, fmt.Sprintf("%s=%d", key, int(typed)))
+		case int:
+			parts = append(parts, fmt.Sprintf("%s=%d", key, typed))
+		case string:
+			if strings.TrimSpace(typed) != "" {
+				parts = append(parts, key+"="+typed)
+			}
+		case bool:
+			parts = append(parts, fmt.Sprintf("%s=%t", key, typed))
+		}
+	}
+	if len(parts) > 0 {
+		fmt.Println(name + ": " + strings.Join(parts, " "))
+	}
+}
+
 func printComposeSignals(signals []any, limit int) {
 	for i, raw := range signals {
 		if i >= limit {
@@ -5675,6 +5761,7 @@ Usage:
   abra think "What should agents use?"
   abra recall "agent memory"
   abra compose "ship a change"
+  abra memory status --scope repo:demo
   abra mcp
   abra mcp install-codex
 
@@ -5912,6 +5999,16 @@ allowed next actions, and suggested steps. Use --prompt to also print the
 prompt-ready context window for another AI client. By default compose is
 read-only; --persist-learning writes actionable learning suggestions as pending
 review proposals and requires write access.
+`
+	case "memory":
+		return `Usage:
+  abra memory status --scope repo:demo [--json]
+  abra memory health --scope repo:demo [--json]
+  abra memory doctor --scope repo:demo [--json]
+
+Shows memory health for a scope directly from the CLI: document/claim/source
+coverage, ingestion backlog, conflicts, learning proposals, and health signals.
+Use status for a compact operator view and doctor when you need every signal.
 `
 	case "scope":
 		return `Usage:

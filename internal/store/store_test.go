@@ -155,6 +155,77 @@ func TestConflictSelectIncludesResolutionFields(t *testing.T) {
 	}
 }
 
+func TestClaimLifecycleSQLFiltersTemporalAndSupersededClaims(t *testing.T) {
+	for name, query := range map[string]string{
+		"search":      searchClaimsSQL(),
+		"hybrid":      hybridRecallClaimsSQL(activeClaimStatusSQL("c", false), 3),
+		"active_only": claimEffectiveSQL("c"),
+	} {
+		for _, fragment := range []string{
+			"valid_from IS NULL OR",
+			"valid_from <= now()",
+			"expires_at IS NULL OR",
+			"expires_at > now()",
+			"supersedes_claim_id",
+			"superseding_claim.status NOT IN ('deprecated', 'expired')",
+		} {
+			if !strings.Contains(query, fragment) {
+				t.Fatalf("%s lifecycle SQL missing %q:\n%s", name, fragment, query)
+			}
+		}
+	}
+	if got := activeClaimStatusSQL("c", true); strings.Contains(got, "'deprecated'") && strings.Contains(got, "'expired'") {
+		return
+	}
+	t.Fatalf("include-unverified status filter should still exclude deprecated and expired claims")
+}
+
+func TestInsertClaimPersistsTemporalLifecycleFields(t *testing.T) {
+	runner := &fakeStoreRunner{}
+	store := &Store{runner: runner}
+	_, err := store.InsertClaim(context.Background(), ClaimRecord{
+		ClaimText:           "Use the new source of truth.",
+		Scope:               "repo:abra",
+		SourceURL:           "file://docs/new.md",
+		SourceType:          "markdown",
+		Embedding:           []float64{1, 0, 0},
+		EmbeddingProvider:   "test",
+		EmbeddingModel:      "test-model",
+		EmbeddingDimensions: 3,
+		ValidFrom:           "2026-01-01T00:00:00Z",
+		ExpiresAt:           "2026-12-31T00:00:00Z",
+		SupersedesClaimID:   "claim-old",
+	})
+	if err != nil {
+		t.Fatalf("InsertClaim error = %v", err)
+	}
+	combined := strings.Join(runner.execSQL, "\n")
+	for _, fragment := range []string{
+		"valid_from, expires_at, supersedes_claim_id",
+		"NULLIF($14, '')::timestamptz, NULLIF($15, '')::timestamptz, NULLIF($16, '')",
+		"valid_from = COALESCE(NULLIF($4, '')::timestamptz, valid_from)",
+		"expires_at = COALESCE(NULLIF($5, '')::timestamptz, expires_at)",
+		"supersedes_claim_id = COALESCE(NULLIF($6, ''), supersedes_claim_id)",
+	} {
+		if !strings.Contains(combined, fragment) {
+			t.Fatalf("InsertClaim SQL missing %q:\n%s", fragment, combined)
+		}
+	}
+}
+
+func TestInsertClaimRejectsSelfSupersession(t *testing.T) {
+	claim := ClaimRecord{
+		ClaimText: "Self supersession is invalid.",
+		Scope:     "repo:abra",
+		SourceURL: "file://docs/self.md",
+	}
+	claim.SupersedesClaimID = stableID("claim", claim.Scope, claim.SourceURL, claim.ClaimText)
+	_, err := (&Store{runner: &fakeStoreRunner{}}).InsertClaim(context.Background(), claim)
+	if err == nil || !strings.Contains(err.Error(), "cannot supersede itself") {
+		t.Fatalf("InsertClaim self-supersede error = %v, want rejection", err)
+	}
+}
+
 func TestCleanStringListTrimsAndDeduplicates(t *testing.T) {
 	got := cleanStringList([]string{" a ", "", "b", "a", " b "})
 	want := []string{"a", "b"}

@@ -1386,13 +1386,17 @@ func (h *handler) mcpToolCall(w http.ResponseWriter, r *http.Request, id any, pa
 			return
 		}
 		result, err = h.brain.RememberClaim(r.Context(), brain.RememberClaimInput{
-			Claim:      stringArg(args, "claim"),
-			Scope:      scope,
-			SourceURL:  stringArg(args, "source_url"),
-			SourceType: stringArg(args, "source_type"),
-			Authority:  stringArg(args, "authority"),
-			CreatedBy:  stringArg(args, "created_by"),
-			ApprovalID: stringArg(args, "approval_id"),
+			Claim:             stringArg(args, "claim"),
+			Scope:             scope,
+			SourceURL:         stringArg(args, "source_url"),
+			SourceType:        stringArg(args, "source_type"),
+			Authority:         stringArg(args, "authority"),
+			ValidFrom:         stringArg(args, "valid_from"),
+			ExpiresAt:         stringArg(args, "expires_at"),
+			SupersedesClaimID: stringArg(args, "supersedes_claim_id"),
+			CreatedBy:         stringArg(args, "created_by"),
+			ApprovalID:        stringArg(args, "approval_id"),
+			Metadata:          mapArg(args, "metadata"),
 		})
 	case "capture_observation":
 		scope := stringArg(args, "scope")
@@ -2348,7 +2352,19 @@ func mcpTools() []map[string]any {
 		{
 			"name":        "remember_claim",
 			"description": "Store a claim. Claims without source_url are unverified by default.",
-			"inputSchema": objectSchema([]string{"claim", "scope"}, map[string]any{"claim": stringSchema(), "scope": stringSchema(), "source_url": stringSchema(), "source_type": stringSchema(), "authority": stringSchema(), "created_by": stringSchema(), "approval_id": stringSchema()}),
+			"inputSchema": objectSchema([]string{"claim", "scope"}, map[string]any{
+				"claim":               stringSchema(),
+				"scope":               stringSchema(),
+				"source_url":          stringSchema(),
+				"source_type":         stringSchema(),
+				"authority":           stringSchema(),
+				"valid_from":          stringSchema(),
+				"expires_at":          stringSchema(),
+				"supersedes_claim_id": stringSchema(),
+				"created_by":          stringSchema(),
+				"approval_id":         stringSchema(),
+				"metadata":            map[string]any{"type": "object"},
+			}),
 		},
 		{
 			"name":        "capture_observation",

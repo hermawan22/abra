@@ -957,7 +957,7 @@ json_post "/mcp" "{
   \"method\":\"tools/call\",
   \"params\":{\"name\":\"capture_observation\",\"arguments\":{\"scope\":\"${SCOPE}\",\"observation_text\":\"MCP observation review sentinel ${STAMP} must remain outside trusted recall.\",\"observation_type\":\"episode\",\"status\":\"raw\",\"source_url\":\"file://abra-smoke-mcp-observation-${STAMP}.md\",\"source_type\":\"smoke\",\"created_by\":\"smoke-mcp\",\"metadata\":{\"fixture\":\"mcp-observation-review\",\"stamp\":\"${STAMP}\"}}}
 }" >"${tmpdir}/mcp-observation.json"
-mcp_observation_id="$(node -e 'let d="";process.stdin.on("data",x=>d+=x);process.stdin.on("end",()=>{const r=JSON.parse(d); const p=JSON.parse(r.result.content[0].text); console.log(p.id);})' <"${tmpdir}/mcp-observation.json")"
+mcp_observation_id="$(node -e 'let d="";process.stdin.on("data",x=>d+=x);process.stdin.on("end",()=>{const r=JSON.parse(d); const p=JSON.parse(r.result.content[0].text); console.log((p.observation||p).id);})' <"${tmpdir}/mcp-observation.json")"
 
 json_post "/mcp" "{
   \"jsonrpc\":\"2.0\",
@@ -965,7 +965,7 @@ json_post "/mcp" "{
   \"method\":\"tools/call\",
   \"params\":{\"name\":\"propose_learning\",\"arguments\":{\"scope\":\"${SCOPE}\",\"proposal_type\":\"claim\",\"target_type\":\"observation\",\"target_id\":\"${mcp_observation_id}\",\"created_by\":\"smoke-mcp\"}}
 }" >"${tmpdir}/mcp-observation-learning.json"
-mcp_observation_learning_id="$(node -e 'let d="";process.stdin.on("data",x=>d+=x);process.stdin.on("end",()=>{const r=JSON.parse(d); const p=JSON.parse(r.result.content[0].text); console.log(p.id);})' <"${tmpdir}/mcp-observation-learning.json")"
+mcp_observation_learning_id="$(node -e 'let d="";process.stdin.on("data",x=>d+=x);process.stdin.on("end",()=>{const r=JSON.parse(d); const p=JSON.parse(r.result.content[0].text); console.log((p.learning_proposal||p).id);})' <"${tmpdir}/mcp-observation-learning.json")"
 
 json_post "/mcp" "{
   \"jsonrpc\":\"2.0\",
@@ -993,7 +993,7 @@ json_post "/mcp" "{
   \"method\":\"tools/call\",
   \"params\":{\"name\":\"propose_learning\",\"arguments\":{\"scope\":\"${SCOPE}\",\"proposal_type\":\"graph\",\"title\":\"MCP learning proposal ${STAMP}\",\"rationale\":\"Verify MCP learning proposal workflow\",\"target_type\":\"scope\",\"target_id\":\"${SCOPE}\",\"created_by\":\"smoke\"}}
 }" >"${tmpdir}/mcp-learning.json"
-mcp_learning_id="$(node -e 'let d="";process.stdin.on("data",x=>d+=x);process.stdin.on("end",()=>{const r=JSON.parse(d); const p=JSON.parse(r.result.content[0].text); console.log(p.id);})' <"${tmpdir}/mcp-learning.json")"
+mcp_learning_id="$(node -e 'let d="";process.stdin.on("data",x=>d+=x);process.stdin.on("end",()=>{const r=JSON.parse(d); const p=JSON.parse(r.result.content[0].text); console.log((p.learning_proposal||p).id);})' <"${tmpdir}/mcp-learning.json")"
 
 json_post "/mcp" "{
   \"jsonrpc\":\"2.0\",
@@ -1616,12 +1616,14 @@ if (!mcpTextPayload(mcpAgentProfiles).some((item) => item.id === agentProfile.ag
   throw new Error("mcp list_agent_profiles did not return the configured profile");
 }
 if (!mcpObservation.result || mcpObservation.error) throw new Error("mcp capture_observation response failed");
-const mcpObservationPayload = mcpTextPayload(mcpObservation);
+const mcpObservationRaw = mcpTextPayload(mcpObservation);
+const mcpObservationPayload = mcpObservationRaw.observation || mcpObservationRaw;
 if (!mcpObservationPayload.id || mcpObservationPayload.status !== "raw" || mcpObservationPayload.scope !== process.env.SCOPE) {
   throw new Error("mcp capture_observation did not return a raw scoped observation");
 }
 if (!mcpObservationLearning.result || mcpObservationLearning.error) throw new Error("mcp observation propose_learning response failed");
-const mcpObservationLearningPayload = mcpTextPayload(mcpObservationLearning);
+const mcpObservationLearningRaw = mcpTextPayload(mcpObservationLearning);
+const mcpObservationLearningPayload = mcpObservationLearningRaw.learning_proposal || mcpObservationLearningRaw;
 if (!mcpObservationLearningPayload.id || mcpObservationLearningPayload.status !== "pending" || mcpObservationLearningPayload.target_type !== "observation" || mcpObservationLearningPayload.target_id !== mcpObservationPayload.id) {
   throw new Error("mcp observation propose_learning did not return a pending observation-target proposal");
 }

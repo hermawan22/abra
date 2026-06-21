@@ -94,7 +94,16 @@ async function mcpTool(name, args) {
       typeof response.result.content[0].text === "string",
     `mcp ${name} did not return text content`
   );
-  return JSON.parse(response.result.content[0].text);
+  const payload = JSON.parse(response.result.content[0].text);
+  if (payload && typeof payload === "object") {
+    if (name === "capture_observation") {
+      return payload.observation || payload;
+    }
+    if (name === "propose_learning") {
+      return payload.learning_proposal || payload;
+    }
+  }
+  return payload;
 }
 
 function assert(condition, message) {
@@ -846,6 +855,7 @@ await runCheck("tier3_observation_learning_proposal_requires_review_and_dedupes"
   };
   const firstProposal = await request("/learning/proposals", {
     method: "POST",
+    expectStatus: [200, 202],
     body: proposalBody
   });
   assert(firstProposal.learning_proposal && firstProposal.learning_proposal.id, "observation proposal did not return a learning proposal");
@@ -863,6 +873,7 @@ await runCheck("tier3_observation_learning_proposal_requires_review_and_dedupes"
 
   const secondProposal = await request("/learning/proposals", {
     method: "POST",
+    expectStatus: [200, 202],
     body: proposalBody
   });
   assert(secondProposal.learning_proposal && secondProposal.learning_proposal.id === firstProposal.learning_proposal.id, "duplicate observation proposal did not reuse the pending proposal");

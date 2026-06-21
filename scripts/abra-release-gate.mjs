@@ -23,7 +23,7 @@ const postgresPassword = manageStack && placeholderSecret(process.env.POSTGRES_P
 const databaseUrl = process.env.ABRA_DATABASE_URL || `postgres://${postgresUser}:${postgresPassword}@postgres:5432/${postgresDb}`;
 const commandTimeoutMs = numberEnv("ABRA_RELEASE_COMMAND_TIMEOUT_MS", quick ? 120_000 : 600_000);
 const outputLimit = numberEnv("ABRA_RELEASE_OUTPUT_LIMIT", 12_000);
-const prepareDogfoodSource = !quick && boolEnv("ABRA_RELEASE_PREPARE_DOGFOOD_SOURCE", manageStack);
+const prepareDogfoodSource = !quick && boolEnv("ABRA_RELEASE_PREPARE_DOGFOOD_SOURCE", true);
 const approvalEnforcementGate = !quick && boolEnv("ABRA_RELEASE_APPROVAL_ENFORCEMENT_GATE", manageStack);
 const cleanupManagedStack = manageStack && boolEnv("ABRA_RELEASE_CLEANUP_STACK", true);
 const managedComposeProject = process.env.ABRA_RELEASE_COMPOSE_PROJECT_NAME || `abra-release-gate-${runId.toLowerCase()}`;
@@ -379,16 +379,16 @@ async function main() {
     }
     if (prepareDogfoodSource) {
       await runCommand("prepare_dogfood_source_dir", "docker", ["compose", ...composeDevFiles, "exec", "-T", "worker", "sh", "-lc", `rm -rf ${dogfoodContainerSourceRoot} && mkdir -p ${dogfoodContainerSourceRoot}`], {
-        env: manageStack ? managedStackEnv : {}
+        env: managedStackEnv
       });
       await runCommand("prepare_dogfood_source_copy", "bash", [
         "-lc",
         `COPYFILE_DISABLE=1 tar --exclude .tmp --exclude node_modules --exclude .git --exclude '._*' --no-xattrs -cf - . | docker compose -f docker-compose.yml -f docker-compose.dev.yml exec -T worker tar -C ${dogfoodContainerSourceRoot} -xf -`
       ], {
-        env: manageStack ? managedStackEnv : {}
+        env: managedStackEnv
       });
       await runCommand("prepare_dogfood_source_clean", "docker", ["compose", ...composeDevFiles, "exec", "-T", "worker", "find", dogfoodContainerSourceRoot, "-name", "._*", "-delete"], {
-        env: manageStack ? managedStackEnv : {}
+        env: managedStackEnv
       });
     }
     await runCommand("eval_dogfood", "npm", ["run", "eval:dogfood"], {

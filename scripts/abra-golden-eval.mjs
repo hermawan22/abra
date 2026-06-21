@@ -152,6 +152,14 @@ function forbidText(payload, contains, label) {
   }
 }
 
+function promotedMemoryFields(payload) {
+  return {
+    agent_decision: payload.agent_decision,
+    impact_map: payload.impact_map,
+    validation_plan: payload.validation_plan
+  };
+}
+
 function citationsForSource(payload, sourceUrl) {
   return (Array.isArray(payload.citations) ? payload.citations : []).filter(
     (citation) => citation.source_url === sourceUrl || citation.url === sourceUrl
@@ -475,6 +483,7 @@ await runCheck("golden_cases", async () => {
         requireText(memory, item.expected_memory_contains, item.id);
       }
       forbidText(memory, item.forbidden_memory_contains, item.id);
+      forbidText(promotedMemoryFields(memory), item.forbidden_memory_promoted_contains, `${item.id} memory promoted fields`);
       if (item.expected_memory_source_url) {
         sourceBackedMemoryCases++;
         assert(
@@ -501,6 +510,7 @@ await runCheck("golden_cases", async () => {
       item.expected_think_contains ||
       item.expected_think_source_url ||
       item.forbidden_think_contains ||
+      item.forbidden_think_promoted_contains ||
       item.expected_think_gap_codes ||
       item.expected_think_agent_decision ||
       item.expected_think_answer_decision_text
@@ -530,6 +540,7 @@ await runCheck("golden_cases", async () => {
       requireText(think.answer, item.expected_think_contains, `${item.id} brain_think answer`);
       try {
         forbidText(think.answer, item.forbidden_think_contains, `${item.id} brain_think answer`);
+        forbidText(think.answer, item.forbidden_think_promoted_contains, `${item.id} brain_think promoted answer`);
       } catch (error) {
         thinkForbiddenLeaks++;
         throw error;

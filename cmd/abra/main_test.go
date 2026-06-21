@@ -22,7 +22,7 @@ import (
 )
 
 func TestCommandHelpDoesNotRequireFlags(t *testing.T) {
-	for _, command := range []string{"config", "ingest", "setup", "models", "watch", "connectors", "sources", "jobs", "observe", "observations", "scope", "agents", "mcp"} {
+	for _, command := range []string{"config", "ingest", "setup", "models", "watch", "connectors", "sources", "jobs", "observe", "observations", "scope", "agents", "memory", "mcp"} {
 		t.Run(command, func(t *testing.T) {
 			if err := run(context.Background(), []string{command, "--help"}); err != nil {
 				t.Fatalf("run(%s --help) error = %v", command, err)
@@ -1626,6 +1626,146 @@ func TestComposeHumanOutputIncludesAgentHandoff(t *testing.T) {
 		if !strings.Contains(output, want) {
 			t.Fatalf("compose output missing %q:\n%s", want, output)
 		}
+	}
+}
+
+func TestMemoryStatusAndDoctor(t *testing.T) {
+	signals := make([]any, 0, 9)
+	for i := 1; i <= 9; i++ {
+		signals = append(signals, map[string]any{
+			"code":     fmt.Sprintf("signal_%02d", i),
+			"severity": "warning",
+			"count":    i,
+			"action":   fmt.Sprintf("fix_signal_%02d", i),
+		})
+	}
+	requests := 0
+	payload := map[string]any{
+		"status": "needs_review",
+		"score":  72,
+		"documents": map[string]any{
+			"total":      3,
+			"active":     2,
+			"stale":      1,
+			"deprecated": 1,
+			"deleted":    1,
+		},
+		"claims": map[string]any{
+			"total":                       5,
+			"verified":                    4,
+			"inferred":                    1,
+			"unverified":                  1,
+			"challenged":                  1,
+			"deprecated":                  1,
+			"expired":                     1,
+			"stale":                       1,
+			"with_evidence":               4,
+			"trusted_from_code_documents": 1,
+		},
+		"graph": map[string]any{
+			"entities":             9,
+			"active_entities":      8,
+			"relations":            10,
+			"active_relations":     7,
+			"challenged_relations": 1,
+			"stale_relations":      1,
+		},
+		"sources": map[string]any{
+			"total":   2,
+			"active":  1,
+			"due":     1,
+			"overdue": 1,
+			"error":   0,
+		},
+		"ingestion": map[string]any{
+			"queued_jobs":        2,
+			"running_jobs":       1,
+			"retry_jobs":         1,
+			"failed_jobs":        1,
+			"stale_running_jobs": 1,
+		},
+		"conflicts": map[string]any{
+			"total":     4,
+			"open":      2,
+			"reviewing": 1,
+			"blocking":  1,
+			"high":      1,
+		},
+		"learning": map[string]any{
+			"total":                    6,
+			"pending":                  3,
+			"accepted":                 1,
+			"applied":                  1,
+			"rejected":                 1,
+			"duplicate_pending_groups": 1,
+		},
+		"signals": signals,
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Method != http.MethodGet || r.URL.Path != "/memory/health" {
+			t.Fatalf("request = %s %s, want GET /memory/health", r.Method, r.URL.Path)
+		}
+		if r.URL.Query().Get("scope") != "repo:demo" {
+			t.Fatalf("scope query = %q, want repo:demo", r.URL.Query().Get("scope"))
+		}
+		writeTestJSON(t, w, payload)
+	}))
+	defer server.Close()
+
+	statusOutput := captureStdout(t, func() {
+		if err := run(context.Background(), []string{"memory", "status", "--scope", "repo:demo", "--base-url", server.URL, "--token", "test-token"}); err != nil {
+			t.Fatalf("memory status error = %v", err)
+		}
+	})
+	for _, want := range []string{
+		"Memory: needs_review score=72",
+		"scope: repo:demo",
+		"documents: total=3 active=2 stale=1 deprecated=1 deleted=1",
+		"claims: total=5 verified=4 inferred=1 unverified=1 challenged=1 deprecated=1 expired=1 stale=1 with_evidence=4 trusted_from_code_documents=1",
+		"graph: entities=9 active_entities=8 relations=10 active_relations=7 challenged_relations=1 stale_relations=1",
+		"sources: total=2 active=1 due=1 overdue=1 error=0",
+		"ingestion: queued_jobs=2 running_jobs=1 retry_jobs=1 failed_jobs=1 stale_running_jobs=1",
+		"conflicts: total=4 open=2 reviewing=1 blocking=1 high=1",
+		"learning: total=6 pending=3 accepted=1 applied=1 rejected=1 duplicate_pending_groups=1",
+		"signal_08 (warning, count=8) -> fix_signal_08",
+		"- +1 more",
+		"abra memory doctor --scope repo:demo",
+	} {
+		if !strings.Contains(statusOutput, want) {
+			t.Fatalf("memory status output missing %q:\n%s", want, statusOutput)
+		}
+	}
+	if strings.Contains(statusOutput, "signal_09") {
+		t.Fatalf("memory status should truncate signals:\n%s", statusOutput)
+	}
+
+	doctorOutput := captureStdout(t, func() {
+		if err := run(context.Background(), []string{"memory", "doctor", "--scope", "repo:demo", "--base-url", server.URL, "--token", "test-token"}); err != nil {
+			t.Fatalf("memory doctor error = %v", err)
+		}
+	})
+	if !strings.Contains(doctorOutput, "signal_09 (warning, count=9) -> fix_signal_09") {
+		t.Fatalf("memory doctor should include all signals:\n%s", doctorOutput)
+	}
+	if strings.Contains(doctorOutput, "- +1 more") {
+		t.Fatalf("memory doctor should not truncate signals:\n%s", doctorOutput)
+	}
+
+	jsonOutput := captureStdout(t, func() {
+		if err := run(context.Background(), []string{"memory", "health", "--scope", "repo:demo", "--json", "--base-url", server.URL, "--token", "test-token"}); err != nil {
+			t.Fatalf("memory health --json error = %v", err)
+		}
+	})
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(jsonOutput), &decoded); err != nil {
+		t.Fatalf("decode memory health json: %v\n%s", err, jsonOutput)
+	}
+	if decoded["status"] != "needs_review" || intValue(decoded["score"]) != 72 {
+		t.Fatalf("memory health json = %#v", decoded)
+	}
+	if requests != 3 {
+		t.Fatalf("requests = %d, want 3", requests)
 	}
 }
 

@@ -504,6 +504,18 @@ func TestRunnerDefersChangedDocumentsAtLimit(t *testing.T) {
 	if len(brain.inputs) != 1 {
 		t.Fatalf("ingested %d documents", len(brain.inputs))
 	}
+	if !store.success || store.successStats.DocumentsDeferred != 1 {
+		t.Fatalf("source success stats = %+v success=%v", store.successStats, store.success)
+	}
+}
+
+func TestSourceFullyDrainedRequiresNoDeferredDocuments(t *testing.T) {
+	if !sourceFullyDrained(SourceStats{DocumentsChanged: 10, DocumentsDeferred: 0}) {
+		t.Fatal("source with no deferred documents should be fully drained")
+	}
+	if sourceFullyDrained(SourceStats{DocumentsChanged: 10, DocumentsDeferred: 1}) {
+		t.Fatal("source with deferred documents must remain due for another worker pass")
+	}
 }
 
 func TestRunnerDoesNotMarkSourceErrorForRetryableJob(t *testing.T) {
@@ -912,6 +924,7 @@ type fakeStore struct {
 	heartbeatErr        error
 	heartbeats          int
 	finishLeaseOwner    string
+	successStats        SourceStats
 	stateCalls          int
 	batchStateCalls     int
 }
@@ -1037,10 +1050,11 @@ func (f *fakeStore) GetWebhookDocument(_ context.Context, jobID string) (IngestD
 	return f.webhookDocument, nil
 }
 
-func (f *fakeStore) MarkSourceSuccess(context.Context, string, SourceStats) error {
+func (f *fakeStore) MarkSourceSuccess(_ context.Context, _ string, stats SourceStats) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.success = true
+	f.successStats = stats
 	return nil
 }
 

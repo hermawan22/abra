@@ -606,7 +606,7 @@ func (r *Repository) DocumentStates(ctx context.Context, docs []ingest.Document)
 func (r *Repository) MarkSourceSuccess(ctx context.Context, sourceID string, stats SourceStats) error {
 	_, err := r.pool.Exec(ctx, `
 		UPDATE source_configs
-		SET last_success_at = now(),
+		SET last_success_at = CASE WHEN $3::boolean THEN now() ELSE last_success_at END,
 		    last_error_at = NULL,
 		    last_error = NULL,
 		    status = CASE WHEN status = 'error' THEN 'active' ELSE status END,
@@ -622,8 +622,12 @@ func (r *Repository) MarkSourceSuccess(ctx context.Context, sourceID string, sta
 		"last_worker_files_skipped_generated": stats.FilesSkippedGenerated,
 		"last_worker_chunks_written":          stats.ChunksWritten,
 		"last_worker_claims_written":          stats.ClaimsWritten,
-	}))
+	}), sourceFullyDrained(stats))
 	return err
+}
+
+func sourceFullyDrained(stats SourceStats) bool {
+	return stats.DocumentsDeferred == 0
 }
 
 func (r *Repository) MarkSourceError(ctx context.Context, sourceID string, sourceErr error) error {
