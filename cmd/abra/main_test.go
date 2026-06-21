@@ -508,7 +508,7 @@ func TestAgentsBootstrapIngestsAndVerifiesContext(t *testing.T) {
 	if ingestRequests == 0 {
 		t.Fatal("bootstrap did not ingest any documents")
 	}
-	for _, want := range []string{"Bootstrapping Abra agent context", wantScope, "Ingesting repo", "working_memory", "Codex MCP install skipped", "Ready prompt"} {
+	for _, want := range []string{"Bootstrapping Abra agent context", wantScope, "Ingesting repo", "working_memory", "MCP install skipped", "Ready prompt"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("bootstrap output missing %q:\n%s", want, output)
 		}
@@ -541,11 +541,156 @@ func TestAgentsVerifyFilesOnlyStrictSkipsMCP(t *testing.T) {
 		"skip  mcp skipped by --files-only",
 		"Ready: agent instruction files are ready",
 		"Next:",
-		"Run `abra agents verify " + shellQuote(root) + " --scope " + shellQuote(wantScope) + "` against a live Abra MCP server",
+		"Run `abra agents verify " + shellQuote(root) + " --scope " + shellQuote(wantScope) + " --agent 'codex'` against a live Abra MCP server",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("files-only verify output missing %q:\n%s", want, output)
 		}
+	}
+}
+
+func TestAgentsVerifyIncludesCodexClientAdvisory(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "demo project")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wantScope := "repo:" + slug(filepath.Base(root))
+	if err := run(context.Background(), []string{"agents", "init", root, "--agent", "codex"}); err != nil {
+		t.Fatalf("agents init error = %v", err)
+	}
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	mustWrite(t, codexPath, "#!/bin/sh\nif [ \"$1 $2\" = 'mcp list' ]; then printf 'abra http://127.0.0.1:18080/mcp\\n'; exit 0; fi\nexit 1\n")
+	if err := os.Chmod(codexPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ABRA_CODEX_COMMAND", codexPath)
+	t.Setenv("ABRA_API_TOKEN", "")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var rpc map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&rpc); err != nil {
+			t.Fatalf("decode rpc: %v", err)
+		}
+		switch rpc["method"] {
+		case "tools/list":
+			writeTestJSON(t, w, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      rpc["id"],
+				"result": map[string]any{"tools": []map[string]any{
+					{"name": "discover_scopes"},
+					{"name": "working_memory_compose"},
+				}},
+			})
+		case "tools/call":
+			params, _ := rpc["params"].(map[string]any)
+			var payload []byte
+			switch params["name"] {
+			case "discover_scopes":
+				payload, _ = json.Marshal(map[string]any{
+					"recommended_scope": wantScope,
+					"matches":           []map[string]any{{"scope": wantScope}},
+				})
+			case "working_memory_compose":
+				payload, _ = json.Marshal(map[string]any{
+					"stats": map[string]any{
+						"facts":                1,
+						"supporting_documents": 1,
+						"summaries":            1,
+						"graph_relations":      1,
+					},
+				})
+			default:
+				t.Fatalf("unexpected tool %v", params["name"])
+			}
+			writeTestJSON(t, w, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      rpc["id"],
+				"result":  map[string]any{"content": []map[string]any{{"type": "text", "text": string(payload)}}},
+			})
+		default:
+			t.Fatalf("unexpected method %v", rpc["method"])
+		}
+	}))
+	defer server.Close()
+
+	output := captureStdout(t, func() {
+		if err := run(context.Background(), []string{"agents", "verify", root, "--base-url", server.URL, "--token", "test-token"}); err != nil {
+			t.Fatalf("agents verify error = %v", err)
+		}
+	})
+	for _, want := range []string{"Ready: MCP clients can use scope", "warn  codex_mcp_client", "ABRA_API_TOKEN is not set", "fully quit and reopen Codex Desktop"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("verify output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestAgentsVerifyUsesSelectedAgent(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "demo project")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wantScope := "repo:" + slug(filepath.Base(root))
+	if err := run(context.Background(), []string{"agents", "init", root, "--agent", "claude"}); err != nil {
+		t.Fatalf("agents init error = %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var rpc map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&rpc); err != nil {
+			t.Fatalf("decode rpc: %v", err)
+		}
+		switch rpc["method"] {
+		case "tools/list":
+			writeTestJSON(t, w, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      rpc["id"],
+				"result": map[string]any{"tools": []map[string]any{
+					{"name": "discover_scopes"},
+					{"name": "working_memory_compose"},
+				}},
+			})
+		case "tools/call":
+			params, _ := rpc["params"].(map[string]any)
+			var payload []byte
+			switch params["name"] {
+			case "discover_scopes":
+				payload, _ = json.Marshal(map[string]any{
+					"recommended_scope": wantScope,
+					"matches":           []map[string]any{{"scope": wantScope}},
+				})
+			case "working_memory_compose":
+				args, _ := params["arguments"].(map[string]any)
+				if args["agent"] != "claude" {
+					t.Fatalf("working_memory_compose agent = %#v, want claude", args["agent"])
+				}
+				payload, _ = json.Marshal(map[string]any{
+					"stats": map[string]any{
+						"facts":                1,
+						"supporting_documents": 1,
+						"summaries":            1,
+						"graph_relations":      1,
+					},
+				})
+			default:
+				t.Fatalf("unexpected tool %v", params["name"])
+			}
+			writeTestJSON(t, w, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      rpc["id"],
+				"result":  map[string]any{"content": []map[string]any{{"type": "text", "text": string(payload)}}},
+			})
+		default:
+			t.Fatalf("unexpected method %v", rpc["method"])
+		}
+	}))
+	defer server.Close()
+
+	output := captureStdout(t, func() {
+		if err := run(context.Background(), []string{"agents", "verify", root, "--agent", "claude", "--base-url", server.URL, "--token", "test-token"}); err != nil {
+			t.Fatalf("agents verify error = %v", err)
+		}
+	})
+	if !strings.Contains(output, `agent="claude"`) || strings.Contains(output, "codex_mcp_client") {
+		t.Fatalf("claude verify output did not use selected agent cleanly:\n%s", output)
 	}
 }
 
@@ -623,6 +768,92 @@ func TestAgentsReadyIsNonMutatingVerifyAlias(t *testing.T) {
 		if !strings.Contains(output, want) {
 			t.Fatalf("agents ready output missing %q:\n%s", want, output)
 		}
+	}
+}
+
+func TestAgentsBootstrapNonCodexSkipsCodexInstall(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "demo project")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(root, "README.md"), "# Demo\n\nAgents should use Abra before changing code.\n")
+	wantScope := "repo:" + slug(filepath.Base(root))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/ingest/documents":
+			writeTestJSON(t, w, map[string]any{"document_id": "doc"})
+		case "/mcp":
+			var rpc map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&rpc); err != nil {
+				t.Fatalf("decode rpc: %v", err)
+			}
+			switch rpc["method"] {
+			case "tools/list":
+				writeTestJSON(t, w, map[string]any{
+					"jsonrpc": "2.0",
+					"id":      rpc["id"],
+					"result": map[string]any{"tools": []map[string]any{
+						{"name": "discover_scopes"},
+						{"name": "working_memory_compose"},
+					}},
+				})
+			case "tools/call":
+				params, _ := rpc["params"].(map[string]any)
+				var payload []byte
+				switch params["name"] {
+				case "discover_scopes":
+					payload, _ = json.Marshal(map[string]any{
+						"recommended_scope": wantScope,
+						"matches":           []map[string]any{{"scope": wantScope}},
+					})
+				case "working_memory_compose":
+					args, _ := params["arguments"].(map[string]any)
+					if args["agent"] != "claude" {
+						t.Fatalf("working_memory_compose agent = %#v, want claude", args["agent"])
+					}
+					payload, _ = json.Marshal(map[string]any{
+						"stats": map[string]any{
+							"facts":                1,
+							"supporting_documents": 1,
+							"summaries":            1,
+							"graph_relations":      1,
+						},
+					})
+				default:
+					t.Fatalf("unexpected tool %v", params["name"])
+				}
+				writeTestJSON(t, w, map[string]any{
+					"jsonrpc": "2.0",
+					"id":      rpc["id"],
+					"result":  map[string]any{"content": []map[string]any{{"type": "text", "text": string(payload)}}},
+				})
+			default:
+				t.Fatalf("unexpected method %v", rpc["method"])
+			}
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	mustWrite(t, codexPath, "#!/bin/sh\nprintf 'codex should not be called\\n' >&2\nexit 99\n")
+	if err := os.Chmod(codexPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ABRA_CODEX_COMMAND", codexPath)
+
+	output := captureStdout(t, func() {
+		if err := run(context.Background(), []string{"agents", "bootstrap", root, "--agent", "claude", "--base-url", server.URL, "--token", "test-token"}); err != nil {
+			t.Fatalf("agents bootstrap error = %v", err)
+		}
+	})
+	for _, want := range []string{"Automatic MCP install is currently Codex-only", "abra mcp > .tmp/abra.mcp.json", `agent="claude"`} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("bootstrap output missing %q:\n%s", want, output)
+		}
+	}
+	if strings.Contains(output, "Installing Abra MCP into Codex") {
+		t.Fatalf("non-codex bootstrap attempted Codex install:\n%s", output)
 	}
 }
 

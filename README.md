@@ -121,6 +121,20 @@ ready prompt plus next steps. Use `abra agents ready --json` when an editor, CI
 job, or agent launcher needs `ready_prompt` and recovery `next_steps` without
 scraping terminal output.
 
+For Claude Code or another MCP-capable agent, keep the same source-backed
+workflow but select the agent profile explicitly and wire the generic MCP config
+into that client:
+
+```sh
+abra agents bootstrap --agent claude
+abra mcp > .tmp/abra.mcp.json
+abra agents verify . --agent claude --scope <scope-from-abra-scope>
+```
+
+Codex install is automated by `abra mcp install-codex`; other clients consume
+the generated MCP JSON or the `http://127.0.0.1:18080/mcp` endpoint with
+`ABRA_API_TOKEN` from the runtime env.
+
 Connect a custom compatible embedding provider during setup without editing env files:
 
 ```sh

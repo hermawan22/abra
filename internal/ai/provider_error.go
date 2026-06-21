@@ -88,7 +88,7 @@ func (e *ProviderError) Error() string {
 		parts = append(parts, "message="+e.Message)
 	}
 	if e.Err != nil {
-		parts = append(parts, "cause="+e.Err.Error())
+		parts = append(parts, "cause="+redactProviderErrorText(e.Err.Error()))
 	}
 	return strings.Join(parts, " ")
 }

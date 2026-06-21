@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -185,6 +187,28 @@ func TestOpenAICompatibleProviderReturnsStructuredProviderError(t *testing.T) {
 	}
 	if attempts != providerHTTPMaxAttempts {
 		t.Fatalf("attempts = %d, want %d", attempts, providerHTTPMaxAttempts)
+	}
+}
+
+func TestProviderErrorRedactsTransportURLSecrets(t *testing.T) {
+	transportErr := &url.Error{
+		Op:  "Post",
+		URL: "https://provider.example/v1/embeddings?api_key=sk-secret12345678&token=secret-token-123",
+		Err: fmt.Errorf("dial tcp: connection refused"),
+	}
+	err := &ProviderError{
+		Operation: "embedding",
+		Code:      "provider_unreachable",
+		Err:       transportErr,
+	}
+	text := err.Error()
+	for _, leaked := range []string{"sk-secret", "secret-token", "api_key=sk-", "token=secret"} {
+		if strings.Contains(text, leaked) {
+			t.Fatalf("provider error leaked %q in %s", leaked, text)
+		}
+	}
+	if !strings.Contains(text, "[REDACTED]") {
+		t.Fatalf("provider error did not show redacted marker: %s", text)
 	}
 }
 

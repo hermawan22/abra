@@ -2131,9 +2131,13 @@ func agentsCommand(ctx context.Context, args cliArgs) error {
 	for _, result := range results {
 		fmt.Println(stringValue(result["action"], "") + ": " + stringValue(result["path"], ""))
 	}
-	fmt.Println("MCP:    abra mcp install-codex")
+	if isCodexAgent(agent) {
+		fmt.Println("MCP:    abra mcp install-codex")
+	} else {
+		fmt.Println("MCP:    abra mcp > .tmp/abra.mcp.json")
+	}
 	fmt.Println("Ingest: abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope))
-	fmt.Println("Check:  abra agents verify " + shellQuote(path) + " --scope " + shellQuote(scope))
+	fmt.Println("Check:  abra agents verify " + shellQuote(path) + " --scope " + shellQuote(scope) + " --agent " + shellQuote(agent))
 	fmt.Println("Then:   tell your AI agent to read AGENTS.md or CLAUDE.md before changing code.")
 	return nil
 }
@@ -2173,25 +2177,30 @@ func bootstrapAgentContext(ctx context.Context, args cliArgs, path, scope string
 	}
 
 	if boolFlag(args, "no-mcp") || boolFlag(args, "skip-mcp") {
-		fmt.Println("Codex MCP install skipped by flag.")
-	} else {
+		fmt.Println("MCP install skipped by flag.")
+	} else if isCodexAgent(agent) {
 		fmt.Println("Installing Abra MCP into Codex...")
 		mcpArgs := copyCLIArgs(args)
 		delete(mcpArgs.Bools, "json")
 		if err := installCodexMCP(ctx, mcpArgs); err != nil {
 			return err
 		}
+	} else {
+		fmt.Println("Automatic MCP install is currently Codex-only.")
+		fmt.Println("MCP config: abra mcp > .tmp/abra.mcp.json")
+		fmt.Println("Then configure " + agent + " to use the generated MCP config or " + strings.TrimRight(cfg(args).BaseURL, "/") + "/mcp.")
 	}
 	fmt.Println("Ready prompt:")
-	fmt.Println(agentReadyPrompt(scope))
+	fmt.Println(agentReadyPrompt(scope, agent))
 	return nil
 }
 
 func verifyAgentContext(ctx context.Context, args cliArgs, path, scope string) error {
 	filesOnly := boolFlag(args, "files-only")
 	strict := boolFlag(args, "strict")
+	agent := normalizedAgentFlag(args)
 	checks := []map[string]any{
-		agentFileCheck(filepath.Join(path, "AGENTS.md"), scope, []string{"working_memory_compose", "discover_scopes", `expected_scope: "` + scope + `"`, "current task", `agent: "codex"`}),
+		agentFileCheck(filepath.Join(path, "AGENTS.md"), scope, []string{"working_memory_compose", "discover_scopes", `expected_scope: "` + scope + `"`, "current task", `agent: "` + agent + `"`}),
 		optionalAgentFileCheck(filepath.Join(path, "CLAUDE.md"), "@AGENTS.md"),
 	}
 	if filesOnly {
@@ -2217,12 +2226,15 @@ func verifyAgentContext(ctx context.Context, args cliArgs, path, scope string) e
 		scopeCheck := discoverScopeCheck(ctx, args, scope)
 		checks = append(checks, scopeCheck)
 		if boolValue(scopeCheck["ok"], false) {
-			checks = append(checks, workingMemoryContextCheck(ctx, args, scope))
+			checks = append(checks, workingMemoryContextCheck(ctx, args, scope, agent))
+		}
+		if isCodexAgent(agent) {
+			checks = append(checks, agentClientAdvisoryChecks(args)...)
 		}
 	}
 	ok := checksOK(checks, strict)
-	readyPrompt := agentReadyPrompt(scope)
-	nextSteps := agentVerifyNextSteps(path, scope, ok, filesOnly)
+	readyPrompt := agentReadyPrompt(scope, agent)
+	nextSteps := agentVerifyNextSteps(path, scope, agent, ok, filesOnly)
 	if boolFlag(args, "json") {
 		if err := printJSON(map[string]any{
 			"ok":           ok,
@@ -2284,14 +2296,30 @@ func verifyAgentContext(ctx context.Context, args cliArgs, path, scope string) e
 	return nil
 }
 
-func agentReadyPrompt(scope string) string {
-	return `Use Abra MCP first. Exact scope: ` + scope + `. Call discover_scopes with expected_scope="` + scope + `", then call working_memory_compose with task=<current task>, scope="` + scope + `", and agent="codex" before answering or changing code. If discover_scopes does not show ` + scope + ` or working_memory_compose returns no source-backed context, run abra scope, ingest the project with that exact scope, rerun abra agents verify, then retry with this exact scope.`
+func agentReadyPrompt(scope string, agents ...string) string {
+	agent := "codex"
+	if len(agents) > 0 && strings.TrimSpace(agents[0]) != "" {
+		agent = strings.ToLower(strings.TrimSpace(agents[0]))
+	}
+	return `Use Abra MCP first. Exact scope: ` + scope + `. Call discover_scopes with expected_scope="` + scope + `", then call working_memory_compose with task=<current task>, scope="` + scope + `", and agent="` + agent + `" before answering or changing code. If discover_scopes does not show ` + scope + ` or working_memory_compose returns no source-backed context, run abra scope, ingest the project with that exact scope, rerun abra agents verify --agent ` + agent + `, then retry with this exact scope.`
 }
 
-func agentVerifyNextSteps(path, scope string, ok, filesOnly bool) []string {
+func normalizedAgentFlag(args cliArgs) string {
+	agent := strings.ToLower(strings.TrimSpace(flag(args, "agent", "codex")))
+	if agent == "" {
+		return "codex"
+	}
+	return agent
+}
+
+func isCodexAgent(agent string) bool {
+	return strings.EqualFold(strings.TrimSpace(agent), "codex")
+}
+
+func agentVerifyNextSteps(path, scope, agent string, ok, filesOnly bool) []string {
 	if ok && filesOnly {
 		return []string{
-			"Run `abra agents verify " + shellQuote(path) + " --scope " + shellQuote(scope) + "` against a live Abra MCP server before giving the prompt to an AI client.",
+			"Run `abra agents verify " + shellQuote(path) + " --scope " + shellQuote(scope) + " --agent " + shellQuote(agent) + "` against a live Abra MCP server before giving the prompt to an AI client.",
 			"Give the ready_prompt to the AI client.",
 		}
 	}
@@ -2302,11 +2330,28 @@ func agentVerifyNextSteps(path, scope string, ok, filesOnly bool) []string {
 		}
 	}
 	return []string{
-		"Run `abra agents init " + shellQuote(path) + " --agent codex --scope " + shellQuote(scope) + "` if instruction files are missing or stale.",
+		"Run `abra agents init " + shellQuote(path) + " --agent " + shellQuote(agent) + " --scope " + shellQuote(scope) + "` if instruction files are missing or stale.",
 		"Run `abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope) + "` if scope discovery or working memory is empty.",
 		"Run `abra doctor` to check API, MCP, token, and local model readiness.",
-		"Rerun `abra agents verify " + shellQuote(path) + " --scope " + shellQuote(scope) + "`.",
+		"Rerun `abra agents verify " + shellQuote(path) + " --scope " + shellQuote(scope) + " --agent " + shellQuote(agent) + "`.",
 	}
+}
+
+func agentClientAdvisoryChecks(args cliArgs) []map[string]any {
+	checks := []map[string]any{
+		codexMCPClientCheck(args),
+		codexLaunchEnvCheck(args),
+	}
+	for _, check := range checks {
+		check["advisory"] = true
+		if boolValue(check["ok"], false) {
+			continue
+		}
+		check["client_ok"] = false
+		check["ok"] = true
+		check["level"] = "warn"
+	}
+	return checks
 }
 
 func printAgentNextSteps(steps []string) {
@@ -2394,11 +2439,11 @@ func discoverScopeCheck(ctx context.Context, args cliArgs, scope string) map[str
 	}
 }
 
-func workingMemoryContextCheck(ctx context.Context, args cliArgs, scope string) map[string]any {
+func workingMemoryContextCheck(ctx context.Context, args cliArgs, scope, agent string) map[string]any {
 	result, err := callMCPTool(ctx, args, "working_memory_compose", map[string]any{
 		"task":         "verify agent context for " + scope,
 		"scope":        scope,
-		"agent":        "codex",
+		"agent":        agent,
 		"limit":        3,
 		"max_queries":  3,
 		"token_budget": 600,

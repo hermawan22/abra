@@ -130,6 +130,7 @@ func truncateProviderErrorBody(body string) string {
 var providerSecretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(bearer\s+)[a-z0-9._~+/=-]{8,}`),
 	regexp.MustCompile(`(?i)(api[_-]?key["'\s:=]+)[^"'\s,}]+`),
+	regexp.MustCompile(`(?i)([?&](?:api[_-]?key|access[_-]?token|token|auth|authorization|secret|password)=)[^&\s]+`),
 	regexp.MustCompile(`(?i)sk-[a-z0-9_-]{8,}`),
 }
 
