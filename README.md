@@ -574,6 +574,8 @@ MCP tools:
 - `decide_learning_proposal(proposal_id, status, reviewed_by?, review_reason?, approval_id?, metadata?)`
 - `request_approval(action, scope, reason, target_type?, target_id?, requested_by?, payload?, metadata?, expires_at?)`
 
+`ingest_documents` defaults to fail-fast semantics: Abra validates every document, batches chunk and claim embeddings across the request, and only then persists results. Set `continue_on_error=true` when a connector needs per-document success/error entries; that mode keeps documents isolated instead of batching across the whole request.
+
 ## HTTP API
 
 - `GET /healthz`

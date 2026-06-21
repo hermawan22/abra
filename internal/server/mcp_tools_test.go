@@ -251,6 +251,10 @@ func TestIngestDocumentsMCPStatusEntries(t *testing.T) {
 	if success["index"] != 1 || success["document_id"] != "doc-1" || success["source_url"] != doc.SourceURL || success["scope"] != doc.Scope {
 		t.Fatalf("success entry = %#v", success)
 	}
+	failFastSuccess := mcpIngestDocumentSuccess(1, doc, brain.IngestDocumentResult{DocumentID: "doc-1"}, false)
+	if _, ok := failFastSuccess["status"]; ok {
+		t.Fatalf("fail-fast success must omit status for backward compatibility: %#v", failFastSuccess)
+	}
 
 	failed := mcpIngestDocumentError(2, doc, errors.New("embedding unavailable"))
 	if failed["status"] != "error" {

@@ -194,6 +194,129 @@ func TestEmbedTextsBatchesLargeRequests(t *testing.T) {
 	}
 }
 
+func TestEmbedPreparedDocumentsBatchesChunksAcrossDocuments(t *testing.T) {
+	provider := &recordingEmbeddingProvider{}
+	service := Service{
+		cfg:        config.Config{Embedding: config.AIProviderConfig{Dimensions: 3}},
+		embeddings: provider,
+	}
+	inputs := []IngestDocumentInput{
+		{
+			SourceType: "local_repo",
+			SourceURL:  "file:///repo/a.go",
+			Title:      "a.go",
+			Scope:      "repo:test",
+			Content:    "package main\n\nfunc A() {}",
+			Metadata:   map[string]any{"content_kind": "code", "git_path": "a.go"},
+		},
+		{
+			SourceType: "local_repo",
+			SourceURL:  "file:///repo/b.go",
+			Title:      "b.go",
+			Scope:      "repo:test",
+			Content:    "package main\n\nfunc B() {}",
+			Metadata:   map[string]any{"content_kind": "code", "git_path": "b.go"},
+		},
+	}
+	prepared := make([]preparedIngestDocument, 0, len(inputs))
+	for _, input := range inputs {
+		doc, err := service.prepareIngestDocument(input)
+		if err != nil {
+			t.Fatalf("prepareIngestDocument error = %v", err)
+		}
+		prepared = append(prepared, doc)
+	}
+
+	embedded, err := service.embedPreparedDocuments(context.Background(), prepared)
+	if err != nil {
+		t.Fatalf("embedPreparedDocuments error = %v", err)
+	}
+	if got, want := provider.callSizes, []int{2}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("provider call sizes = %#v, want %#v", got, want)
+	}
+	if embedded[0].chunkEmbeddings[0].Vector[0] != 0 || embedded[1].chunkEmbeddings[0].Vector[0] != 1 {
+		t.Fatalf("chunk embeddings were not mapped by document order: %#v %#v", embedded[0].chunkEmbeddings, embedded[1].chunkEmbeddings)
+	}
+	if len(embedded[0].claims) != 0 || len(embedded[1].claims) != 0 {
+		t.Fatalf("code documents should not extract claims: %#v %#v", embedded[0].claims, embedded[1].claims)
+	}
+}
+
+func TestEmbedPreparedDocumentsBatchesClaimsAcrossDocuments(t *testing.T) {
+	provider := &recordingEmbeddingProvider{}
+	service := Service{
+		cfg:        config.Config{Embedding: config.AIProviderConfig{Dimensions: 3}},
+		embeddings: provider,
+	}
+	inputs := []IngestDocumentInput{
+		{
+			SourceType: "markdown",
+			SourceURL:  "file:///repo/a.md",
+			Title:      "a.md",
+			Scope:      "repo:test",
+			Content:    "- Agents should use Abra memory before changing production code.",
+		},
+		{
+			SourceType: "markdown",
+			SourceURL:  "file:///repo/b.md",
+			Title:      "b.md",
+			Scope:      "repo:test",
+			Content:    "- Release checks must pass before publishing an OSS build.",
+		},
+	}
+	prepared := make([]preparedIngestDocument, 0, len(inputs))
+	for _, input := range inputs {
+		doc, err := service.prepareIngestDocument(input)
+		if err != nil {
+			t.Fatalf("prepareIngestDocument error = %v", err)
+		}
+		prepared = append(prepared, doc)
+	}
+
+	embedded, err := service.embedPreparedDocuments(context.Background(), prepared)
+	if err != nil {
+		t.Fatalf("embedPreparedDocuments error = %v", err)
+	}
+	if got, want := provider.callSizes, []int{2, 2}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("provider call sizes = %#v, want chunk batch then claim batch %#v", got, want)
+	}
+	if len(embedded[0].claimEmbeddings) != 1 || len(embedded[1].claimEmbeddings) != 1 {
+		t.Fatalf("claim embeddings missing: %#v %#v", embedded[0].claimEmbeddings, embedded[1].claimEmbeddings)
+	}
+	if embedded[0].claimEmbeddings[0].Vector[0] != 2 || embedded[1].claimEmbeddings[0].Vector[0] != 3 {
+		t.Fatalf("claim embeddings were not mapped by document order: %#v %#v", embedded[0].claimEmbeddings, embedded[1].claimEmbeddings)
+	}
+}
+
+func TestIngestDocumentsValidatesBeforeEmbedding(t *testing.T) {
+	provider := &recordingEmbeddingProvider{}
+	service := Service{
+		cfg:        config.Config{Embedding: config.AIProviderConfig{Dimensions: 3}},
+		embeddings: provider,
+	}
+	_, err := service.IngestDocuments(context.Background(), []IngestDocumentInput{
+		{
+			SourceType: "markdown",
+			SourceURL:  "file:///repo/a.md",
+			Title:      "a.md",
+			Scope:      "repo:test",
+			Content:    "Agents should use Abra memory before changing production code.",
+		},
+		{
+			SourceType: "markdown",
+			SourceURL:  "file:///repo/b.md",
+			Title:      "b.md",
+			Scope:      "repo:test",
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "document 1:") || !strings.Contains(err.Error(), "content are required") {
+		t.Fatalf("IngestDocuments error = %v, want indexed validation error", err)
+	}
+	if len(provider.callSizes) != 0 {
+		t.Fatalf("embedding provider was called before validation completed: %#v", provider.callSizes)
+	}
+}
+
 func TestProviderLimiterSerializesEmbeddingCalls(t *testing.T) {
 	observability.ResetAIProviderMetricsForTest()
 	provider := &concurrentEmbeddingProvider{delay: 20 * time.Millisecond}
@@ -461,7 +584,8 @@ func (p *fakeRerankerProvider) Rerank(_ context.Context, request ai.RerankReques
 }
 
 type recordingEmbeddingProvider struct {
-	callSizes []int
+	callSizes   []int
+	totalInputs int
 }
 
 func (p *recordingEmbeddingProvider) Name() string {
@@ -480,8 +604,9 @@ func (p *recordingEmbeddingProvider) Embed(_ context.Context, request ai.Embeddi
 	p.callSizes = append(p.callSizes, len(request.Input))
 	embeddings := make([]ai.Embedding, len(request.Input))
 	for i := range request.Input {
-		embeddings[i] = ai.Embedding{Index: i, Vector: []float64{1, 0, 0}, Dimensions: 3}
+		embeddings[i] = ai.Embedding{Index: i, Vector: []float64{float64(p.totalInputs + i), 0, 0}, Dimensions: 3}
 	}
+	p.totalInputs += len(request.Input)
 	return ai.EmbeddingResponse{
 		Provider:   p.Name(),
 		Model:      "test-embedding",

@@ -555,13 +555,69 @@ func compactBrainError(err error) string {
 	return message[:240] + "...<truncated>"
 }
 
+type preparedIngestDocument struct {
+	input               IngestDocumentInput
+	content             string
+	metadata            map[string]any
+	sourceConfigID      string
+	ingestionJobID      string
+	authority           string
+	authorityScore      float64
+	chunks              []string
+	chunkEmbeddings     []ai.Embedding
+	chunkEmbeddingModel string
+	claims              []string
+	claimEmbeddings     []ai.Embedding
+	claimEmbeddingModel string
+	codePath            string
+}
+
 func (s *Service) IngestDocument(ctx context.Context, input IngestDocumentInput) (IngestDocumentResult, error) {
+	doc, err := s.prepareIngestDocument(input)
+	if err != nil {
+		return IngestDocumentResult{}, err
+	}
+	docs, err := s.embedPreparedDocuments(ctx, []preparedIngestDocument{doc})
+	if err != nil {
+		return IngestDocumentResult{}, err
+	}
+	return s.persistPreparedIngestDocument(ctx, docs[0])
+}
+
+func (s *Service) IngestDocuments(ctx context.Context, inputs []IngestDocumentInput) ([]IngestDocumentResult, error) {
+	if len(inputs) == 0 {
+		return []IngestDocumentResult{}, nil
+	}
+	prepared := make([]preparedIngestDocument, 0, len(inputs))
+	for index, input := range inputs {
+		doc, err := s.prepareIngestDocument(input)
+		if err != nil {
+			return nil, fmt.Errorf("document %d: %w", index, err)
+		}
+		prepared = append(prepared, doc)
+	}
+	prepared, err := s.embedPreparedDocuments(ctx, prepared)
+	if err != nil {
+		return nil, err
+	}
+	results := make([]IngestDocumentResult, 0, len(prepared))
+	for index, doc := range prepared {
+		result, err := s.persistPreparedIngestDocument(ctx, doc)
+		if err != nil {
+			return nil, fmt.Errorf("document %d: %w", index, err)
+		}
+		results = append(results, result)
+	}
+	return results, nil
+}
+
+func (s *Service) prepareIngestDocument(input IngestDocumentInput) (preparedIngestDocument, error) {
 	input.SourceType = strings.TrimSpace(input.SourceType)
 	input.SourceURL = strings.TrimSpace(input.SourceURL)
 	input.Title = strings.TrimSpace(input.Title)
 	input.Scope = strings.TrimSpace(input.Scope)
 	if input.SourceType == "" || input.SourceURL == "" || input.Title == "" || input.Scope == "" || strings.TrimSpace(input.Content) == "" {
-		return IngestDocumentResult{}, fmt.Errorf("source_type, source_url, title, scope, and content are required")
+		return preparedIngestDocument{}, fmt.Errorf("source_type, source_url, title, scope, and content are required")
 	}
 
 	content := input.Content
@@ -579,6 +635,74 @@ func (s *Service) IngestDocument(ctx context.Context, input IngestDocumentInput)
 	if authorityScore == 0 {
 		authorityScore = 0.75
 	}
+	input.Content = content
+	return preparedIngestDocument{
+		input:          input,
+		content:        content,
+		metadata:       metadata,
+		sourceConfigID: sourceConfigID,
+		ingestionJobID: ingestionJobID,
+		authority:      authority,
+		authorityScore: authorityScore,
+		chunks:         chunkText(content, 1200),
+		claims:         extractClaimsForDocument(input, content),
+		codePath:       codeGraphPath(input),
+	}, nil
+}
+
+func (s *Service) embedPreparedDocuments(ctx context.Context, docs []preparedIngestDocument) ([]preparedIngestDocument, error) {
+	chunkTexts := []string{}
+	chunkRefs := []struct{ doc, index int }{}
+	for docIndex, doc := range docs {
+		docs[docIndex].chunkEmbeddings = make([]ai.Embedding, len(doc.chunks))
+		for chunkIndex, chunk := range doc.chunks {
+			chunkRefs = append(chunkRefs, struct{ doc, index int }{doc: docIndex, index: chunkIndex})
+			chunkTexts = append(chunkTexts, chunk)
+		}
+	}
+	if len(chunkTexts) > 0 {
+		response, err := s.embedTexts(ctx, chunkTexts)
+		if err != nil {
+			return nil, err
+		}
+		for globalIndex, ref := range chunkRefs {
+			docs[ref.doc].chunkEmbeddings[ref.index] = response.Embeddings[globalIndex]
+			docs[ref.doc].chunkEmbeddingModel = response.Model
+		}
+	}
+
+	claimTexts := []string{}
+	claimRefs := []struct{ doc, index int }{}
+	for docIndex, doc := range docs {
+		docs[docIndex].claimEmbeddings = make([]ai.Embedding, len(doc.claims))
+		for claimIndex, claim := range doc.claims {
+			claimRefs = append(claimRefs, struct{ doc, index int }{doc: docIndex, index: claimIndex})
+			claimTexts = append(claimTexts, claim)
+		}
+	}
+	if len(claimTexts) > 0 {
+		response, err := s.embedTexts(ctx, claimTexts)
+		if err != nil {
+			return nil, err
+		}
+		for globalIndex, ref := range claimRefs {
+			docs[ref.doc].claimEmbeddings[ref.index] = response.Embeddings[globalIndex]
+			docs[ref.doc].claimEmbeddingModel = response.Model
+		}
+	}
+	return docs, nil
+}
+
+func (s *Service) persistPreparedIngestDocument(ctx context.Context, doc preparedIngestDocument) (IngestDocumentResult, error) {
+	input := doc.input
+	content := doc.content
+	sourceConfigID := doc.sourceConfigID
+	ingestionJobID := doc.ingestionJobID
+	authority := doc.authority
+	authorityScore := doc.authorityScore
+	chunks := doc.chunks
+	claims := doc.claims
+	codePath := doc.codePath
 
 	documentID, err := s.db.UpsertDocument(ctx, store.DocumentRecord{
 		SourceType:      input.SourceType,
@@ -592,25 +716,20 @@ func (s *Service) IngestDocument(ctx context.Context, input IngestDocumentInput)
 		SourceUpdatedAt: input.SourceUpdatedAt,
 		Authority:       authority,
 		AuthorityScore:  authorityScore,
-		Metadata:        metadata,
+		Metadata:        doc.metadata,
 	})
 	if err != nil {
 		return IngestDocumentResult{}, err
 	}
 
-	chunks := chunkText(content, 1200)
-	chunkEmbeddings, err := s.embedTexts(ctx, chunks)
-	if err != nil {
-		return IngestDocumentResult{}, err
-	}
 	records := make([]store.ChunkRecord, 0, len(chunks))
 	for i, chunk := range chunks {
 		records = append(records, store.ChunkRecord{
 			Content:             chunk,
-			Embedding:           chunkEmbeddings.Embeddings[i].Vector,
+			Embedding:           doc.chunkEmbeddings[i].Vector,
 			EmbeddingProvider:   s.cfg.Embedding.Provider,
-			EmbeddingModel:      chunkEmbeddings.Model,
-			EmbeddingDimensions: chunkEmbeddings.Embeddings[i].Dimensions,
+			EmbeddingModel:      doc.chunkEmbeddingModel,
+			EmbeddingDimensions: doc.chunkEmbeddings[i].Dimensions,
 			SourceConfigID:      sourceConfigID,
 			IngestionJobID:      ingestionJobID,
 			Metadata:            lineageMetadata(sourceConfigID, ingestionJobID),
@@ -633,7 +752,6 @@ func (s *Service) IngestDocument(ctx context.Context, input IngestDocumentInput)
 	}
 	deprecatedRelationCount = int(graphRefreshResult.DeprecatedRelations)
 	deletedSummaryCount = int(graphRefreshResult.DeletedSummaries)
-	codePath := codeGraphPath(input)
 	if codePath != "" && graph.IsCodeGraphPath(codePath) {
 		candidates := graph.ExtractCodeFile(graph.CodeFile{
 			Path:      codePath,
@@ -659,14 +777,6 @@ func (s *Service) IngestDocument(ctx context.Context, input IngestDocumentInput)
 		relationCount += relations
 	}
 
-	claims := extractClaimsForDocument(input, content)
-	var claimEmbeddings ai.EmbeddingResponse
-	if len(claims) > 0 {
-		claimEmbeddings, err = s.embedTexts(ctx, claims)
-		if err != nil {
-			return IngestDocumentResult{}, err
-		}
-	}
 	refreshResult, err := s.db.BeginSourceClaimRefresh(ctx, input.Scope, input.SourceType, input.SourceURL, ingestionJobID)
 	if err != nil {
 		return IngestDocumentResult{}, err
@@ -681,10 +791,10 @@ func (s *Service) IngestDocument(ctx context.Context, input IngestDocumentInput)
 			Authority:           authority,
 			Status:              "verified",
 			Confidence:          authorityScore,
-			Embedding:           claimEmbeddings.Embeddings[i].Vector,
+			Embedding:           doc.claimEmbeddings[i].Vector,
 			EmbeddingProvider:   s.cfg.Embedding.Provider,
-			EmbeddingModel:      claimEmbeddings.Model,
-			EmbeddingDimensions: claimEmbeddings.Embeddings[i].Dimensions,
+			EmbeddingModel:      doc.claimEmbeddingModel,
+			EmbeddingDimensions: doc.claimEmbeddings[i].Dimensions,
 			SourceConfigID:      sourceConfigID,
 			IngestionJobID:      ingestionJobID,
 			AuthorityScore:      authorityScore,

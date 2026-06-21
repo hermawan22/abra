@@ -1131,22 +1131,32 @@ func (h *handler) mcpToolCall(w http.ResponseWriter, r *http.Request, id any, pa
 		results := make([]map[string]any, 0, len(docs))
 		accepted := 0
 		failed := 0
-		for index, doc := range docs {
+		for _, doc := range docs {
 			if !h.requireAccess(w, r, authActionWrite, doc.Scope) {
 				return
 			}
-			ingested, ingestErr := h.brain.IngestDocument(r.Context(), doc)
+		}
+		if !continueOnError {
+			ingested, ingestErr := h.brain.IngestDocuments(r.Context(), docs)
 			if ingestErr != nil {
-				if continueOnError {
+				err = ingestErr
+				break
+			}
+			for index, result := range ingested {
+				accepted++
+				results = append(results, mcpIngestDocumentSuccess(index, docs[index], result, false))
+			}
+		} else {
+			for index, doc := range docs {
+				ingested, ingestErr := h.brain.IngestDocument(r.Context(), doc)
+				if ingestErr != nil {
 					failed++
 					results = append(results, mcpIngestDocumentError(index, doc, ingestErr))
 					continue
 				}
-				err = fmt.Errorf("document %d: %w", index, ingestErr)
-				break
+				accepted++
+				results = append(results, mcpIngestDocumentSuccess(index, doc, ingested, true))
 			}
-			accepted++
-			results = append(results, mcpIngestDocumentSuccess(index, doc, ingested, continueOnError))
 		}
 		if err == nil {
 			response := map[string]any{"accepted": accepted, "documents": results}
