@@ -2,6 +2,7 @@ package brain
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -108,6 +109,13 @@ func TestExtractClaimsIgnoresFencedCodeAndReturnsDeterministicClaims(t *testing.
 		if claims[i] != want[i] {
 			t.Fatalf("claims = %#v, want deterministic %#v", claims, want)
 		}
+	}
+}
+
+func TestProviderMetricStatusUsesStructuredProviderError(t *testing.T) {
+	err := fmt.Errorf("embedding batch failed: %w", &ai.ProviderError{Code: "rate_limited"})
+	if got := providerMetricStatus(err); got != "rate_limited" {
+		t.Fatalf("providerMetricStatus() = %q, want rate_limited", got)
 	}
 }
 

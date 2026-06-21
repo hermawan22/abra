@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/hermawan22/abra/internal/ai"
 	"github.com/hermawan22/abra/internal/ingest"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -350,6 +351,16 @@ func (r *Repository) FinishIngestionJob(ctx context.Context, jobID string, lease
 	}
 	if runErr != nil {
 		var status string
+		metadata := map[string]any{
+			"documents_skipped":       stats.DocumentsSkipped,
+			"documents_deferred":      stats.DocumentsDeferred,
+			"files_skipped_large":     stats.FilesSkippedLarge,
+			"files_skipped_binary":    stats.FilesSkippedBinary,
+			"files_skipped_generated": stats.FilesSkippedGenerated,
+		}
+		for key, value := range providerFailureMetadata(runErr) {
+			metadata[key] = value
+		}
 		err := r.pool.QueryRow(ctx, `
 			UPDATE ingestion_jobs
 			SET status = CASE WHEN attempts >= max_attempts THEN 'failed' ELSE 'retry' END,
@@ -367,13 +378,7 @@ func (r *Repository) FinishIngestionJob(ctx context.Context, jobID string, lease
 			  AND status = 'running'
 			  AND lease_owner = $8
 			RETURNING status
-		`, jobID, stats.DocumentsSeen, stats.DocumentsChanged, stats.ChunksWritten, stats.ClaimsWritten, runErr.Error(), jsonb(map[string]any{
-			"documents_skipped":       stats.DocumentsSkipped,
-			"documents_deferred":      stats.DocumentsDeferred,
-			"files_skipped_large":     stats.FilesSkippedLarge,
-			"files_skipped_binary":    stats.FilesSkippedBinary,
-			"files_skipped_generated": stats.FilesSkippedGenerated,
-		}), leaseOwner).Scan(&status)
+		`, jobID, stats.DocumentsSeen, stats.DocumentsChanged, stats.ChunksWritten, stats.ClaimsWritten, runErr.Error(), jsonb(metadata), leaseOwner).Scan(&status)
 		if err == pgx.ErrNoRows {
 			return r.jobStatus(ctx, jobID)
 		}
@@ -408,6 +413,38 @@ func (r *Repository) FinishIngestionJob(ctx context.Context, jobID string, lease
 		return r.jobStatus(ctx, jobID)
 	}
 	return status, err
+}
+
+func providerFailureMetadata(err error) map[string]any {
+	providerErr, ok := ai.ProviderErrorInfo(err)
+	if !ok {
+		return nil
+	}
+	metadata := map[string]any{
+		"error_component":    "ai_provider",
+		"error_class":        providerErr.Code,
+		"provider_operation": providerErr.Operation,
+		"provider_retryable": providerErr.Retryable,
+		"provider_attempts":  providerErr.Attempts,
+	}
+	if providerErr.Provider != "" {
+		metadata["provider_name"] = providerErr.Provider
+	}
+	if providerErr.Model != "" {
+		metadata["provider_model"] = providerErr.Model
+	}
+	if providerErr.Status > 0 {
+		metadata["provider_status"] = providerErr.Status
+	}
+	if providerErr.BatchSize > 0 {
+		metadata["provider_batch_size"] = providerErr.BatchSize
+		metadata["provider_batch_start"] = providerErr.BatchStart
+		metadata["provider_batch_end"] = providerErr.BatchEnd
+	}
+	if providerErr.BatchTokens > 0 {
+		metadata["provider_batch_tokens"] = providerErr.BatchTokens
+	}
+	return metadata
 }
 
 func (r *Repository) jobStatus(ctx context.Context, jobID string) (string, error) {

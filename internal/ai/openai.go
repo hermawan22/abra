@@ -81,7 +81,13 @@ func (p *OpenAICompatibleProvider) Embed(ctx context.Context, request EmbeddingR
 		body["user"] = request.User
 	}
 
-	raw, err := p.postJSON(ctx, "/embeddings", body)
+	raw, err := p.postJSON(ctx, "/embeddings", body, providerRequestContext{
+		Operation: "embedding",
+		Provider:  p.name,
+		Model:     model,
+		BatchSize: len(request.Input),
+		Metadata:  request.Metadata,
+	})
 	if err != nil {
 		return EmbeddingResponse{}, err
 	}
@@ -148,7 +154,13 @@ func (p *OpenAICompatibleProvider) Rerank(ctx context.Context, request RerankReq
 		body["top_n"] = request.TopN
 	}
 
-	raw, err := p.postJSON(ctx, "/rerank", body)
+	raw, err := p.postJSON(ctx, "/rerank", body, providerRequestContext{
+		Operation: "rerank",
+		Provider:  p.name,
+		Model:     model,
+		BatchSize: len(request.Documents),
+		Metadata:  request.Metadata,
+	})
 	if err != nil {
 		return RerankResponse{}, err
 	}
@@ -217,7 +229,13 @@ func (p *OpenAICompatibleProvider) Extract(ctx context.Context, request Extracti
 		}
 	}
 
-	raw, err := p.postJSON(ctx, "/chat/completions", body)
+	raw, err := p.postJSON(ctx, "/chat/completions", body, providerRequestContext{
+		Operation: "extract",
+		Provider:  p.name,
+		Model:     model,
+		BatchSize: 1,
+		Metadata:  request.Metadata,
+	})
 	if err != nil {
 		return ExtractionResponse{}, err
 	}
@@ -312,7 +330,7 @@ func normalizeRerankResults(items []rerankPayloadResult) []RerankResult {
 	return results
 }
 
-func (p *OpenAICompatibleProvider) postJSON(ctx context.Context, path string, body any) ([]byte, error) {
+func (p *OpenAICompatibleProvider) postJSON(ctx context.Context, path string, body any, requestContext providerRequestContext) ([]byte, error) {
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("%w: encode request: %v", ErrInvalidRequest, err)
@@ -323,6 +341,13 @@ func (p *OpenAICompatibleProvider) postJSON(ctx context.Context, path string, bo
 	return doProviderHTTPRequest(requestCtx, p.client, providerHTTPRequest{
 		Method:        http.MethodPost,
 		URL:           url,
+		Operation:     firstNonEmpty(requestContext.Operation, operationForPath(path)),
+		Provider:      requestContext.Provider,
+		Model:         requestContext.Model,
+		BatchStart:    metadataInt(requestContext.Metadata, "batch_start"),
+		BatchEnd:      metadataInt(requestContext.Metadata, "batch_end"),
+		BatchSize:     firstPositive(requestContext.BatchSize, metadataInt(requestContext.Metadata, "batch_size")),
+		BatchTokens:   metadataInt(requestContext.Metadata, "batch_tokens"),
 		Body:          payload,
 		FailurePrefix: "ai provider request failed",
 		ReadPrefix:    "read response",
@@ -342,4 +367,25 @@ func (p *OpenAICompatibleProvider) postJSON(ctx context.Context, path string, bo
 			}
 		},
 	})
+}
+
+type providerRequestContext struct {
+	Operation string
+	Provider  string
+	Model     string
+	BatchSize int
+	Metadata  map[string]any
+}
+
+func operationForPath(path string) string {
+	switch {
+	case strings.Contains(path, "embeddings"):
+		return "embedding"
+	case strings.Contains(path, "rerank"):
+		return "rerank"
+	case strings.Contains(path, "chat"):
+		return "extract"
+	default:
+		return "provider"
+	}
 }

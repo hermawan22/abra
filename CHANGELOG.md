@@ -6,6 +6,16 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 
 ## Unreleased
 
+### Added
+
+- Add structured AI provider errors for embedding, reranker, and extraction calls, including bounded provider code, HTTP status, retryability, attempts, model/provider identity, and batch metadata.
+- Add structured HTTP, MCP, CLI, metrics, and ingestion-job diagnostics for AI provider failures so agent setup problems surface as `auth_failed`, `provider_unreachable`, `provider_timeout`, `rate_limited`, or `invalid_response` instead of opaque no-context errors.
+
+### Changed
+
+- Redact and bound provider error bodies before exposing them through API, CLI, MCP, logs, or job metadata.
+- Make batched embedding ingestion preserve batch range and token estimates on provider failures for easier local model and custom provider troubleshooting.
+
 ## 0.3.8 - 2026-06-21
 
 ### Added

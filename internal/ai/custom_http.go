@@ -58,14 +58,15 @@ func (p *CustomHTTPProvider) Embed(ctx context.Context, request EmbeddingRequest
 		return EmbeddingResponse{}, err
 	}
 	endpoint := *p.config.Embeddings
+	model := firstNonEmpty(request.Model, endpoint.Model)
 	body := map[string]any{
 		"input": request.Input,
-		"model": firstNonEmpty(request.Model, endpoint.Model),
+		"model": model,
 	}
 	if request.Dimensions > 0 {
 		body["dimensions"] = request.Dimensions
 	}
-	raw, err := p.post(ctx, endpoint, body)
+	raw, err := p.post(ctx, "embedding", model, len(request.Input), request.Metadata, endpoint, body)
 	if err != nil {
 		return EmbeddingResponse{}, err
 	}
@@ -115,13 +116,14 @@ func (p *CustomHTTPProvider) Extract(ctx context.Context, request ExtractionRequ
 		return ExtractionResponse{}, fmt.Errorf("%w: input is required", ErrInvalidRequest)
 	}
 	endpoint := *p.config.Extractor
+	model := firstNonEmpty(request.Model, endpoint.Model)
 	body := map[string]any{
 		"input":        request.Input,
 		"instructions": request.Instructions,
-		"model":        firstNonEmpty(request.Model, endpoint.Model),
+		"model":        model,
 		"schema":       request.Schema,
 	}
-	raw, err := p.post(ctx, endpoint, body)
+	raw, err := p.post(ctx, "extract", model, 1, request.Metadata, endpoint, body)
 	if err != nil {
 		return ExtractionResponse{}, err
 	}
@@ -148,7 +150,7 @@ func (p *CustomHTTPProvider) Extract(ctx context.Context, request ExtractionRequ
 	return ExtractionResponse{Provider: p.name, Model: firstNonEmpty(payload.Model, endpoint.Model), Value: value, Raw: payload.Text, Repaired: repaired, ValidationErrors: validationErrors, Usage: payload.Usage}, nil
 }
 
-func (p *CustomHTTPProvider) post(ctx context.Context, endpoint CustomHTTPEndpointConfig, body any) ([]byte, error) {
+func (p *CustomHTTPProvider) post(ctx context.Context, operation, model string, batchSize int, metadata map[string]any, endpoint CustomHTTPEndpointConfig, body any) ([]byte, error) {
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("%w: encode custom request: %v", ErrInvalidRequest, err)
@@ -166,6 +168,13 @@ func (p *CustomHTTPProvider) post(ctx context.Context, endpoint CustomHTTPEndpoi
 	return doProviderHTTPRequest(requestCtx, p.client, providerHTTPRequest{
 		Method:        method,
 		URL:           endpoint.URL,
+		Operation:     operation,
+		Provider:      p.name,
+		Model:         model,
+		BatchStart:    metadataInt(metadata, "batch_start"),
+		BatchEnd:      metadataInt(metadata, "batch_end"),
+		BatchSize:     firstPositive(batchSize, metadataInt(metadata, "batch_size")),
+		BatchTokens:   metadataInt(metadata, "batch_tokens"),
 		Body:          payload,
 		FailurePrefix: "custom provider failed",
 		ReadPrefix:    "read custom response",

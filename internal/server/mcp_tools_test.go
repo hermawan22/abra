@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/hermawan22/abra/internal/ai"
 	"github.com/hermawan22/abra/internal/brain"
 	"github.com/hermawan22/abra/internal/store"
 )
@@ -257,6 +258,19 @@ func TestIngestDocumentsMCPStatusEntries(t *testing.T) {
 	}
 	if failed["index"] != 2 || failed["error"] != "embedding unavailable" || failed["source_url"] != doc.SourceURL || failed["scope"] != doc.Scope {
 		t.Fatalf("failed entry = %#v", failed)
+	}
+
+	providerFailed := mcpIngestDocumentError(3, doc, &ai.ProviderError{
+		Operation: "embedding",
+		Code:      "provider_unreachable",
+		Status:    503,
+	})
+	if providerFailed["error_kind"] != "provider_error" {
+		t.Fatalf("provider failed entry = %#v", providerFailed)
+	}
+	detail, ok := providerFailed["provider_error"].(map[string]any)
+	if !ok || detail["code"] != "provider_unreachable" || detail["status_code"] != 503 {
+		t.Fatalf("provider failed detail = %#v", providerFailed)
 	}
 }
 

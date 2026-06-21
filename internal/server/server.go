@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hermawan22/abra/internal/ai"
 	"github.com/hermawan22/abra/internal/brain"
 	"github.com/hermawan22/abra/internal/config"
 	"github.com/hermawan22/abra/internal/memory"
@@ -331,10 +332,48 @@ func (h *handler) ingestDocument(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := h.brain.IngestDocument(r.Context(), input)
 	if err != nil {
+		if providerErr, ok := ai.ProviderErrorInfo(err); ok {
+			writeJSON(w, providerErr.HTTPStatus(), providerErrorPayload(err, providerErr))
+			return
+		}
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func providerErrorPayload(err error, providerErr *ai.ProviderError) map[string]any {
+	details := map[string]any{
+		"operation": providerErr.Operation,
+		"code":      providerErr.Code,
+		"retryable": providerErr.Retryable,
+		"attempts":  providerErr.Attempts,
+	}
+	if providerErr.Provider != "" {
+		details["provider"] = providerErr.Provider
+	}
+	if providerErr.Model != "" {
+		details["model"] = providerErr.Model
+	}
+	if providerErr.Status > 0 {
+		details["status_code"] = providerErr.Status
+	}
+	if providerErr.Message != "" {
+		details["message"] = providerErr.Message
+	}
+	if providerErr.BatchSize > 0 {
+		details["batch_size"] = providerErr.BatchSize
+		details["batch_start"] = providerErr.BatchStart
+		details["batch_end"] = providerErr.BatchEnd
+	}
+	if providerErr.BatchTokens > 0 {
+		details["batch_tokens"] = providerErr.BatchTokens
+	}
+	return map[string]any{
+		"error":          err.Error(),
+		"error_kind":     "provider_error",
+		"provider_error": details,
+	}
 }
 
 func (h *handler) recall(w http.ResponseWriter, r *http.Request) {
@@ -2300,13 +2339,18 @@ func mcpIngestDocumentSuccess(index int, doc brain.IngestDocumentInput, ingested
 }
 
 func mcpIngestDocumentError(index int, doc brain.IngestDocumentInput, err error) map[string]any {
-	return map[string]any{
+	result := map[string]any{
 		"index":      index,
 		"status":     "error",
 		"error":      err.Error(),
 		"source_url": doc.SourceURL,
 		"scope":      doc.Scope,
 	}
+	if providerErr, ok := ai.ProviderErrorInfo(err); ok {
+		result["error_kind"] = "provider_error"
+		result["provider_error"] = providerErrorPayload(err, providerErr)["provider_error"]
+	}
+	return result
 }
 
 func documentSchemaProperties() map[string]any {

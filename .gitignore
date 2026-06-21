@@ -8,6 +8,7 @@ backups/
 coverage/
 dist/
 build/
+/abra
 node_modules/
 *.dump
 *.sql.gz

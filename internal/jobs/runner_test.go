@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hermawan22/abra/internal/ai"
 	"github.com/hermawan22/abra/internal/ingest"
 )
 
@@ -82,6 +84,36 @@ func TestRunnerIngestsOnlyChangedDocuments(t *testing.T) {
 	}
 	if !store.success {
 		t.Fatal("source success was not recorded")
+	}
+}
+
+func TestProviderFailureMetadataUsesStructuredProviderError(t *testing.T) {
+	err := fmt.Errorf("ingest failed: %w", &ai.ProviderError{
+		Operation:   "embedding",
+		Provider:    "local",
+		Model:       "qwen",
+		Code:        "provider_timeout",
+		Status:      504,
+		Retryable:   true,
+		Attempts:    3,
+		BatchStart:  10,
+		BatchEnd:    12,
+		BatchSize:   2,
+		BatchTokens: 77,
+	})
+	metadata := providerFailureMetadata(err)
+
+	if metadata["error_component"] != "ai_provider" || metadata["error_class"] != "provider_timeout" {
+		t.Fatalf("metadata = %#v", metadata)
+	}
+	if metadata["provider_operation"] != "embedding" || metadata["provider_name"] != "local" || metadata["provider_model"] != "qwen" {
+		t.Fatalf("provider metadata = %#v", metadata)
+	}
+	if metadata["provider_status"] != 504 || metadata["provider_retryable"] != true || metadata["provider_attempts"] != 3 {
+		t.Fatalf("status metadata = %#v", metadata)
+	}
+	if metadata["provider_batch_start"] != 10 || metadata["provider_batch_end"] != 12 || metadata["provider_batch_size"] != 2 || metadata["provider_batch_tokens"] != 77 {
+		t.Fatalf("batch metadata = %#v", metadata)
 	}
 }
 

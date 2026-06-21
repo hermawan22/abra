@@ -2723,8 +2723,9 @@ func getJSON(ctx context.Context, args cliArgs, path string) (map[string]any, in
 }
 
 type httpStatusError struct {
-	Code int
-	Body string
+	Code    int
+	Body    string
+	Payload map[string]any
 }
 
 func (e *httpStatusError) Error() string {
@@ -2757,7 +2758,7 @@ func doJSON(req *http.Request, timeout time.Duration) (map[string]any, error) {
 		out = map[string]any{}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return out, &httpStatusError{Code: resp.StatusCode, Body: strings.TrimSpace(string(raw))}
+		return out, &httpStatusError{Code: resp.StatusCode, Body: strings.TrimSpace(string(raw)), Payload: out}
 	}
 	return out, nil
 }

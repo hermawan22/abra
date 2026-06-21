@@ -166,7 +166,7 @@ func (s *aiProviderMetricStore) gaugeMetric(operation, provider string) *AIProvi
 
 func normalizeAIProviderOperation(value string) string {
 	switch strings.TrimSpace(value) {
-	case "embedding", "rerank":
+	case "embedding", "rerank", "extract":
 		return strings.TrimSpace(value)
 	default:
 		return "other"
@@ -186,7 +186,7 @@ func normalizeAIProviderName(value string) string {
 
 func normalizeAIProviderStatus(value string) string {
 	switch strings.TrimSpace(value) {
-	case "ok", "error", "canceled":
+	case "ok", "error", "canceled", "auth_failed", "rate_limited", "provider_timeout", "provider_unreachable", "provider_unavailable", "provider_canceled", "invalid_request", "invalid_response", "dimension_mismatch", "provider_error":
 		return strings.TrimSpace(value)
 	default:
 		return "other"

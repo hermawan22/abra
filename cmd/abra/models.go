@@ -495,6 +495,20 @@ func friendlyProviderError(err error) error {
 	if err == nil {
 		return nil
 	}
+	var statusErr *httpStatusError
+	if errors.As(err, &statusErr) {
+		if detail, ok := statusErr.Payload["provider_error"].(map[string]any); ok {
+			code := stringValue(detail["code"], "provider_error")
+			status := intValue(detail["status_code"])
+			message := stringValue(detail["message"], "")
+			retryable := boolValue(detail["retryable"], false)
+			hint := "Run `abra models status`; if it is not ready, run `abra models up`, then retry ingest."
+			if code == "auth_failed" {
+				hint = "Check the embedding API key/model config, then retry ingest."
+			}
+			return fmt.Errorf("embedding provider error (%s, status=%d, retryable=%v): %s %s Original error: %w", code, status, retryable, message, hint, err)
+		}
+	}
 	text := strings.ToLower(err.Error())
 	if strings.Contains(text, "/embeddings") || strings.Contains(text, "embedding") || strings.Contains(text, "host.docker.internal:8080") || strings.Contains(text, "connection refused") {
 		return fmt.Errorf("embedding provider is not ready. Run `abra models status`; if it is not ready, run `abra models up`, then retry ingest. If the stack is down, run `abra up`. Original error: %w", err)

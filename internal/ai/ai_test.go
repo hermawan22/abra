@@ -140,6 +140,54 @@ func TestOpenAICompatibleProviderDoesNotRetryValidationStatus(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleProviderReturnsStructuredProviderError(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.Header().Set("Retry-After", "0")
+		http.Error(w, `{"error":{"message":"bad key sk-secret12345678"}}`, http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	provider, err := NewOpenAICompatibleProvider(OpenAICompatibleConfig{
+		BaseURL:             server.URL,
+		EmbeddingModel:      "embed-model",
+		EmbeddingDimensions: 2,
+	}, server.Client())
+	if err != nil {
+		t.Fatalf("NewOpenAICompatibleProvider() error = %v", err)
+	}
+
+	_, err = provider.Embed(context.Background(), EmbeddingRequest{
+		Input: []string{"hello"},
+		Metadata: map[string]any{
+			"batch_start":  2,
+			"batch_end":    3,
+			"batch_size":   1,
+			"batch_tokens": 11,
+		},
+	})
+	providerErr, ok := ProviderErrorInfo(err)
+	if !ok {
+		t.Fatalf("Embed() error = %T %[1]v, want ProviderError", err)
+	}
+	if providerErr.Operation != "embedding" || providerErr.Provider != "openai-compatible" || providerErr.Model != "embed-model" {
+		t.Fatalf("provider error identity = %#v", providerErr)
+	}
+	if providerErr.Code != "rate_limited" || providerErr.Status != http.StatusTooManyRequests || !providerErr.Retryable || providerErr.Attempts != providerHTTPMaxAttempts {
+		t.Fatalf("provider error classification = %#v", providerErr)
+	}
+	if providerErr.BatchStart != 2 || providerErr.BatchEnd != 3 || providerErr.BatchSize != 1 || providerErr.BatchTokens != 11 {
+		t.Fatalf("provider error batch metadata = %#v", providerErr)
+	}
+	if strings.Contains(providerErr.Error(), "sk-secret") {
+		t.Fatalf("provider error leaked secret: %s", providerErr.Error())
+	}
+	if attempts != providerHTTPMaxAttempts {
+		t.Fatalf("attempts = %d, want %d", attempts, providerHTTPMaxAttempts)
+	}
+}
+
 func TestOpenAICompatibleProviderReranks(t *testing.T) {
 	var requestBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -320,6 +368,37 @@ func TestCustomHTTPProviderRetriesRetryableStatus(t *testing.T) {
 	}
 	if len(response.Embeddings) != 1 {
 		t.Fatalf("embeddings = %d, want 1", len(response.Embeddings))
+	}
+}
+
+func TestCustomHTTPProviderReturnsStructuredProviderError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "missing auth", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	provider, err := NewCustomHTTPProvider(CustomHTTPProviderConfig{
+		Name: "vendor",
+		Embeddings: &CustomHTTPEndpointConfig{
+			URL:        server.URL,
+			Model:      "vendor-embed",
+			Dimensions: 2,
+		},
+	}, server.Client())
+	if err != nil {
+		t.Fatalf("NewCustomHTTPProvider() error = %v", err)
+	}
+
+	_, err = provider.Embed(context.Background(), EmbeddingRequest{Input: []string{"a"}})
+	providerErr, ok := ProviderErrorInfo(err)
+	if !ok {
+		t.Fatalf("Embed() error = %T %[1]v, want ProviderError", err)
+	}
+	if providerErr.Operation != "embedding" || providerErr.Provider != "vendor" || providerErr.Model != "vendor-embed" {
+		t.Fatalf("provider error identity = %#v", providerErr)
+	}
+	if providerErr.Code != "auth_failed" || providerErr.Status != http.StatusUnauthorized || providerErr.Retryable {
+		t.Fatalf("provider error classification = %#v", providerErr)
 	}
 }
 

@@ -324,8 +324,17 @@ func providerMetricStatus(err error) string {
 	if err == nil {
 		return "ok"
 	}
+	if providerErr, ok := ai.ProviderErrorInfo(err); ok {
+		return providerErr.Code
+	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return "canceled"
+	}
+	if errors.Is(err, ai.ErrInvalidResponse) {
+		return "invalid_response"
+	}
+	if errors.Is(err, ai.ErrInvalidRequest) {
+		return "invalid_request"
 	}
 	return "error"
 }
@@ -853,9 +862,16 @@ func (s *Service) embedTexts(ctx context.Context, inputs []string) (ai.Embedding
 		response, err := s.embed(ctx, ai.EmbeddingRequest{
 			Input:      inputs[start:end],
 			Dimensions: s.cfg.Embedding.Dimensions,
+			Metadata: map[string]any{
+				"batch_start":  start,
+				"batch_end":    end,
+				"batch_size":   end - start,
+				"batch_total":  len(inputs),
+				"batch_tokens": batchTokens,
+			},
 		})
 		if err != nil {
-			return ai.EmbeddingResponse{}, err
+			return ai.EmbeddingResponse{}, fmt.Errorf("embedding batch %d:%d of %d failed: %w", start, end, len(inputs), err)
 		}
 		if out.Provider == "" {
 			out.Provider = response.Provider
@@ -878,7 +894,7 @@ func (s *Service) embedTexts(ctx context.Context, inputs []string) (ai.Embedding
 		start = end
 	}
 	if len(out.Embeddings) != len(inputs) {
-		return ai.EmbeddingResponse{}, fmt.Errorf("embedding count mismatch after batching: got %d, want %d", len(out.Embeddings), len(inputs))
+		return ai.EmbeddingResponse{}, &ai.ProviderError{Operation: "embedding", Provider: s.cfg.Embedding.Provider, Model: s.cfg.Embedding.Model, Code: "invalid_response", Retryable: false, Message: fmt.Sprintf("embedding count mismatch after batching: got %d, want %d", len(out.Embeddings), len(inputs)), Err: ai.ErrInvalidResponse}
 	}
 	sort.SliceStable(out.Embeddings, func(i, j int) bool {
 		return out.Embeddings[i].Index < out.Embeddings[j].Index

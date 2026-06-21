@@ -2365,6 +2365,28 @@ func TestFriendlyProviderErrorAddsModelsHint(t *testing.T) {
 	}
 }
 
+func TestFriendlyProviderErrorUsesStructuredPayload(t *testing.T) {
+	err := friendlyProviderError(&httpStatusError{
+		Code: 401,
+		Body: `{"error_kind":"provider_error"}`,
+		Payload: map[string]any{
+			"error_kind": "provider_error",
+			"provider_error": map[string]any{
+				"code":        "auth_failed",
+				"status_code": float64(401),
+				"retryable":   false,
+				"message":     "missing authentication header",
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "auth_failed") || !strings.Contains(err.Error(), "Check the embedding API key/model config") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestLocalPathIngestPostsMatchedFiles(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "README.md"), "# Readme\n\nServices must use Abra before release.")
