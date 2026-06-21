@@ -221,12 +221,14 @@ resource requests and limits, and bounded writable `emptyDir` mounts for `/tmp`
 and the worker git cache. Keep those controls enabled when translating the chart
 to another deployment system.
 
-Cluster operators should add namespace-level Pod Security admission, platform
-secret management, image-pull policy controls, NetworkPolicy or service-mesh
-policy, internal-only ingress, gateway rate limits, and admission policy that
-requires `ghcr.io/hermawan22/abra@sha256:...` image references. Do not grant
-the API or worker pods broad Kubernetes API access; the chart does not require a
-mounted service account token for normal operation.
+Cluster operators should keep the included baseline NetworkPolicy enabled, or
+replace it with an equivalent service-mesh policy, and add namespace-level Pod
+Security admission, platform secret management, image-pull policy controls,
+internal-only ingress, gateway rate limits, and admission policy that requires
+`ghcr.io/hermawan22/abra@sha256:...` image references. Enable the packaged
+ServiceMonitor and PrometheusRule only in clusters that install the Prometheus
+Operator CRDs. Do not grant the API or worker pods broad Kubernetes API access;
+the chart does not require a mounted service account token for normal operation.
 
 ## Network
 
@@ -369,13 +371,39 @@ Endpoints:
 
 - `GET /healthz`
 - `GET /readyz`
+- `GET /metrics`
+- `GET /audit/events`
 - `POST /ingest/documents`
+- `POST /ingest/documents/batch`
 - `POST /ingest/webhooks`
-- `POST /mcp`
+- `POST /recall`
+- `POST /claims`
+- `POST /claims/:claimId/challenge`
+- `POST /claims/:claimId/forget`
+- `GET /observations`
+- `POST /observations`
+- `GET /conflicts`
+- `POST /conflicts/:conflictId/resolve`
+- `POST /sources`
+- `POST /brain/think`
+- `POST /memory/compose`
+- `GET /memory/health`
+- `POST /memory/summaries`
+- `POST /memory/summaries/rebuild`
+- `GET /learning/proposals`
+- `POST /learning/proposals`
+- `POST /learning/proposals/:proposalId/decide`
+- `POST /learning/proposals/:proposalId/apply`
 - `GET /sources/configs`
+- `POST /sources/configs`
+- `POST /sources/configs/validate`
 - `GET /sources/configs/:sourceConfigId`
+- `POST /sources/configs/:sourceConfigId/pause`
+- `POST /sources/configs/:sourceConfigId/resume`
 - `GET /ingestion/jobs`
 - `POST /ingestion/jobs`
+- `POST /ingestion/jobs/:jobId/retry`
+- `POST /ingestion/jobs/:jobId/cancel`
 - `GET /approvals`
 - `POST /approvals`
 - `POST /approvals/:approvalId/approve`
@@ -386,26 +414,33 @@ Endpoints:
 - `GET /agent/policies`
 - `POST /agent/policies`
 - `POST /agent/policy/decision`
+- `GET /agent/profiles`
+- `POST /agent/profiles`
 - `GET /graph/entities`
 - `GET /graph/relations`
-- `GET /memory/health`
 - `POST /policy/plan`
-- `GET /audit/events`
+- `POST /mcp`
 
 Every HTTP response includes `x-request-id`; propagate it into gateway logs and support traces.
 
 Prometheus scraping should include the smart-path metrics, `abra_recall_retrieval_mode_total`, `abra_working_memory_retrieval_quality_total`, and `abra_ai_provider_*` metrics. Alert when production recall stops reporting `mode="hybrid"` or when `mode="full_text_embedding_error"` / `mode="full_text_empty_embedding"` rises above the expected maintenance window, because those fallback modes usually indicate an embedding provider or configuration problem. Alert when `abra_ai_provider_waiting` or `abra_ai_provider_wait_duration_milliseconds_sum` grows while `abra_ai_provider_in_flight` sits at the configured concurrency limit; that usually means the embedding or reranker provider is saturated and `ABRA_AI_PROVIDER_CONCURRENCY`, provider replicas, or ingestion concurrency need tuning. Alert separately when `abra_working_memory_retrieval_quality_total{quality="low_confidence"}` increases outside known sparse scopes; low-confidence packets mean agents should rerun with better queries, ingest stronger sources, or rebuild embeddings before autonomous work.
 When tracing is enabled, use spans for latency diagnosis rather than high-cardinality metrics. The useful path is `HTTP route -> abra.memory.compose -> retrieval_trace in response` or `HTTP /mcp -> abra.mcp.tool -> abra.recall/abra.memory.compose`.
 
-Audit events are recorded for:
+Audit events are recorded for memory and governance mutations, including:
 
-- document ingestion
-- claim remembering
-- claim challenge
-- claim forget
-- claim expiry
+- document ingestion and batch ingestion
+- claim remembering, challenge, and forget
+- observation capture and observation-to-learning proposal linkage
+- summary rebuilds
+- memory compose events outside diagnostic mode
+- conflict resolution
+- learning proposal create, decide, and apply
+- source config upsert and status changes
+- ACL policy upserts
+- agent action policy upserts and decisions
+- agent profile upserts
 
-Approval decisions are stored in `approval_requests`. Include approval IDs in change records and incident notes, and pair them with the `x-request-id` from the later risky operation. The current audit export covers memory mutation events; do not rely on it as the only approval history source.
+Approval decisions are stored in `approval_requests`. Include approval IDs in change records and incident notes, and pair them with the `x-request-id` from the later risky operation. The audit export is the operational mutation log; approval requests remain the source of truth for approval history.
 
 Operators can export audit events for SIEM pulls:
 

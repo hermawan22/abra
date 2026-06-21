@@ -263,10 +263,13 @@ func TestLearningProposalReviewMCPToolsAreDiscoverable(t *testing.T) {
 	if !ok {
 		t.Fatalf("apply properties = %#v", applySchema["properties"])
 	}
-	for _, property := range []string{"proposal_id", "applied_by", "approval_id", "payload", "metadata"} {
+	for _, property := range []string{"proposal_id", "applied_by", "approval_id", "metadata"} {
 		if _, ok := applyProperties[property]; !ok {
 			t.Fatalf("apply_learning_proposal missing property %q in %#v", property, applyProperties)
 		}
+	}
+	if _, ok := applyProperties["payload"]; ok {
+		t.Fatalf("apply_learning_proposal should not accept mutable payload overrides: %#v", applyProperties)
 	}
 }
 

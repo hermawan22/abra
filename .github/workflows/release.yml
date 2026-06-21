@@ -301,12 +301,26 @@ jobs:
           set -euo pipefail
           cp scripts/install.sh dist/install.sh
           chmod 0644 dist/install.sh
+      - name: Stage runtime bundle
+        run: |
+          set -euo pipefail
+          runtime_root="dist-runtime/abra-runtime"
+          mkdir -p "$runtime_root"
+          cp docker-compose.yml "$runtime_root/docker-compose.yml"
+          cp dist/IMAGE_DIGEST "$runtime_root/IMAGE_DIGEST"
+          tar -C dist-runtime -czf "dist/abra_runtime_${GITHUB_REF_NAME}.tar.gz" abra-runtime
       - name: Checksums
         run: |
           set -euo pipefail
-          asset_count="$(find dist -maxdepth 1 -type f -name 'abra_*.tar.gz' | wc -l | tr -d ' ')"
+          asset_count="$(find dist -maxdepth 1 -type f \( -name 'abra_linux_*.tar.gz' -o -name 'abra_darwin_*.tar.gz' \) | wc -l | tr -d ' ')"
           if [ "$asset_count" -ne 4 ]; then
             echo "Expected 4 release archives, found $asset_count" >&2
+            find dist -maxdepth 1 -type f -print >&2
+            exit 1
+          fi
+          runtime_count="$(find dist -maxdepth 1 -type f -name 'abra_runtime_*.tar.gz' | wc -l | tr -d ' ')"
+          if [ "$runtime_count" -ne 1 ]; then
+            echo "Expected 1 runtime bundle, found $runtime_count" >&2
             find dist -maxdepth 1 -type f -print >&2
             exit 1
           fi

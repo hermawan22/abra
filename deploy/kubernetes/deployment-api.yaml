@@ -11,6 +11,8 @@ spec:
     metadata:
       labels:
         app: abra-api
+        app.kubernetes.io/name: abra
+        app.kubernetes.io/component: api
     spec:
       automountServiceAccountToken: false
       securityContext:

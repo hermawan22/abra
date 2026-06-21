@@ -46,6 +46,8 @@ func New(cfg config.Config, db *store.Store) (http.Handler, error) {
 	mux.HandleFunc("GET /audit/events", handler.auth(handler.auditEvents))
 	mux.HandleFunc("POST /ingest/documents", handler.auth(handler.ingestDocument))
 	mux.HandleFunc("GET /ingest/documents", methodNotAllowed("POST"))
+	mux.HandleFunc("POST /ingest/documents/batch", handler.auth(handler.ingestDocuments))
+	mux.HandleFunc("GET /ingest/documents/batch", methodNotAllowed("POST"))
 	mux.HandleFunc("POST /ingest/webhooks", handler.auth(handler.ingestWebhook))
 	mux.HandleFunc("GET /ingest/webhooks", methodNotAllowed("POST"))
 	mux.HandleFunc("POST /recall", handler.auth(handler.recall))
@@ -214,6 +216,7 @@ func (h *handler) index(w http.ResponseWriter, r *http.Request) {
 			"metrics":       "GET /metrics",
 			"audit":         "GET /audit/events",
 			"ingest":        "POST /ingest/documents",
+			"ingest_batch":  "POST /ingest/documents/batch",
 			"webhooks":      "POST /ingest/webhooks",
 			"recall":        "POST /recall",
 			"claims":        "POST /claims",
@@ -350,6 +353,69 @@ func (h *handler) ingestDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *handler) ingestDocuments(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, h.cfg.MaxRequestBodyBytes)
+	var args map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&args); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
+		return
+	}
+	result, ok, err := h.ingestDocumentsPayload(w, r, args)
+	if !ok {
+		return
+	}
+	if err != nil {
+		if providerErr, ok := ai.ProviderErrorInfo(err); ok {
+			writeJSON(w, providerErr.HTTPStatus(), providerErrorPayload(err, providerErr))
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *handler) ingestDocumentsPayload(w http.ResponseWriter, r *http.Request, args map[string]any) (map[string]any, bool, error) {
+	docs, err := mcpDocumentInputs(args)
+	if err != nil {
+		return nil, true, err
+	}
+	for _, doc := range docs {
+		if !h.requireAccess(w, r, authActionWrite, doc.Scope) {
+			return nil, false, nil
+		}
+	}
+	if !h.requireIngestDocumentsApproval(w, r, docs, stringArg(args, "approval_id")) {
+		return nil, false, nil
+	}
+	continueOnError := boolArg(args, "continue_on_error", false)
+	results := make([]map[string]any, 0, len(docs))
+	accepted := 0
+	failed := 0
+	if !continueOnError {
+		ingested, err := h.brain.IngestDocuments(r.Context(), docs)
+		if err != nil {
+			return nil, true, err
+		}
+		for index, result := range ingested {
+			accepted++
+			results = append(results, mcpIngestDocumentSuccess(index, docs[index], result, false))
+		}
+		return map[string]any{"accepted": accepted, "documents": results}, true, nil
+	}
+	for index, doc := range docs {
+		ingested, err := h.brain.IngestDocument(r.Context(), doc)
+		if err != nil {
+			failed++
+			results = append(results, mcpIngestDocumentError(index, doc, err))
+			continue
+		}
+		accepted++
+		results = append(results, mcpIngestDocumentSuccess(index, doc, ingested, true))
+	}
+	return map[string]any{"accepted": accepted, "failed": failed, "documents": results}, true, nil
 }
 
 func providerErrorPayload(err error, providerErr *ai.ProviderError) map[string]any {
@@ -961,14 +1027,28 @@ func (h *handler) applyLearningProposalHTTP(w http.ResponseWriter, r *http.Reque
 	if !h.requireLearningApplyApproval(w, r, proposal, input) {
 		return
 	}
-	applyResult, err := h.applyLearningProposal(r.Context(), proposal, input)
+	appliedBy := firstNonEmpty(strings.TrimSpace(input.AppliedBy), proposal.ReviewedBy, proposal.CreatedBy, "api")
+	approvalID := firstNonEmpty(strings.TrimSpace(input.ApprovalID), proposal.ApprovalID)
+	claimed, err := h.db.BeginLearningProposalApply(r.Context(), proposal.ID, store.ApplyLearningProposalInput{
+		AppliedBy:  appliedBy,
+		ApprovalID: approvalID,
+		Metadata:   input.Metadata,
+	})
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	applyResult, err := h.applyLearningProposal(r.Context(), claimed, input)
+	if err != nil {
+		_, _ = h.db.ResetLearningProposalApply(r.Context(), proposal.ID, store.ApplyLearningProposalInput{
+			Metadata: map[string]any{"apply_channel": "http"},
+		}, err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 	applied, err := h.db.MarkLearningProposalApplied(r.Context(), proposal.ID, store.ApplyLearningProposalInput{
-		AppliedBy:  firstNonEmpty(strings.TrimSpace(input.AppliedBy), proposal.ReviewedBy, proposal.CreatedBy, "api"),
-		ApprovalID: firstNonEmpty(strings.TrimSpace(input.ApprovalID), proposal.ApprovalID),
+		AppliedBy:  appliedBy,
+		ApprovalID: approvalID,
 		Metadata: mergeWebhookMetadata(input.Metadata, map[string]any{
 			"apply_result": applyResult,
 		}),
@@ -1261,51 +1341,10 @@ func (h *handler) mcpToolCall(w http.ResponseWriter, r *http.Request, id any, pa
 		}
 		result, err = h.brain.IngestDocument(r.Context(), doc)
 	case "ingest_documents":
-		docs, parseErr := mcpDocumentInputs(args)
-		if parseErr != nil {
-			err = parseErr
-			break
-		}
-		continueOnError, _ := args["continue_on_error"].(bool)
-		results := make([]map[string]any, 0, len(docs))
-		accepted := 0
-		failed := 0
-		for _, doc := range docs {
-			if !h.requireAccess(w, r, authActionWrite, doc.Scope) {
-				return
-			}
-		}
-		if !h.requireIngestDocumentsApproval(w, r, docs, stringArg(args, "approval_id")) {
+		var ok bool
+		result, ok, err = h.ingestDocumentsPayload(w, r, args)
+		if !ok {
 			return
-		}
-		if !continueOnError {
-			ingested, ingestErr := h.brain.IngestDocuments(r.Context(), docs)
-			if ingestErr != nil {
-				err = ingestErr
-				break
-			}
-			for index, result := range ingested {
-				accepted++
-				results = append(results, mcpIngestDocumentSuccess(index, docs[index], result, false))
-			}
-		} else {
-			for index, doc := range docs {
-				ingested, ingestErr := h.brain.IngestDocument(r.Context(), doc)
-				if ingestErr != nil {
-					failed++
-					results = append(results, mcpIngestDocumentError(index, doc, ingestErr))
-					continue
-				}
-				accepted++
-				results = append(results, mcpIngestDocumentSuccess(index, doc, ingested, true))
-			}
-		}
-		if err == nil {
-			response := map[string]any{"accepted": accepted, "documents": results}
-			if continueOnError {
-				response["failed"] = failed
-			}
-			result = response
 		}
 	case "remember_claim":
 		scope := stringArg(args, "scope")
@@ -2142,20 +2181,33 @@ func (h *handler) mcpToolCall(w http.ResponseWriter, r *http.Request, id any, pa
 		input := applyLearningProposalInput{
 			AppliedBy:  stringArg(args, "applied_by"),
 			ApprovalID: stringArg(args, "approval_id"),
-			Payload:    mapArg(args, "payload"),
 			Metadata:   mapArg(args, "metadata"),
 		}
 		if !h.requireLearningApplyApproval(w, r, proposal, input) {
 			return
 		}
-		applyResult, applyErr := h.applyLearningProposal(r.Context(), proposal, input)
+		appliedBy := firstNonEmpty(strings.TrimSpace(input.AppliedBy), proposal.ReviewedBy, proposal.CreatedBy, "mcp")
+		approvalID := firstNonEmpty(strings.TrimSpace(input.ApprovalID), proposal.ApprovalID)
+		claimed, claimErr := h.db.BeginLearningProposalApply(r.Context(), proposal.ID, store.ApplyLearningProposalInput{
+			AppliedBy:  appliedBy,
+			ApprovalID: approvalID,
+			Metadata:   input.Metadata,
+		})
+		if claimErr != nil {
+			err = claimErr
+			break
+		}
+		applyResult, applyErr := h.applyLearningProposal(r.Context(), claimed, input)
 		if applyErr != nil {
+			_, _ = h.db.ResetLearningProposalApply(r.Context(), proposal.ID, store.ApplyLearningProposalInput{
+				Metadata: map[string]any{"apply_channel": "mcp"},
+			}, applyErr)
 			err = applyErr
 			break
 		}
 		applied, markErr := h.db.MarkLearningProposalApplied(r.Context(), proposal.ID, store.ApplyLearningProposalInput{
-			AppliedBy:  firstNonEmpty(strings.TrimSpace(input.AppliedBy), proposal.ReviewedBy, proposal.CreatedBy, "mcp"),
-			ApprovalID: firstNonEmpty(strings.TrimSpace(input.ApprovalID), proposal.ApprovalID),
+			AppliedBy:  appliedBy,
+			ApprovalID: approvalID,
 			Metadata: mergeWebhookMetadata(input.Metadata, map[string]any{
 				"apply_result": applyResult,
 			}),
@@ -2635,16 +2687,16 @@ func mcpTools() []map[string]any {
 			"description": "List reviewable learning proposals for a scope.",
 			"inputSchema": objectSchema([]string{"scope"}, map[string]any{
 				"scope":  stringSchema(),
-				"status": map[string]any{"type": "string", "enum": []string{"pending", "accepted", "rejected", "applied", "canceled"}},
+				"status": map[string]any{"type": "string", "enum": []string{"pending", "accepted", "applying", "rejected", "applied", "canceled"}},
 				"limit":  map[string]any{"type": "integer", "minimum": 1, "maximum": 100},
 			}),
 		},
 		{
 			"name":        "decide_learning_proposal",
-			"description": "Accept, reject, mark applied, or cancel a learning proposal. Accepted proposals return an apply_plan with the deterministic next operation; they are not auto-promoted to trusted memory.",
+			"description": "Accept, reject, or cancel a learning proposal. Accepted proposals return an apply_plan with the deterministic next operation; they are not auto-promoted to trusted memory.",
 			"inputSchema": objectSchema([]string{"proposal_id", "status"}, map[string]any{
 				"proposal_id":   stringSchema(),
-				"status":        map[string]any{"type": "string", "enum": []string{"accepted", "rejected", "applied", "canceled"}},
+				"status":        map[string]any{"type": "string", "enum": []string{"accepted", "rejected", "canceled"}},
 				"reviewed_by":   stringSchema(),
 				"review_reason": stringSchema(),
 				"approval_id":   stringSchema(),
@@ -2658,7 +2710,6 @@ func mcpTools() []map[string]any {
 				"proposal_id": stringSchema(),
 				"applied_by":  stringSchema(),
 				"approval_id": stringSchema(),
-				"payload":     map[string]any{"type": "object"},
 				"metadata":    map[string]any{"type": "object"},
 			}),
 		},

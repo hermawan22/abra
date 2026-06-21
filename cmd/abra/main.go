@@ -1617,13 +1617,16 @@ func localPathIngest(ctx context.Context, args cliArgs) error {
 	}
 	results := make([]map[string]any, 0, len(documents))
 	failures := make([]map[string]any, 0)
+	batchDocs := make([]map[string]any, 0, len(documents))
+	batchPaths := make([]string, 0, len(documents))
+	batchSourceURLs := make([]string, 0, len(documents))
 	skippedEmpty := 0
 	continueOnError := boolFlag(args, "continue-on-error") || boolFlag(args, "continue")
 	progress := !boolFlag(args, "json") && !boolFlag(args, "quiet")
 	if progress {
 		fmt.Printf("Ingesting files: %d\n", len(documents))
 		fmt.Println("scope: " + scope)
-		fmt.Println("model work can take a while on the first local embedding call; current file is printed before each request.")
+		fmt.Println("model work can take a while on the first local embedding call; files are sent in batches.")
 	}
 	for index, doc := range documents {
 		if strings.TrimSpace(doc.Content) == "" {
@@ -1638,10 +1641,7 @@ func localPathIngest(ctx context.Context, args cliArgs) error {
 		metadata["ingest_checksum"] = doc.Checksum
 		metadata["ingest_fingerprint"] = doc.Fingerprint
 		sourceURL := localFileURL(abs, doc.Path)
-		if progress {
-			fmt.Printf("[%d/%d] ingest %s\n", index+1, len(documents), doc.Path)
-		}
-		result, err := postJSONWithTimeout(ctx, args, "/ingest/documents", map[string]any{
+		batchDocs = append(batchDocs, map[string]any{
 			"source_type": string(doc.SourceType),
 			"source_url":  sourceURL,
 			"source_id":   doc.SourceID,
@@ -1649,32 +1649,86 @@ func localPathIngest(ctx context.Context, args cliArgs) error {
 			"scope":       doc.Scope,
 			"content":     doc.Content,
 			"metadata":    metadata,
-		}, cliTimeout(args, defaultIngestTimeout))
+		})
+		batchPaths = append(batchPaths, doc.Path)
+		batchSourceURLs = append(batchSourceURLs, sourceURL)
+	}
+	for start := 0; start < len(batchDocs); start += 50 {
+		end := start + 50
+		if end > len(batchDocs) {
+			end = len(batchDocs)
+		}
+		if progress {
+			fmt.Printf("[%d-%d/%d] ingest batch\n", start+1, end, len(batchDocs))
+		}
+		payload := map[string]any{"documents": batchDocs[start:end]}
+		if continueOnError {
+			payload["continue_on_error"] = true
+		}
+		if approvalID := flag(args, "approval-id", ""); approvalID != "" {
+			payload["approval_id"] = approvalID
+		}
+		result, err := postJSONWithTimeout(ctx, args, "/ingest/documents/batch", payload, cliTimeout(args, defaultIngestTimeout))
 		if err != nil {
 			friendly := friendlyProviderError(err)
 			if !continueOnError {
-				return fmt.Errorf("ingest %s: %w", doc.Path, friendly)
+				return fmt.Errorf("ingest batch %d-%d: %w", start+1, end, friendly)
 			}
-			failures = append(failures, map[string]any{
-				"path":       doc.Path,
-				"source_url": sourceURL,
-				"error":      friendly.Error(),
-			})
+			for index := start; index < end; index++ {
+				failures = append(failures, map[string]any{
+					"path":       batchPaths[index],
+					"source_url": batchSourceURLs[index],
+					"error":      friendly.Error(),
+				})
+			}
 			if progress {
-				fmt.Printf("[%d/%d] failed %s\n", index+1, len(documents), doc.Path)
+				fmt.Printf("[%d-%d/%d] failed batch\n", start+1, end, len(batchDocs))
 			}
 			continue
 		}
-		results = append(results, map[string]any{
-			"path":        doc.Path,
-			"source_url":  sourceURL,
-			"document_id": stringValue(result["document_id"], ""),
-			"chunks":      result["chunks"],
-			"claims":      result["claims"],
-			"relations":   result["relations"],
-		})
+		items, err := validateBatchResponse(result, end-start, continueOnError)
+		if err != nil {
+			if !continueOnError {
+				return fmt.Errorf("ingest batch %d-%d: %w", start+1, end, err)
+			}
+			for index := start; index < end; index++ {
+				failures = append(failures, map[string]any{
+					"path":       batchPaths[index],
+					"source_url": batchSourceURLs[index],
+					"error":      err.Error(),
+				})
+			}
+			if progress {
+				fmt.Printf("[%d-%d/%d] failed batch\n", start+1, end, len(batchDocs))
+			}
+			continue
+		}
+		for _, item := range items {
+			index := start + intValue(item["index"])
+			if index < start || index >= end {
+				continue
+			}
+			if stringValue(item["status"], "") == "error" {
+				friendly := friendlyProviderError(errors.New(stringValue(item["error"], "unknown error")))
+				failures = append(failures, map[string]any{
+					"path":       batchPaths[index],
+					"source_url": stringValue(item["source_url"], batchSourceURLs[index]),
+					"error":      friendly.Error(),
+				})
+				continue
+			}
+			results = append(results, map[string]any{
+				"path":        batchPaths[index],
+				"source_url":  stringValue(item["source_url"], batchSourceURLs[index]),
+				"document_id": stringValue(item["document_id"], ""),
+				"chunks":      item["chunks"],
+				"claims":      item["claims"],
+				"entities":    item["entities"],
+				"relations":   item["relations"],
+			})
+		}
 		if progress {
-			fmt.Printf("[%d/%d] ok %s\n", index+1, len(documents), doc.Path)
+			fmt.Printf("[%d-%d/%d] ok batch\n", start+1, end, len(batchDocs))
 		}
 	}
 	if len(results) == 0 && len(failures) == 0 {
@@ -1719,6 +1773,46 @@ func localPathIngest(ctx context.Context, args cliArgs) error {
 		return fmt.Errorf("ingest completed with %d failure(s)", len(failures))
 	}
 	return nil
+}
+
+func validateBatchResponse(result map[string]any, expected int, continueOnError bool) ([]map[string]any, error) {
+	rawDocs, _ := result["documents"].([]any)
+	docs := make([]map[string]any, 0, len(rawDocs))
+	seen := map[int]bool{}
+	successes := 0
+	failures := 0
+	for _, raw := range rawDocs {
+		doc, _ := raw.(map[string]any)
+		if doc == nil {
+			return nil, errors.New("batch ingest response contains an invalid document entry")
+		}
+		index := intValue(doc["index"])
+		if index < 0 || index >= expected {
+			return nil, fmt.Errorf("batch ingest response index %d is outside expected range 0-%d", index, expected-1)
+		}
+		if seen[index] {
+			return nil, fmt.Errorf("batch ingest response contains duplicate index %d", index)
+		}
+		seen[index] = true
+		if stringValue(doc["status"], "") == "error" {
+			failures++
+		} else {
+			successes++
+		}
+		docs = append(docs, doc)
+	}
+	if len(seen) != expected {
+		return nil, fmt.Errorf("batch ingest response returned %d document result(s), expected %d", len(seen), expected)
+	}
+	accepted := intValue(result["accepted"])
+	if accepted != 0 && accepted != successes {
+		return nil, fmt.Errorf("batch ingest response accepted=%d, expected %d successful document result(s)", accepted, successes)
+	}
+	failed := intValue(result["failed"])
+	if continueOnError && failed != 0 && failed != failures {
+		return nil, fmt.Errorf("batch ingest response failed=%d, expected %d failed document result(s)", failed, failures)
+	}
+	return docs, nil
 }
 
 func skippedFilesForJSON(skipped []ingestpkg.SkippedFile) []map[string]any {
@@ -4130,7 +4224,40 @@ func runtimeSourceURL() string {
 	if runtimeVersion() == "main" {
 		return "https://github.com/hermawan22/abra/archive/refs/heads/main.tar.gz"
 	}
-	return "https://github.com/hermawan22/abra/archive/refs/tags/" + runtimeVersion() + ".tar.gz"
+	return runtimeReleaseAssetURL(runtimeBundleAssetName())
+}
+
+func runtimeReleaseTag() string {
+	value := strings.TrimSpace(runtimeVersion())
+	if value == "" || value == "main" {
+		return value
+	}
+	if strings.HasPrefix(value, "v") {
+		return value
+	}
+	return "v" + value
+}
+
+func runtimeBundleAssetName() string {
+	return "abra_runtime_" + runtimeReleaseTag() + ".tar.gz"
+}
+
+func runtimeReleaseBaseURL() string {
+	if value := strings.TrimSpace(os.Getenv("ABRA_RELEASE_BASE_URL")); value != "" {
+		return strings.TrimRight(value, "/")
+	}
+	return "https://github.com/" + abraRepository() + "/releases/download/" + url.PathEscape(runtimeReleaseTag())
+}
+
+func runtimeReleaseAssetURL(asset string) string {
+	return runtimeReleaseBaseURL() + "/" + url.PathEscape(asset)
+}
+
+func abraRepository() string {
+	if value := strings.TrimSpace(os.Getenv("ABRA_REPO")); value != "" {
+		return value
+	}
+	return "hermawan22/abra"
 }
 
 func downloadRuntimeSource(ctx context.Context, targetDir string) error {
@@ -4143,21 +4270,12 @@ func downloadRuntimeSource(ctx context.Context, targetDir string) error {
 	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return err
-	}
-	resp, err := http.DefaultClient.Do(req)
+	archive, err := downloadRuntimeArchive(ctx, url)
 	if err != nil {
 		_ = os.RemoveAll(tmpDir)
 		return err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		_ = os.RemoveAll(tmpDir)
-		return fmt.Errorf("download runtime source: http %d", resp.StatusCode)
-	}
-	if err := extractTarGz(resp.Body, tmpDir); err != nil {
+	if err := extractTarGz(bytes.NewReader(archive), tmpDir); err != nil {
 		_ = os.RemoveAll(tmpDir)
 		return err
 	}
@@ -4173,6 +4291,117 @@ func downloadRuntimeSource(ctx context.Context, targetDir string) error {
 		_ = os.RemoveAll(tmpDir)
 		return err
 	}
+	return nil
+}
+
+func downloadRuntimeArchive(ctx context.Context, archiveURL string) ([]byte, error) {
+	raw, err := downloadURL(ctx, archiveURL)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(os.Getenv("ABRA_SOURCE_URL")) != "" || runtimeVersion() == "main" {
+		fmt.Println("Runtime source override/main branch is not release-verified; use a pinned release for production.")
+		return raw, nil
+	}
+	asset := runtimeBundleAssetName()
+	sums, err := downloadURL(ctx, runtimeReleaseAssetURL("SHA256SUMS"))
+	if err != nil {
+		return nil, fmt.Errorf("download runtime SHA256SUMS: %w", err)
+	}
+	if err := verifyReleaseChecksum(raw, sums, asset); err != nil {
+		return nil, err
+	}
+	fmt.Println("Verified runtime checksum: " + asset)
+	if err := verifyRuntimeAttestation(raw, asset); err != nil {
+		return nil, err
+	}
+	if err := verifyRuntimeAttestation(sums, "SHA256SUMS"); err != nil {
+		return nil, err
+	}
+	return raw, nil
+}
+
+func downloadURL(ctx context.Context, value string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, value, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("download %s: http %d", value, resp.StatusCode)
+	}
+	return io.ReadAll(resp.Body)
+}
+
+func verifyReleaseChecksum(file, sums []byte, asset string) error {
+	expected := ""
+	for _, line := range strings.Split(string(sums), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[1] == asset {
+			expected = strings.ToLower(fields[0])
+			break
+		}
+	}
+	if expected == "" {
+		return fmt.Errorf("SHA256SUMS does not include %s", asset)
+	}
+	actual := fmt.Sprintf("%x", sha256.Sum256(file))
+	if actual != expected {
+		return fmt.Errorf("checksum mismatch for %s", asset)
+	}
+	return nil
+}
+
+func verifyRuntimeAttestation(content []byte, asset string) error {
+	mode := strings.TrimSpace(os.Getenv("ABRA_VERIFY_RUNTIME_ATTESTATION"))
+	if mode == "" {
+		mode = strings.TrimSpace(os.Getenv("ABRA_VERIFY_ATTESTATION"))
+	}
+	if mode == "" {
+		mode = "auto"
+	}
+	switch strings.ToLower(mode) {
+	case "0", "false", "no", "off":
+		fmt.Println("Skipped runtime attestation verification: ABRA_VERIFY_RUNTIME_ATTESTATION=" + mode)
+		return nil
+	case "1", "true", "yes", "on", "auto":
+	default:
+		return fmt.Errorf("invalid ABRA_VERIFY_RUNTIME_ATTESTATION=%s; use auto, 1, or 0", mode)
+	}
+	if _, err := execLookPath("gh"); err != nil {
+		if strings.EqualFold(mode, "auto") {
+			fmt.Println("GitHub CLI not found; runtime checksum verified, attestation verification skipped.")
+			fmt.Println("For hardened runtime downloads, install gh and set ABRA_VERIFY_RUNTIME_ATTESTATION=1.")
+			return nil
+		}
+		return errors.New("missing GitHub CLI: install gh or set ABRA_VERIFY_RUNTIME_ATTESTATION=0 to skip runtime provenance verification")
+	}
+	tmp, err := os.CreateTemp("", "abra-runtime-*-"+asset)
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(content); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	defer os.Remove(tmpPath)
+	if _, err := commandOutput("gh", "attestation", "verify", "--repo", abraRepository(), tmpPath); err != nil {
+		if strings.EqualFold(mode, "auto") {
+			return fmt.Errorf("GitHub artifact attestation verification failed for %s; set ABRA_VERIFY_RUNTIME_ATTESTATION=0 only when you intentionally accept checksum-only runtime downloads", asset)
+		}
+		return fmt.Errorf("GitHub artifact attestation verification failed for %s: %w", asset, err)
+	}
+	fmt.Println("Verified runtime artifact attestation: " + asset)
 	return nil
 }
 
@@ -4743,10 +4972,10 @@ Source ingestion flags:
   --freshness-seconds
                   mark the source due when the last successful refresh is older than this many seconds
   --schedule       worker refresh cadence: @hourly, @daily, or @every <N><s|m|h|d>
-  --direct         force direct local ingestion through /ingest/documents
+  --direct         force direct local ingestion through /ingest/documents/batch
   --continue-on-error
                   keep direct local ingestion running after per-file failures; exits nonzero if any fail
-  --quiet         suppress direct local per-file progress in human output
+  --quiet         suppress direct local batch progress in human output
   --timeout        HTTP timeout for direct local/file/text ingest, default 10m
 `
 	case "config":
@@ -5031,11 +5260,30 @@ func demoEnv() string {
 }
 
 func defaultRuntimeImageRef() string {
+	if !isAbraSourceCheckout(".") {
+		if image := firstRuntimeImageDigest(); image != "" {
+			return image
+		}
+	}
 	version := runtimeVersion()
 	if version == "main" {
 		return "ghcr.io/hermawan22/abra:main"
 	}
 	return "ghcr.io/hermawan22/abra:" + version
+}
+
+func firstRuntimeImageDigest() string {
+	raw, err := os.ReadFile(filepath.Join(managedRuntimeDir(), "IMAGE_DIGEST"))
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" && strings.Contains(line, "@sha256:") {
+			return line
+		}
+	}
+	return ""
 }
 
 const demoEnvTemplate = `COMPOSE_FILE={{COMPOSE_FILE}}

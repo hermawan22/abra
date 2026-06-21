@@ -18,4 +18,16 @@ spec:
       path: {{ .Values.serviceMonitor.path | quote }}
       interval: {{ .Values.serviceMonitor.interval | quote }}
       scrapeTimeout: {{ .Values.serviceMonitor.scrapeTimeout | quote }}
+      {{- with .Values.serviceMonitor.bearerTokenSecret }}
+      bearerTokenSecret:
+        name: {{ .name | quote }}
+        key: {{ .key | quote }}
+      {{- end }}
+      metricRelabelings:
+        - action: replace
+          targetLabel: abra_release
+          replacement: {{ .Release.Name | quote }}
+        - action: replace
+          targetLabel: abra_service
+          replacement: {{ include "abra.fullname" . | quote }}
 {{- end }}

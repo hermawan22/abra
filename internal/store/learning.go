@@ -179,8 +179,11 @@ func (s *Store) GetLearningProposal(ctx context.Context, id string) (LearningPro
 
 func (s *Store) DecideLearningProposal(ctx context.Context, id string, input DecideLearningProposalInput) (LearningProposalRecord, error) {
 	status := normalizedLearningProposalStatus(input.Status)
-	if status == "" || status == "pending" {
-		return LearningProposalRecord{}, fmt.Errorf("status must be accepted, rejected, applied, or canceled")
+	if status == "" || status == "pending" || status == "applying" {
+		return LearningProposalRecord{}, fmt.Errorf("status must be accepted, rejected, or canceled")
+	}
+	if status == "applied" {
+		return LearningProposalRecord{}, fmt.Errorf("status applied requires the explicit apply endpoint or MCP apply_learning_proposal tool")
 	}
 	payload := mergeMetadata(input.Metadata, map[string]any{
 		"decided_at": time.Now().UTC().Format(time.RFC3339Nano),
@@ -210,13 +213,13 @@ func (s *Store) DecideLearningProposal(ctx context.Context, id string, input Dec
 	return s.GetLearningProposal(ctx, id)
 }
 
-func (s *Store) MarkLearningProposalApplied(ctx context.Context, id string, input ApplyLearningProposalInput) (LearningProposalRecord, error) {
+func (s *Store) BeginLearningProposalApply(ctx context.Context, id string, input ApplyLearningProposalInput) (LearningProposalRecord, error) {
 	payload := mergeMetadata(input.Metadata, map[string]any{
-		"applied_at": time.Now().UTC().Format(time.RFC3339Nano),
+		"apply_started_at": time.Now().UTC().Format(time.RFC3339Nano),
 	})
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE learning_proposals
-		SET status = 'applied',
+		SET status = 'applying',
 		    reviewed_by = COALESCE(NULLIF($2, ''), reviewed_by),
 		    approval_id = COALESCE(NULLIF($3, ''), approval_id),
 		    payload = payload || $4::jsonb,
@@ -234,6 +237,64 @@ func (s *Store) MarkLearningProposalApplied(ctx context.Context, id string, inpu
 			return LearningProposalRecord{}, getErr
 		}
 		return LearningProposalRecord{}, fmt.Errorf("learning proposal %q is %s and cannot be applied", id, current.Status)
+	}
+	return s.GetLearningProposal(ctx, id)
+}
+
+func (s *Store) MarkLearningProposalApplied(ctx context.Context, id string, input ApplyLearningProposalInput) (LearningProposalRecord, error) {
+	payload := mergeMetadata(input.Metadata, map[string]any{
+		"applied_at": time.Now().UTC().Format(time.RFC3339Nano),
+	})
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE learning_proposals
+		SET status = 'applied',
+		    reviewed_by = COALESCE(NULLIF($2, ''), reviewed_by),
+		    approval_id = COALESCE(NULLIF($3, ''), approval_id),
+		    payload = payload || $4::jsonb,
+		    reviewed_at = COALESCE(reviewed_at, now()),
+		    updated_at = now()
+		WHERE id = $1
+		  AND status = 'applying'
+	`, strings.TrimSpace(id), strings.TrimSpace(input.AppliedBy), strings.TrimSpace(input.ApprovalID), jsonb(payload))
+	if err != nil {
+		return LearningProposalRecord{}, err
+	}
+	if tag.RowsAffected() == 0 {
+		current, getErr := s.GetLearningProposal(ctx, id)
+		if getErr != nil {
+			return LearningProposalRecord{}, getErr
+		}
+		return LearningProposalRecord{}, fmt.Errorf("learning proposal %q is %s and cannot be applied", id, current.Status)
+	}
+	return s.GetLearningProposal(ctx, id)
+}
+
+func (s *Store) ResetLearningProposalApply(ctx context.Context, id string, input ApplyLearningProposalInput, applyErr error) (LearningProposalRecord, error) {
+	errText := ""
+	if applyErr != nil {
+		errText = applyErr.Error()
+	}
+	payload := mergeMetadata(input.Metadata, map[string]any{
+		"apply_failed_at": time.Now().UTC().Format(time.RFC3339Nano),
+		"apply_error":     errText,
+	})
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE learning_proposals
+		SET status = 'accepted',
+		    payload = payload || $2::jsonb,
+		    updated_at = now()
+		WHERE id = $1
+		  AND status = 'applying'
+	`, strings.TrimSpace(id), jsonb(payload))
+	if err != nil {
+		return LearningProposalRecord{}, err
+	}
+	if tag.RowsAffected() == 0 {
+		current, getErr := s.GetLearningProposal(ctx, id)
+		if getErr != nil {
+			return LearningProposalRecord{}, getErr
+		}
+		return LearningProposalRecord{}, fmt.Errorf("learning proposal %q is %s and cannot reset apply", id, current.Status)
 	}
 	return s.GetLearningProposal(ctx, id)
 }
@@ -321,7 +382,7 @@ func normalizedLearningProposalType(value string) string {
 
 func normalizedLearningProposalStatus(value string) string {
 	switch strings.TrimSpace(value) {
-	case "pending", "accepted", "rejected", "applied", "canceled":
+	case "pending", "accepted", "applying", "rejected", "applied", "canceled":
 		return strings.TrimSpace(value)
 	default:
 		return ""

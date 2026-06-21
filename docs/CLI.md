@@ -16,11 +16,12 @@ curl -fsSL https://github.com/hermawan22/abra/releases/latest/download/install.s
 ```
 
 For production workstations or repeatable automation, pin the release and
-require GitHub Artifact Attestation verification:
+verify the installer before executing it:
 
 ```sh
-curl -fsSL https://github.com/hermawan22/abra/releases/download/vX.Y.Z/install.sh \
-  | ABRA_VERSION=vX.Y.Z ABRA_VERIFY_ATTESTATION=1 sh
+curl -fsSLO https://github.com/hermawan22/abra/releases/download/vX.Y.Z/install.sh
+gh attestation verify --repo hermawan22/abra install.sh
+ABRA_VERSION=vX.Y.Z ABRA_VERIFY_ATTESTATION=1 sh install.sh
 ```
 
 If you already cloned the repo, this checkout-local installer does the same
@@ -30,7 +31,7 @@ release install. It does not install untagged local source changes:
 ./scripts/install.sh
 ```
 
-Release downloads are verified against `SHA256SUMS` before the binary is installed. If GitHub CLI is available, the installer also verifies GitHub Artifact Attestations automatically. Set `ABRA_VERIFY_ATTESTATION=1` to require provenance verification, `ABRA_VERSION=vX.Y.Z` to install a specific release, or `ABRA_ALLOW_SOURCE_BUILD=1` to intentionally build from the release source tag when no platform asset exists.
+Release downloads are verified against `SHA256SUMS` before the binary is installed. If GitHub CLI is available, the installer also verifies GitHub Artifact Attestations automatically. Set `ABRA_VERIFY_ATTESTATION=1` to require provenance verification, `ABRA_VERSION=vX.Y.Z` to install a specific release, or `ABRA_ALLOW_SOURCE_BUILD=1` to intentionally build from the release source tag when no platform asset exists. For production automation, download `install.sh`, run `gh attestation verify --repo hermawan22/abra install.sh`, then execute it with `ABRA_VERSION=vX.Y.Z ABRA_VERIFY_ATTESTATION=1 sh install.sh`.
 
 Run the guided first-run setup:
 
@@ -125,9 +126,9 @@ the API and worker run in Docker and cannot see your local path. Use `--tracked`
 only when the worker can read the same path and you want a durable source config
 plus ingestion job.
 
-In human output, direct local ingestion prints the total file count and current
-file before each embedding request so slow local model calls are visible. Use
-`--quiet` to suppress per-file progress, or `--json` for clean machine-readable
+In human output, direct local ingestion prints the total file count and batch
+progress before embedding requests so slow local model calls are visible. Use
+`--quiet` to suppress batch progress, or `--json` for clean machine-readable
 output without progress lines.
 
 Queue a remote Git repo through the worker:
@@ -428,6 +429,19 @@ curl -sS -H "$auth_header" \
   "$ABRA_BASE_URL/learning/proposals"
 ```
 
+After an operator accepts the proposal, apply it explicitly. In enforcement
+mode, include an approved `approval_id` for the apply plan action:
+
+```sh
+curl -sS -H "$auth_header" \
+  -H "content-type: application/json" \
+  -d '{
+    "applied_by": "operator",
+    "approval_id": "approval-id"
+  }' \
+  "$ABRA_BASE_URL/learning/proposals/learning-proposal-id/apply"
+```
+
 For worker-based source refreshes, use `abra ingest . --code --tracked`, `abra watch local --path . --wait --wait-timeout 10m`,
 `abra watch git --git https://github.com/owner/repo.git --wait --wait-timeout 10m`, or an MCP-backed source such as:
 
@@ -537,11 +551,11 @@ docker compose --env-file .env.production run --rm migrate
 docker compose --env-file .env.production up -d api worker
 ```
 
-For curl-installed CLI users, `abra up` uses the downloaded runtime Compose file
-and pulls the published `ghcr.io/hermawan22/abra:<version>` image instead of
-building locally. For local source-checkout development, prefer `abra up`; it
-applies `docker-compose.dev.yml` and builds `abra:local` without making
-production Compose depend on a local checkout.
+For curl-installed CLI users, `abra up` downloads the release runtime bundle,
+verifies it against `SHA256SUMS`, and uses the release `IMAGE_DIGEST` asset so
+`ABRA_IMAGE` is digest-pinned instead of tag-only. For local source-checkout
+development, prefer `abra up`; it applies `docker-compose.dev.yml` and builds
+`abra:local` without making production Compose depend on a local checkout.
 
 Check readiness:
 

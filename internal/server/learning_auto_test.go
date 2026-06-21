@@ -115,6 +115,23 @@ func TestBuildLearningApplyPlanForGraphConflict(t *testing.T) {
 	}
 }
 
+func TestBuildLearningApplyPlanForPolicyRequiresManualReview(t *testing.T) {
+	plan := buildLearningApplyPlan(store.LearningProposalRecord{
+		ID:           "proposal-1",
+		Scope:        "repo:app",
+		ProposalType: "policy",
+		Status:       "accepted",
+		TargetType:   "agent_policy",
+		TargetID:     "policy-1",
+	}, "enforce")
+	if plan.Ready || plan.Action != "manual_review" || plan.RequiresApproval {
+		t.Fatalf("policy proposal should not advertise a first-party apply executor: %#v", plan)
+	}
+	if len(plan.Warnings) == 0 {
+		t.Fatalf("policy manual review plan should explain why it is not directly applicable: %#v", plan)
+	}
+}
+
 func TestBuildLearningApplyPlanForNonAcceptedProposalHasNoAction(t *testing.T) {
 	plan := buildLearningApplyPlan(store.LearningProposalRecord{
 		ID:           "proposal-1",

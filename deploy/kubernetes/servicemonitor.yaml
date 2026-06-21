@@ -1,0 +1,27 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: abra-api
+  labels:
+    app.kubernetes.io/name: abra
+    app.kubernetes.io/component: api
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: abra
+      app.kubernetes.io/component: api
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
+      bearerTokenSecret:
+        name: abra-metrics-token
+        key: token
+      metricRelabelings:
+        - action: replace
+          targetLabel: abra_release
+          replacement: static
+        - action: replace
+          targetLabel: abra_service
+          replacement: abra-api

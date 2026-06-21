@@ -61,11 +61,12 @@ curl -fsSL https://github.com/hermawan22/abra/releases/latest/download/install.s
 ```
 
 For production workstations or repeatable automation, pin the release and
-require GitHub Artifact Attestation verification:
+verify the installer before executing it:
 
 ```sh
-curl -fsSL https://github.com/hermawan22/abra/releases/download/vX.Y.Z/install.sh \
-  | ABRA_VERSION=vX.Y.Z ABRA_VERIFY_ATTESTATION=1 sh
+curl -fsSLO https://github.com/hermawan22/abra/releases/download/vX.Y.Z/install.sh
+gh attestation verify --repo hermawan22/abra install.sh
+ABRA_VERSION=vX.Y.Z ABRA_VERIFY_ATTESTATION=1 sh install.sh
 ```
 
 If you already cloned the repo, this checkout-local installer does the same
@@ -186,9 +187,10 @@ the API and worker run in Docker and cannot see your local path. Use
 `--tracked` only when the worker can read the same path and you want a durable
 source config plus ingestion job.
 
-Direct local ingestion prints per-file progress in human output so slow first
-local embedding calls do not look stuck. Use `--quiet` to suppress progress, or
-`--json` when another tool needs machine-readable output.
+Direct local ingestion sends files through the batch ingest API and prints batch
+progress in human output so slow first local embedding calls do not look stuck.
+Use `--quiet` to suppress progress, or `--json` when another tool needs
+machine-readable output.
 
 Queue a remote Git repo through the worker:
 
@@ -417,11 +419,12 @@ docker compose --env-file .env.production run --rm migrate
 docker compose --env-file .env.production up -d api worker
 ```
 
-For curl-installed CLI users, `abra up` uses the downloaded runtime Compose file
-and pulls the published `ghcr.io/hermawan22/abra:<version>` image instead of
-building locally. For local source-checkout development, keep using `abra up`;
-it layers `docker-compose.dev.yml` over the production base and builds
-`abra:local` without weakening the production Compose file.
+For curl-installed CLI users, `abra up` downloads the release runtime bundle,
+verifies it against `SHA256SUMS`, and uses its `IMAGE_DIGEST` asset so
+`ABRA_IMAGE` is digest-pinned instead of tag-only. For local source-checkout
+development, keep using `abra up`; it layers `docker-compose.dev.yml` over the
+production base and builds `abra:local` without weakening the production
+Compose file.
 
 Check the service:
 
@@ -617,7 +620,7 @@ MCP tools:
 - `propose_learning(scope, proposal_type, title, rationale, target_type?, target_id?, source_url?, confidence?, payload?, created_by?)`
 - `list_learning_proposals(scope, status?, limit?)`
 - `decide_learning_proposal(proposal_id, status, reviewed_by?, review_reason?, approval_id?, metadata?)`
-- `apply_learning_proposal(proposal_id, applied_by?, approval_id?, payload?, metadata?)`
+- `apply_learning_proposal(proposal_id, applied_by?, approval_id?, metadata?)`
 - `request_approval(action, scope, reason, target_type?, target_id?, requested_by?, payload?, metadata?, expires_at?)`
 
 `ingest_documents` defaults to fail-fast semantics: Abra validates every document, batches chunk and claim embeddings across the request, and then persists the batch in one database transaction. If a persistence error happens, the error reports the failing document index and the transaction rolls back the batch. Set `continue_on_error=true` when a connector needs per-document success/error entries; that mode keeps documents isolated instead of batching across the whole request.
@@ -627,6 +630,7 @@ MCP tools:
 - `GET /healthz`
 - `GET /readyz`
 - `POST /ingest/documents`
+- `POST /ingest/documents/batch`
 - `POST /ingest/webhooks`
 - `POST /recall`
 - `POST /claims`
@@ -995,7 +999,7 @@ Do not give autonomous agents all-scope `admin` credentials. Give them scoped wr
 
 ## Auto Ingestion
 
-The OSS surface is generic document ingestion through `POST /ingest/documents` or MCP `ingest_document`, batch ingestion through MCP `ingest_documents`, signed connector batches through `POST /ingest/webhooks`, and scheduled source configs for `markdown`, `local_repo`, `git_repo`, and `mcp`. Production deployments should automate ingestion outside the request path:
+The OSS surface is generic document ingestion through `POST /ingest/documents` or MCP `ingest_document`, batch ingestion through `POST /ingest/documents/batch` or MCP `ingest_documents`, signed connector batches through `POST /ingest/webhooks`, and scheduled source configs for `markdown`, `local_repo`, `git_repo`, and `mcp`. Production deployments should automate ingestion outside the request path:
 
 - Poll or subscribe to approved systems such as Confluence, Jira, Git repositories, runbooks, or decision logs.
 - Map every source to a stable `source_url`, `source_type`, `scope`, title, and authority level.
@@ -1013,7 +1017,7 @@ OSS repo ingestion supports mounted paths through `local_repo` and provider-neut
 
 Set `include_code=true` to add deterministic structural code graph extraction. Code ingestion is opt-in so large repositories do not get indexed accidentally. Code files create chunks, graph relations, and deterministic summaries; they do not create verified natural-language claims from raw source text or comments. The extractor records file, route, package, component, symbol, import, export, dependency, and Go package/symbol relations without calling an LLM.
 
-Core scheduled sources are `markdown`, `local_repo`, `git_repo`, and `mcp`. `markdown` and `local_repo` must point at a local path or `file://` URL visible to the worker. `git_repo` accepts `base_url` or `config.repository_url` / `config.remote_url` / `config.git_remote_url`, plus optional `branch`, `git_depth`, `provider`, and `project_path`. `mcp` accepts `base_url` or `config.server_url`, `config.tool`, optional `config.arguments`, optional `config.bearer_token_env`, optional `config.header_env`, and optional `config.document_source_type`; the MCP tool must return normalized Abra documents as JSON in `structuredContent` or a text content item. Before registering a user-owned MCP tool as a source, run `abra source mcp --scope <scope> --mcp-url <url> --tool <tool> --dry-run`, call `POST /sources/configs/validate`, or use MCP `validate_mcp_source`; validation calls the upstream MCP server, validates the normalized documents, and exits without creating a source config or queueing a job. Server-side validation that uses `bearer_token_env` or `header_env` can require `approval_id` for `connector_enable` when approval enforcement is active. Source configs can set `freshness_policy.max_age_seconds` / `max_age_minutes` / `max_age_hours` / `max_age_days` and `schedule_cron` values of `@hourly`, `@daily`, or `@every <N><s|m|h|d>`. The scheduler only queues due sources and skips sources with active queued, retry, or running jobs. `WORKER_CONCURRENCY` runs multiple claimed ingestion jobs in one worker process while serializing jobs with the same source ID; keep it at `1` for the default local Qwen runner and raise it only after provider and database capacity are measured. Private connector overlays are still the right place for Confluence, Jira, Slack, provider-specific webhook diffing, ACL normalization, and token rotation when those systems do not already expose an MCP document-export tool; after normalization they can push documents through `POST /ingest/documents` / `POST /ingest/webhooks` or be called through an `mcp` source config.
+Core scheduled sources are `markdown`, `local_repo`, `git_repo`, and `mcp`. `markdown` and `local_repo` must point at a local path or `file://` URL visible to the worker. `git_repo` accepts `base_url` or `config.repository_url` / `config.remote_url` / `config.git_remote_url`, plus optional `branch`, `git_depth`, `provider`, and `project_path`. `mcp` accepts `base_url` or `config.server_url`, `config.tool`, optional `config.arguments`, optional `config.bearer_token_env`, optional `config.header_env`, and optional `config.document_source_type`; the MCP tool must return normalized Abra documents as JSON in `structuredContent` or a text content item. Before registering a user-owned MCP tool as a source, run `abra source mcp --scope <scope> --mcp-url <url> --tool <tool> --dry-run`, call `POST /sources/configs/validate`, or use MCP `validate_mcp_source`; validation calls the upstream MCP server, validates the normalized documents, and exits without creating a source config or queueing a job. Server-side validation that uses `bearer_token_env` or `header_env` can require `approval_id` for `connector_enable` when approval enforcement is active. Source configs can set `freshness_policy.max_age_seconds` / `max_age_minutes` / `max_age_hours` / `max_age_days` and `schedule_cron` values of `@hourly`, `@daily`, or `@every <N><s|m|h|d>`. The scheduler only queues due sources and skips sources with active queued, retry, or running jobs. `WORKER_CONCURRENCY` runs multiple claimed ingestion jobs in one worker process while serializing jobs with the same source ID; keep it at `1` for the default local Qwen runner and raise it only after provider and database capacity are measured. Private connector overlays are still the right place for Confluence, Jira, Slack, provider-specific webhook diffing, ACL normalization, and token rotation when those systems do not already expose an MCP document-export tool; after normalization they can push one document through `POST /ingest/documents`, push batches through `POST /ingest/documents/batch` or `POST /ingest/webhooks`, or be called through an `mcp` source config.
 
 Non-core source types such as `jira`, `confluence`, or deployment-specific names may still be stored as overlay source configs, but the OSS worker will not schedule those vendor-specific types directly. Use `mcp` when an existing MCP server can export normalized documents; otherwise the overlay owns discovery, credentials, ACL normalization, diffing, and retries while Abra owns the durable memory contract after normalized documents arrive.
 

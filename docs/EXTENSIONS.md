@@ -7,7 +7,7 @@ Abra's core runtime is intentionally provider-neutral. Extensions should adapt s
 1. Discover source records in the external system.
 2. Normalize each record into a stable `source_url`, `source_type`, `scope`, `title`, `content`, authority, and metadata.
 3. Preserve source ACL and ownership metadata for the deployment's gateway or overlay.
-4. Push normalized documents through `POST /ingest/documents`, `POST /ingest/webhooks`, or MCP `ingest_documents`.
+4. Push normalized documents through `POST /ingest/documents`, `POST /ingest/documents/batch`, `POST /ingest/webhooks`, or MCP `ingest_documents`.
 5. Re-ingest idempotently when records change.
 6. Keep connector cursors, credentials, webhook state, and retry policy outside Abra core.
 

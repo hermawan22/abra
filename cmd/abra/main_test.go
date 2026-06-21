@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -566,16 +568,31 @@ func TestAgentsBootstrapIngestsAndVerifiesContext(t *testing.T) {
 	ingestRequests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/ingest/documents":
+		case "/ingest/documents/batch":
 			ingestRequests++
 			var body map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Fatalf("decode ingest: %v", err)
 			}
-			if body["scope"] != wantScope {
-				t.Fatalf("ingest scope = %v, want %s", body["scope"], wantScope)
+			docs, _ := body["documents"].([]any)
+			results := make([]map[string]any, 0, len(docs))
+			for index, raw := range docs {
+				doc, _ := raw.(map[string]any)
+				if doc["scope"] != wantScope {
+					t.Fatalf("ingest scope = %v, want %s", doc["scope"], wantScope)
+				}
+				results = append(results, map[string]any{
+					"index":       index,
+					"document_id": fmt.Sprintf("doc-%d", index),
+					"source_url":  doc["source_url"],
+					"chunks":      1,
+					"claims":      1,
+				})
 			}
-			writeTestJSON(t, w, map[string]any{"document_id": "doc"})
+			writeTestJSON(t, w, map[string]any{
+				"accepted":  len(results),
+				"documents": results,
+			})
 		case "/mcp":
 			var rpc map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&rpc); err != nil {
@@ -679,9 +696,28 @@ func TestAgentsBootstrapInstallsCodexMCPBeforeFinalVerify(t *testing.T) {
 	ingestRequests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/ingest/documents":
+		case "/ingest/documents/batch":
 			ingestRequests++
-			writeTestJSON(t, w, map[string]any{"chunks": 1, "claims": 1})
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode ingest: %v", err)
+			}
+			docs, _ := body["documents"].([]any)
+			results := make([]map[string]any, 0, len(docs))
+			for index, raw := range docs {
+				doc, _ := raw.(map[string]any)
+				results = append(results, map[string]any{
+					"index":       index,
+					"document_id": fmt.Sprintf("doc-%d", index),
+					"source_url":  doc["source_url"],
+					"chunks":      1,
+					"claims":      1,
+				})
+			}
+			writeTestJSON(t, w, map[string]any{
+				"accepted":  len(results),
+				"documents": results,
+			})
 		case "/mcp":
 			var rpc map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&rpc); err != nil {
@@ -1202,8 +1238,27 @@ func TestAgentsBootstrapNonCodexSkipsCodexInstall(t *testing.T) {
 	wantScope := "repo:" + slug(filepath.Base(root))
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/ingest/documents":
-			writeTestJSON(t, w, map[string]any{"document_id": "doc"})
+		case "/ingest/documents/batch":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode ingest: %v", err)
+			}
+			docs, _ := body["documents"].([]any)
+			results := make([]map[string]any, 0, len(docs))
+			for index, raw := range docs {
+				doc, _ := raw.(map[string]any)
+				results = append(results, map[string]any{
+					"index":       index,
+					"document_id": fmt.Sprintf("doc-%d", index),
+					"source_url":  doc["source_url"],
+					"chunks":      1,
+					"claims":      1,
+				})
+			}
+			writeTestJSON(t, w, map[string]any{
+				"accepted":  len(results),
+				"documents": results,
+			})
 		case "/mcp":
 			var rpc map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&rpc); err != nil {
@@ -3580,17 +3635,23 @@ func TestLocalPathIngestPostsMatchedFiles(t *testing.T) {
 	mustWrite(t, filepath.Join(root, "src", "app.ts"), "export function route() { return '/readyz' }\n")
 	mustWrite(t, filepath.Join(root, "node_modules", "ignored.md"), "# Ignored\n")
 
-	var requests []map[string]any
+	var request map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/ingest/documents" {
+		if r.URL.Path != "/ingest/documents/batch" {
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
 		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("decode body: %v", err)
 		}
-		requests = append(requests, body)
-		_ = json.NewEncoder(w).Encode(map[string]any{"document_id": "doc"})
+		request = body
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"accepted": 2,
+			"documents": []map[string]any{
+				{"index": 0, "document_id": "doc-readme", "source_url": "file://readme", "chunks": 1, "claims": 1},
+				{"index": 1, "document_id": "doc-code", "source_url": "file://code", "chunks": 1, "claims": 0},
+			},
+		})
 	}))
 	defer server.Close()
 
@@ -3607,16 +3668,19 @@ func TestLocalPathIngestPostsMatchedFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("local path ingest error = %v", err)
 	}
-	if len(requests) != 2 {
-		t.Fatalf("requests = %d, want 2 (%#v)", len(requests), requests)
+	rawDocs, _ := request["documents"].([]any)
+	if len(rawDocs) != 2 {
+		t.Fatalf("documents = %d, want 2 (%#v)", len(rawDocs), request)
 	}
-	if requests[0]["title"] != "Readme" {
-		t.Fatalf("markdown title = %v", requests[0]["title"])
+	first, _ := rawDocs[0].(map[string]any)
+	second, _ := rawDocs[1].(map[string]any)
+	if first["title"] != "Readme" {
+		t.Fatalf("markdown title = %v", first["title"])
 	}
-	if !strings.HasPrefix(stringValue(requests[0]["source_url"], ""), "file://") {
-		t.Fatalf("source_url = %v", requests[0]["source_url"])
+	if !strings.HasPrefix(stringValue(first["source_url"], ""), "file://") {
+		t.Fatalf("source_url = %v", first["source_url"])
 	}
-	metadata, _ := requests[1]["metadata"].(map[string]any)
+	metadata, _ := second["metadata"].(map[string]any)
 	if metadata["content_kind"] != "code" || metadata["ingest_path"] != "src/app.ts" {
 		t.Fatalf("code metadata = %#v", metadata)
 	}
@@ -3628,13 +3692,18 @@ func TestLocalPathShortcutUsesDefaultScope(t *testing.T) {
 
 	var request map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/ingest/documents" {
+		if r.URL.Path != "/ingest/documents/batch" {
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatalf("decode body: %v", err)
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"document_id": "doc"})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"accepted": 1,
+			"documents": []map[string]any{
+				{"index": 0, "document_id": "doc", "source_url": "file://readme", "chunks": 1, "claims": 1},
+			},
+		})
 	}))
 	defer server.Close()
 
@@ -3648,8 +3717,13 @@ func TestLocalPathShortcutUsesDefaultScope(t *testing.T) {
 		t.Fatalf("shortcut ingest error = %v", err)
 	}
 	wantScope := "repo:" + slug(filepath.Base(root))
-	if request["scope"] != wantScope {
-		t.Fatalf("scope = %v, want %s", request["scope"], wantScope)
+	rawDocs, _ := request["documents"].([]any)
+	if len(rawDocs) != 1 {
+		t.Fatalf("documents = %#v", request["documents"])
+	}
+	doc, _ := rawDocs[0].(map[string]any)
+	if doc["scope"] != wantScope {
+		t.Fatalf("scope = %v, want %s", doc["scope"], wantScope)
 	}
 }
 
@@ -4229,7 +4303,7 @@ func TestLocalPathIngestReportsPreReadSkippedFilesJSON(t *testing.T) {
 
 	var requests []map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/ingest/documents" {
+		if r.URL.Path != "/ingest/documents/batch" {
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
 		var body map[string]any
@@ -4237,7 +4311,12 @@ func TestLocalPathIngestReportsPreReadSkippedFilesJSON(t *testing.T) {
 			t.Fatalf("decode body: %v", err)
 		}
 		requests = append(requests, body)
-		_ = json.NewEncoder(w).Encode(map[string]any{"document_id": "doc"})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"accepted": 1,
+			"documents": []map[string]any{
+				{"index": 0, "document_id": "doc", "source_url": "file://readme", "chunks": 1, "claims": 1},
+			},
+		})
 	}))
 	defer server.Close()
 
@@ -4256,7 +4335,9 @@ func TestLocalPathIngestReportsPreReadSkippedFilesJSON(t *testing.T) {
 	if runErr != nil {
 		t.Fatalf("shortcut ingest error = %v", runErr)
 	}
-	if len(requests) != 1 || requests[0]["title"] != "Local Brain" {
+	rawDocs, _ := requests[0]["documents"].([]any)
+	firstDoc, _ := rawDocs[0].(map[string]any)
+	if len(requests) != 1 || len(rawDocs) != 1 || firstDoc["title"] != "Local Brain" {
 		t.Fatalf("requests = %#v", requests)
 	}
 	var payload map[string]any
@@ -4286,7 +4367,7 @@ func TestLocalPathIngestSkipsEmptyFiles(t *testing.T) {
 
 	var requests []map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/ingest/documents" {
+		if r.URL.Path != "/ingest/documents/batch" {
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
 		var body map[string]any
@@ -4294,7 +4375,12 @@ func TestLocalPathIngestSkipsEmptyFiles(t *testing.T) {
 			t.Fatalf("decode body: %v", err)
 		}
 		requests = append(requests, body)
-		_ = json.NewEncoder(w).Encode(map[string]any{"document_id": "doc"})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"accepted": 1,
+			"documents": []map[string]any{
+				{"index": 0, "document_id": "doc", "source_url": "file://readme", "chunks": 1, "claims": 1},
+			},
+		})
 	}))
 	defer server.Close()
 
@@ -4311,8 +4397,10 @@ func TestLocalPathIngestSkipsEmptyFiles(t *testing.T) {
 	if len(requests) != 1 {
 		t.Fatalf("requests = %d, want 1 (%#v)", len(requests), requests)
 	}
-	if requests[0]["title"] != "Local Brain" {
-		t.Fatalf("title = %v", requests[0]["title"])
+	rawDocs, _ := requests[0]["documents"].([]any)
+	firstDoc, _ := rawDocs[0].(map[string]any)
+	if firstDoc["title"] != "Local Brain" {
+		t.Fatalf("title = %v", firstDoc["title"])
 	}
 }
 
@@ -4324,7 +4412,7 @@ func TestLocalPathIngestContinueOnErrorReportsFailures(t *testing.T) {
 
 	var requests []map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/ingest/documents" {
+		if r.URL.Path != "/ingest/documents/batch" {
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
 		var body map[string]any
@@ -4332,13 +4420,16 @@ func TestLocalPathIngestContinueOnErrorReportsFailures(t *testing.T) {
 			t.Fatalf("decode body: %v", err)
 		}
 		requests = append(requests, body)
-		sourceURL := stringValue(body["source_url"], "")
-		if strings.Contains(sourceURL, "b-fail.md") {
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte(`{"error":"ai provider request failed: Post \"http://host.docker.internal:8080/v1/embeddings\": dial tcp: connect: connection refused"}`))
-			return
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"document_id": "doc"})
+		docs, _ := body["documents"].([]any)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"accepted": 2,
+			"failed":   1,
+			"documents": []map[string]any{
+				{"index": 0, "status": "ingested", "document_id": "doc-a", "source_url": stringValue(docs[0].(map[string]any)["source_url"], ""), "chunks": 1, "claims": 1},
+				{"index": 1, "status": "error", "source_url": stringValue(docs[1].(map[string]any)["source_url"], ""), "error": "ai provider request failed: Post \"http://host.docker.internal:8080/v1/embeddings\": dial tcp: connect: connection refused"},
+				{"index": 2, "status": "ingested", "document_id": "doc-c", "source_url": stringValue(docs[2].(map[string]any)["source_url"], ""), "chunks": 1, "claims": 1},
+			},
+		})
 	}))
 	defer server.Close()
 
@@ -4355,8 +4446,8 @@ func TestLocalPathIngestContinueOnErrorReportsFailures(t *testing.T) {
 			t.Fatalf("error = %v, want continue-on-error summary failure", err)
 		}
 	})
-	if len(requests) != 3 {
-		t.Fatalf("requests = %d, want 3 (%#v)", len(requests), requests)
+	if len(requests) != 1 {
+		t.Fatalf("requests = %d, want 1 (%#v)", len(requests), requests)
 	}
 	for _, want := range []string{
 		"Ingested files: 2",
@@ -4376,10 +4467,16 @@ func TestLocalPathIngestPrintsHumanProgress(t *testing.T) {
 	mustWrite(t, filepath.Join(root, "b.md"), "# Bravo\n\nRelease checks should pass.")
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/ingest/documents" {
+		if r.URL.Path != "/ingest/documents/batch" {
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"document_id": "doc"})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"accepted": 2,
+			"documents": []map[string]any{
+				{"index": 0, "document_id": "doc-a", "source_url": "file://a", "chunks": 1, "claims": 1},
+				{"index": 1, "document_id": "doc-b", "source_url": "file://b", "chunks": 1, "claims": 1},
+			},
+		})
 	}))
 	defer server.Close()
 
@@ -4397,9 +4494,8 @@ func TestLocalPathIngestPrintsHumanProgress(t *testing.T) {
 	for _, want := range []string{
 		"Ingesting files: 2",
 		"model work can take a while",
-		"[1/2] ingest a.md",
-		"[1/2] ok a.md",
-		"[2/2] ingest b.md",
+		"[1-2/2] ingest batch",
+		"[1-2/2] ok batch",
 		"Ingested files: 2",
 	} {
 		if !strings.Contains(output, want) {
@@ -4413,10 +4509,15 @@ func TestLocalPathIngestJSONSuppressesProgress(t *testing.T) {
 	mustWrite(t, filepath.Join(root, "a.md"), "# Alpha\n\nAgents should use Abra.")
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/ingest/documents" {
+		if r.URL.Path != "/ingest/documents/batch" {
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"document_id": "doc"})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"accepted": 1,
+			"documents": []map[string]any{
+				{"index": 0, "document_id": "doc", "source_url": "file://a", "chunks": 1, "claims": 1},
+			},
+		})
 	}))
 	defer server.Close()
 
@@ -4441,6 +4542,84 @@ func TestLocalPathIngestJSONSuppressesProgress(t *testing.T) {
 	}
 	if len(payload["documents"].([]any)) != 1 {
 		t.Fatalf("documents payload = %#v", payload["documents"])
+	}
+}
+
+func TestLocalPathIngestChunksLargeBatch(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 51; i++ {
+		mustWrite(t, filepath.Join(root, fmt.Sprintf("doc-%02d.md", i)), fmt.Sprintf("# Doc %02d\n\nAgents should use Abra.", i))
+	}
+
+	var batchSizes []int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ingest/documents/batch" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		rawDocs, _ := body["documents"].([]any)
+		batchSizes = append(batchSizes, len(rawDocs))
+		results := make([]map[string]any, 0, len(rawDocs))
+		for index, raw := range rawDocs {
+			doc, _ := raw.(map[string]any)
+			results = append(results, map[string]any{
+				"index":       index,
+				"document_id": fmt.Sprintf("doc-%d", len(batchSizes)*100+index),
+				"source_url":  doc["source_url"],
+				"chunks":      1,
+				"claims":      1,
+			})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"accepted": len(results), "documents": results})
+	}))
+	defer server.Close()
+
+	if err := run(context.Background(), []string{
+		"ingest",
+		root,
+		"--include", "**/*.md",
+		"--quiet",
+		"--base-url", server.URL,
+		"--token", "test-token",
+	}); err != nil {
+		t.Fatalf("ingest error = %v", err)
+	}
+	if !reflect.DeepEqual(batchSizes, []int{50, 1}) {
+		t.Fatalf("batch sizes = %#v, want [50 1]", batchSizes)
+	}
+}
+
+func TestLocalPathIngestRejectsIncompleteBatchResponse(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "a.md"), "# Alpha\n\nAgents should use Abra.")
+	mustWrite(t, filepath.Join(root, "b.md"), "# Bravo\n\nRelease checks should pass.")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ingest/documents/batch" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"accepted": 1,
+			"documents": []map[string]any{
+				{"index": 0, "document_id": "doc-a", "source_url": "file://a", "chunks": 1, "claims": 1},
+			},
+		})
+	}))
+	defer server.Close()
+
+	err := run(context.Background(), []string{
+		"ingest",
+		root,
+		"--include", "**/*.md",
+		"--quiet",
+		"--base-url", server.URL,
+		"--token", "test-token",
+	})
+	if err == nil || !strings.Contains(err.Error(), "expected 2") {
+		t.Fatalf("error = %v, want incomplete batch response error", err)
 	}
 }
 
@@ -4521,6 +4700,26 @@ func TestDemoEnvUsesPublishedRuntimeImageOutsideCheckout(t *testing.T) {
 	}
 	if strings.Contains(content, "ABRA_IMAGE=abra:local") {
 		t.Fatalf("runtime demo env must not use local image:\n%s", content)
+	}
+}
+
+func TestDemoEnvUsesRuntimeImageDigestWhenAvailable(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+	oldVersion := version
+	version = "v9.9.9"
+	t.Cleanup(func() { version = oldVersion })
+	if err := os.MkdirAll(managedRuntimeDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	digest := "ghcr.io/hermawan22/abra@sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+	mustWrite(t, filepath.Join(managedRuntimeDir(), "IMAGE_DIGEST"), digest+"\n")
+
+	content := demoEnv()
+	if !strings.Contains(content, "ABRA_IMAGE="+digest+"\n") {
+		t.Fatalf("runtime demo env should use digest image:\n%s", content)
 	}
 }
 
@@ -4651,6 +4850,42 @@ func TestEnsureProjectDirDownloadsRuntimeOutsideCheckout(t *testing.T) {
 	}
 }
 
+func TestEnsureProjectDirDownloadsVerifiedRuntimeBundleOutsideCheckout(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Setenv("ABRA_VERIFY_RUNTIME_ATTESTATION", "0")
+	t.Chdir(root)
+	oldVersion := version
+	version = "v9.9.9"
+	t.Cleanup(func() { version = oldVersion })
+
+	archive := runtimeArchive(t)
+	asset := runtimeBundleAssetName()
+	sum := sha256.Sum256(archive)
+	sums := fmt.Sprintf("%x  %s\n", sum, asset)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/" + asset:
+			_, _ = w.Write(archive)
+		case "/SHA256SUMS":
+			_, _ = w.Write([]byte(sums))
+		default:
+			t.Fatalf("unexpected runtime download path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("ABRA_RELEASE_BASE_URL", server.URL)
+
+	dir, err := ensureProjectDir(context.Background(), cliArgs{Flags: map[string]string{}, Bools: map[string]bool{}})
+	if err != nil {
+		t.Fatalf("ensureProjectDir error = %v", err)
+	}
+	if !fileExists(filepath.Join(dir, "docker-compose.yml")) {
+		t.Fatalf("runtime docker-compose.yml was not extracted into %s", dir)
+	}
+}
+
 func runtimeArchive(t *testing.T) []byte {
 	t.Helper()
 	var buf bytes.Buffer
@@ -4662,6 +4897,7 @@ func runtimeArchive(t *testing.T) []byte {
 		"go.mod":                  "module github.com/hermawan22/abra\n",
 		"cmd/abra/main.go":        "package main\n",
 		"migrations/001_init.sql": "-- init\n",
+		"IMAGE_DIGEST":            "ghcr.io/hermawan22/abra@sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef\n",
 	}
 	for name, body := range files {
 		content := []byte(body)

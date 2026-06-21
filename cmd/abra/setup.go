@@ -38,6 +38,11 @@ func setup(ctx context.Context, args cliArgs) error {
 	printSetupPrerequisites()
 	fmt.Println("Env file: " + envPath(args))
 
+	if !boolFlag(args, "no-start") && !boolFlag(args, "skip-up") && !isAbraSourceCheckout(".") {
+		if _, err := ensureProjectDir(ctx, args); err != nil {
+			return err
+		}
+	}
 	if err := ensureEnv(args); err != nil {
 		return err
 	}

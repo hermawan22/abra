@@ -11,6 +11,8 @@ The chart packages:
 - config map
 - references to an existing secret
 - optional ingress
+- baseline NetworkPolicy
+- optional ServiceMonitor and PrometheusRule
 
 ## Install
 
@@ -145,6 +147,43 @@ migrate:
       cpu: 250m
       memory: 256Mi
       ephemeral-storage: 256Mi
+
+networkPolicy:
+  enabled: true
+  apiIngress:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/part-of: abra
+          abra.dev/api-client: "true"
+  extraApiIngress: []
+
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+  path: /metrics
+  bearerTokenSecret:
+    name: abra-metrics-token
+    key: token
+  labels: {}
+
+prometheusRule:
+  enabled: false
+  labels: {}
+  rules:
+    apiDown:
+      enabled: true
+      for: 5m
+      severity: critical
+    high5xxRate:
+      enabled: true
+      for: 10m
+      severity: warning
+      threshold: 0.05
+    memoryComposeFailures:
+      enabled: true
+      for: 10m
+      severity: warning
 ```
 
 ## Rules
@@ -156,7 +195,9 @@ migrate:
 - Run migrations as Helm pre-install/pre-upgrade hooks with a delete policy or unique job names so migrations run once on every release.
 - Keep Abra internal-only by default.
 - Keep the rendered pod hardening controls: non-root UID/GID, `RuntimeDefault` seccomp, disabled service-account token automount, read-only root filesystem, dropped capabilities, resource requests/limits, and bounded writable `emptyDir` mounts.
-- Add namespace Pod Security, NetworkPolicy or service-mesh policy, internal ingress, gateway rate limits, and admission rules that require digest-pinned GHCR images in the target cluster.
+- Keep `networkPolicy.enabled=true` for the baseline internal-only posture. Add `networkPolicy.extraApiIngress` entries for ingress gateways, Prometheus, or agent runtimes outside the release namespace, or replace it with an equivalent service-mesh policy.
+- Enable `serviceMonitor.enabled` and `prometheusRule.enabled` only when the Prometheus Operator CRDs are installed in the cluster. Create `serviceMonitor.bearerTokenSecret.name` with a `token` value that is authorized for ops access to `GET /metrics`; the chart does not copy API keys into monitoring secrets.
+- Add namespace Pod Security, internal ingress, gateway rate limits, and admission rules that require digest-pinned GHCR images in the target cluster.
 - Keep `config.bindAddress="0.0.0.0"` for containerized API pods and restrict exposure through the Service, Ingress, gateway, or network policy layers.
 - Keep `config.approvalMode=enforce` before exposing write-capable credentials to autonomous agents.
 - Keep `ABRA_WEBHOOK_SECRETS` present in the existing secret. The chart requires it by default for the migration, API, and worker pods; set `config.allowUnsignedWebhooksInProduction="true"` only when webhook ingestion is disabled or an upstream gateway verifies webhook signatures.

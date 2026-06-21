@@ -31,7 +31,6 @@ type learningApplyPlan struct {
 type applyLearningProposalInput struct {
 	AppliedBy  string         `json:"applied_by"`
 	ApprovalID string         `json:"approval_id"`
-	Payload    map[string]any `json:"payload"`
 	Metadata   map[string]any `json:"metadata"`
 }
 
@@ -66,15 +65,12 @@ func (h *handler) auditLearningApplied(ctx context.Context, proposal store.Learn
 }
 
 func (h *handler) applyLearningProposal(ctx context.Context, proposal store.LearningProposalRecord, input applyLearningProposalInput) (any, error) {
-	if proposal.Status != "accepted" {
+	if proposal.Status != "accepted" && proposal.Status != "applying" {
 		return nil, fmt.Errorf("learning proposal %q is %s and cannot be applied", proposal.ID, proposal.Status)
 	}
 	appliedBy := firstNonEmpty(strings.TrimSpace(input.AppliedBy), proposal.ReviewedBy, proposal.CreatedBy, "api")
 	approvalID := firstNonEmpty(strings.TrimSpace(input.ApprovalID), proposal.ApprovalID)
 	payload := cloneAnyMap(proposal.Payload)
-	for key, value := range input.Payload {
-		payload[key] = value
-	}
 	switch proposal.ProposalType {
 	case "claim":
 		claim := firstNonEmpty(payloadString(payload, "claim"), payloadString(payload, "observation_text"), proposal.Title)
@@ -235,8 +231,10 @@ func buildLearningApplyPlan(proposal store.LearningProposalRecord, approvalMode 
 	case "challenge":
 		plan.Action = "apply_claim_challenge"
 		plan.Method = http.MethodPost
-		if strings.TrimSpace(proposal.TargetID) != "" {
-			plan.Endpoint = "/claims/" + proposal.TargetID + "/challenge"
+		claimID := firstNonEmpty(proposal.TargetID, payloadString(proposal.Payload, "claim_id"))
+		if claimID != "" {
+			plan.TargetID = claimID
+			plan.Endpoint = "/claims/" + claimID + "/challenge"
 		}
 		plan.RequiresApproval = approvalMode == "enforce"
 		plan.ApprovalAction = "challenge_claim"
@@ -257,6 +255,7 @@ func buildLearningApplyPlan(proposal store.LearningProposalRecord, approvalMode 
 		plan.RequiresApproval = approvalMode == "enforce"
 		plan.ApprovalAction = "backfill"
 		plan.TargetType = nonEmpty(plan.TargetType, "source_config")
+		plan.TargetID = firstNonEmpty(plan.TargetID, payloadString(proposal.Payload, "source_config_id"))
 		plan.Notes = []string{"refresh through the source config or connector that owns the cited source URL"}
 	case "ingestion":
 		plan.Action = "ingest_stronger_source"
@@ -278,12 +277,10 @@ func buildLearningApplyPlan(proposal store.LearningProposalRecord, approvalMode 
 		}
 		plan.RequiresApproval = false
 	case "policy":
-		plan.Action = "review_policy_change"
-		plan.Method = http.MethodPost
-		plan.Endpoint = "/agent/policies"
-		plan.RequiresApproval = approvalMode == "enforce"
-		plan.ApprovalAction = "acl_change"
-		plan.TargetType = nonEmpty(plan.TargetType, "policy")
+		plan.Ready = false
+		plan.Action = "manual_review"
+		plan.RequiresApproval = false
+		plan.Warnings = []string{"policy proposals must be applied manually through the policy API after operator review"}
 	default:
 		plan.Action = "manual_review"
 		plan.Warnings = []string{"proposal type has no deterministic apply route yet"}

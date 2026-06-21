@@ -11,6 +11,8 @@ spec:
     metadata:
       labels:
         app: abra-worker
+        app.kubernetes.io/name: abra
+        app.kubernetes.io/component: worker
     spec:
       automountServiceAccountToken: false
       securityContext:

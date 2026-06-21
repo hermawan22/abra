@@ -160,6 +160,108 @@ func TestValidateMCPSourceRejectsStructuredDocumentsMissingRequiredFields(t *tes
 	}
 }
 
+func TestValidateMCPSourceSendsConfiguredCredentialHeaders(t *testing.T) {
+	t.Setenv("CONFLUENCE_MCP_TOKEN", "mcp-token")
+	t.Setenv("CONFLUENCE_TENANT_ID", "tenant-42")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("authorization"); got != "Bearer mcp-token" {
+			t.Fatalf("authorization = %q, want bearer token", got)
+		}
+		if got := r.Header.Get("x-tenant-id"); got != "tenant-42" {
+			t.Fatalf("x-tenant-id = %q, want tenant-42", got)
+		}
+		if got := r.Header.Get("accept"); got != "application/json" {
+			t.Fatalf("accept = %q, want application/json", got)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		writeMCPTestJSON(t, w, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      body["id"],
+			"result": map[string]any{
+				"structuredContent": map[string]any{
+					"documents": []map[string]any{{
+						"source_url": "https://wiki.example/pages/credentialed",
+						"title":      "Credentialed Export",
+						"content":    "Credentialed MCP exports are accepted.",
+					}},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	if _, err := ValidateMCPSource(context.Background(), SourceConfig{
+		ID:            "mcp-confluence",
+		Scope:         "repo:abra",
+		SourceType:    ingest.SourceTypeMCP,
+		BaseURL:       server.URL,
+		ConnectorKind: "confluence",
+		Config: map[string]any{
+			"tool":             "export_documents",
+			"bearer_token_env": "CONFLUENCE_MCP_TOKEN",
+			"header_env": map[string]any{
+				"X-Tenant-ID": "CONFLUENCE_TENANT_ID",
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestValidateMCPSourceRejectsMissingCredentialEnv(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  map[string]any
+		wantErr string
+	}{
+		{
+			name: "bearer token",
+			config: map[string]any{
+				"tool":             "export_documents",
+				"bearer_token_env": "MISSING_MCP_TOKEN",
+			},
+			wantErr: `bearer_token_env "MISSING_MCP_TOKEN" is empty`,
+		},
+		{
+			name: "custom header",
+			config: map[string]any{
+				"tool": "export_documents",
+				"header_env": map[string]any{
+					"X-Tenant-ID": "MISSING_TENANT_ID",
+				},
+			},
+			wantErr: `header env "MISSING_TENANT_ID" for "X-Tenant-ID" is empty`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Fatal("MCP endpoint should not be called when credential env is missing")
+			}))
+			defer server.Close()
+
+			_, err := ValidateMCPSource(context.Background(), SourceConfig{
+				ID:         "mcp-confluence",
+				Scope:      "repo:abra",
+				SourceType: ingest.SourceTypeMCP,
+				BaseURL:    server.URL,
+				Config:     tt.config,
+			})
+			if err == nil {
+				t.Fatal("expected missing credential env error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %q, want substring %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func writeMCPTestJSON(t *testing.T, w http.ResponseWriter, value any) {
 	t.Helper()
 	w.Header().Set("content-type", "application/json")

@@ -1,0 +1,31 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: abra-api-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: abra-api
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: abra
+              abra.dev/api-client: "true"
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: abra-worker-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: abra-worker
+  policyTypes:
+    - Ingress
+  ingress: []

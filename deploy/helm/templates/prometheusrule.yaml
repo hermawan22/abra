@@ -14,7 +14,7 @@ spec:
       rules:
         {{- if .Values.prometheusRule.rules.apiDown.enabled }}
         - alert: AbraApiDown
-          expr: absent(up{job="{{ include "abra.fullname" . }}"} == 1)
+          expr: absent(abra_build_info{runtime="go",abra_release="{{ .Release.Name }}",abra_service="{{ include "abra.fullname" . }}"} == 1)
           for: {{ .Values.prometheusRule.rules.apiDown.for }}
           labels:
             severity: {{ .Values.prometheusRule.rules.apiDown.severity | quote }}
@@ -26,10 +26,12 @@ spec:
         - alert: AbraHigh5xxRate
           expr: |
             (
-              sum(rate(abra_http_requests_total{status=~"5.."}[5m]))
+              sum(rate(abra_http_requests_total{abra_release="{{ .Release.Name }}",abra_service="{{ include "abra.fullname" . }}",status=~"5.."}[5m]))
               /
-              clamp_min(sum(rate(abra_http_requests_total[5m])), 1)
+              sum(rate(abra_http_requests_total{abra_release="{{ .Release.Name }}",abra_service="{{ include "abra.fullname" . }}"}[5m]))
             ) > {{ .Values.prometheusRule.rules.high5xxRate.threshold }}
+            and
+            sum(rate(abra_http_requests_total{abra_release="{{ .Release.Name }}",abra_service="{{ include "abra.fullname" . }}"}[5m])) > 0
           for: {{ .Values.prometheusRule.rules.high5xxRate.for }}
           labels:
             severity: {{ .Values.prometheusRule.rules.high5xxRate.severity | quote }}
@@ -39,7 +41,7 @@ spec:
         {{- end }}
         {{- if .Values.prometheusRule.rules.memoryComposeFailures.enabled }}
         - alert: AbraMemoryComposeFailures
-          expr: sum(rate(abra_smart_path_requests_total{operation="memory_compose",status!="ok"}[5m])) > 0
+          expr: sum(rate(abra_smart_path_requests_total{abra_release="{{ .Release.Name }}",abra_service="{{ include "abra.fullname" . }}",operation="working_memory",status!="ok"}[5m])) > 0
           for: {{ .Values.prometheusRule.rules.memoryComposeFailures.for }}
           labels:
             severity: {{ .Values.prometheusRule.rules.memoryComposeFailures.severity | quote }}

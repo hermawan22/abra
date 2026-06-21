@@ -105,11 +105,15 @@ service:
 
 networkPolicy:
   enabled: true
-  # By default, only pods in the same namespace can reach the API Service.
-  # Add namespaceSelector/podSelector entries for ingress controllers, gateways,
-  # Prometheus, or agent runtimes that live outside the release namespace.
+  # By default, only pods explicitly labelled as Abra API clients can reach the
+  # API Service. Add namespaceSelector/podSelector entries for ingress
+  # controllers, gateways, Prometheus, or agent runtimes that live outside the
+  # release namespace.
   apiIngress:
-    - podSelector: {}
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/part-of: abra
+          abra.dev/api-client: "true"
   extraApiIngress: []
 
 serviceMonitor:
@@ -117,6 +121,9 @@ serviceMonitor:
   interval: 30s
   scrapeTimeout: 10s
   path: /metrics
+  bearerTokenSecret:
+    name: abra-metrics-token
+    key: token
   labels: {}
 
 prometheusRule:

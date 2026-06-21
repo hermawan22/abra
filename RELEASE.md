@@ -40,13 +40,14 @@ Each release should publish:
 - `abra_linux_arm64.tar.gz`
 - `abra_darwin_amd64.tar.gz`
 - `abra_darwin_arm64.tar.gz`
+- `abra_runtime_vX.Y.Z.tar.gz`
 - `install.sh`
 - `SHA256SUMS`
 - `IMAGE_DIGEST`
 - `abra-release-gate.json`
 - A multi-architecture image at `ghcr.io/hermawan22/abra` for `linux/amd64`
   and `linux/arm64`
-- GitHub Artifact Attestations for the CLI archives, `install.sh`, and
+- GitHub Artifact Attestations for the CLI archives, runtime bundle, `install.sh`, and
   `SHA256SUMS`
 - GitHub Artifact Attestations for `IMAGE_DIGEST` and `abra-release-gate.json`
 - Registry-attached image provenance and SBOM attestations for the GHCR image
@@ -60,6 +61,12 @@ the archive is listed in `SHA256SUMS`, and both files have published
 attestations. The install script fails closed for missing platform assets,
 missing checksums, checksum mismatches, and invalid archives. Source builds are
 developer fallback installs only; they are not release artifacts.
+
+Do not document `abra up` from a release-installed CLI as production-hardened
+unless the release contains `abra_runtime_vX.Y.Z.tar.gz`, the runtime bundle is
+listed in `SHA256SUMS`, and the bundle plus `SHA256SUMS` have published
+attestations. The runtime bundle should contain only the Compose material needed
+to run published images and the release `IMAGE_DIGEST` file.
 
 Do not document a container image as supported until `IMAGE_DIGEST` contains the
 image digest, the digest points at `ghcr.io/hermawan22/abra`, the image is
@@ -103,11 +110,12 @@ Download release artifacts and verify checksums:
 sha256sum -c SHA256SUMS
 ```
 
-Verify artifact provenance with GitHub CLI for every archive, `install.sh`,
+Verify artifact provenance with GitHub CLI for every archive, the runtime bundle, `install.sh`,
 `SHA256SUMS`, `IMAGE_DIGEST`, and `abra-release-gate.json`:
 
 ```sh
 gh attestation verify --repo OWNER/REPO abra_linux_amd64.tar.gz
+gh attestation verify --repo OWNER/REPO abra_runtime_vX.Y.Z.tar.gz
 gh attestation verify --repo OWNER/REPO install.sh
 gh attestation verify --repo OWNER/REPO SHA256SUMS
 gh attestation verify --repo OWNER/REPO IMAGE_DIGEST
@@ -117,8 +125,9 @@ gh attestation verify --repo OWNER/REPO abra-release-gate.json
 Hardened install-script verification:
 
 ```sh
-curl -fsSL https://github.com/OWNER/REPO/releases/download/vX.Y.Z/install.sh \
-  | ABRA_VERSION=vX.Y.Z ABRA_VERIFY_ATTESTATION=1 sh
+curl -fsSLO https://github.com/OWNER/REPO/releases/download/vX.Y.Z/install.sh
+gh attestation verify --repo OWNER/REPO install.sh
+ABRA_VERSION=vX.Y.Z ABRA_VERIFY_ATTESTATION=1 sh install.sh
 ```
 
 The hardened installer path must install from the release archive for the
@@ -138,6 +147,12 @@ The release workflow also runs the installer against the staged `dist`
 directory before uploading assets by setting `ABRA_RELEASE_BASE_URL` to a local
 file URL. This variable is for release verification only; normal users should
 install from the published GitHub release URL above.
+
+Release-installed `abra up` downloads `abra_runtime_vX.Y.Z.tar.gz` from the same
+release base URL, verifies the bundle checksum against `SHA256SUMS`, and uses
+the bundle's `IMAGE_DIGEST` first line as the default `ABRA_IMAGE`. Set
+`ABRA_VERIFY_RUNTIME_ATTESTATION=1` to require runtime bundle and `SHA256SUMS`
+attestation verification during runtime download.
 
 For the first-party GHCR image, prefer digests over mutable tags in production
 deploy manifests.

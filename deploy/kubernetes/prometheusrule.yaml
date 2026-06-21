@@ -1,0 +1,41 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: abra
+  labels:
+    app.kubernetes.io/name: abra
+spec:
+  groups:
+    - name: abra.rules
+      rules:
+        - alert: AbraApiDown
+          expr: absent(abra_build_info{runtime="go",abra_release="static",abra_service="abra-api"} == 1)
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Abra API metrics target is down"
+            description: "Prometheus has no healthy scrape for Abra API metrics."
+        - alert: AbraHigh5xxRate
+          expr: |
+            (
+              sum(rate(abra_http_requests_total{abra_release="static",abra_service="abra-api",status=~"5.."}[5m]))
+              /
+              sum(rate(abra_http_requests_total{abra_release="static",abra_service="abra-api"}[5m]))
+            ) > 0.05
+            and
+            sum(rate(abra_http_requests_total{abra_release="static",abra_service="abra-api"}[5m])) > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Abra API 5xx rate is elevated"
+            description: "More than 5% of Abra API requests returned 5xx over the last five minutes."
+        - alert: AbraMemoryComposeFailures
+          expr: sum(rate(abra_smart_path_requests_total{abra_release="static",abra_service="abra-api",operation="working_memory",status!="ok"}[5m])) > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Abra memory compose is failing"
+            description: "At least one working-memory compose request failed recently."

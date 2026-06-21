@@ -114,8 +114,15 @@ func (h *handler) requireLearningApplyApproval(w http.ResponseWriter, r *http.Re
 	if !plan.RequiresApproval {
 		return true
 	}
+	payload := cloneAnyMap(proposal.Payload)
 	targetType := firstNonEmpty(plan.TargetType, proposal.TargetType, "learning_proposal")
 	targetID := firstNonEmpty(plan.TargetID, proposal.TargetID, proposal.ID)
+	switch proposal.ProposalType {
+	case "challenge":
+		targetID = firstNonEmpty(proposal.TargetID, payloadString(payload, "claim_id"), targetID)
+	case "source_refresh":
+		targetID = firstNonEmpty(proposal.TargetID, payloadString(payload, "source_config_id"), targetID)
+	}
 	return h.requireRiskApproval(w, r, approvalRequirement{
 		Action:        plan.ApprovalAction,
 		Scope:         proposal.Scope,
