@@ -1,13 +1,19 @@
 package server
 
 import (
+	"encoding/json"
+	"fmt"
+	"math"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/hermawan22/abra/internal/ingest"
 	"github.com/hermawan22/abra/internal/jobs"
 	"github.com/hermawan22/abra/internal/store"
 )
+
+var sourceSchedulePattern = regexp.MustCompile(`^@every[[:space:]]+[1-9][0-9]*[smhd]$`)
 
 type approvalRequirement struct {
 	Action        string
@@ -123,6 +129,9 @@ func sourceConfigApprovalTarget(input store.SourceConfigRecord) string {
 }
 
 func validateSourceConfigInput(input store.SourceConfigRecord) error {
+	if err := validateSourceFreshness(input.FreshnessPolicy, input.ScheduleCron); err != nil {
+		return err
+	}
 	id := strings.TrimSpace(input.ID)
 	if id == "" {
 		id = sourceConfigApprovalTarget(input)
@@ -138,4 +147,58 @@ func validateSourceConfigInput(input store.SourceConfigRecord) error {
 		Config:         input.Config,
 		Metadata:       input.Metadata,
 	}.ValidateIngestContract()
+}
+
+func validateSourceFreshness(policy map[string]any, schedule string) error {
+	allowedKeys := map[string]struct{}{
+		"max_age_seconds": {},
+		"max_age_minutes": {},
+		"max_age_hours":   {},
+		"max_age_days":    {},
+	}
+	for key, value := range policy {
+		if _, ok := allowedKeys[key]; !ok {
+			return fmt.Errorf("freshness_policy contains unsupported key %q", key)
+		}
+		if !positiveJSONNumber(value) {
+			return fmt.Errorf("freshness_policy.%s must be a positive number", key)
+		}
+	}
+	schedule = strings.TrimSpace(schedule)
+	if schedule == "" || schedule == "@hourly" || schedule == "@daily" || sourceSchedulePattern.MatchString(schedule) {
+		return nil
+	}
+	return fmt.Errorf("schedule_cron must be @hourly, @daily, or @every <positive integer><s|m|h|d>")
+}
+
+func positiveJSONNumber(value any) bool {
+	switch typed := value.(type) {
+	case int:
+		return typed > 0
+	case int32:
+		return typed > 0
+	case int64:
+		return typed > 0
+	case float32:
+		return typed > 0 && typed == float32(int64(typed))
+	case float64:
+		return typed > 0 && typed == math.Trunc(typed)
+	case json.Number:
+		return positiveNumberText(typed.String())
+	default:
+		return false
+	}
+}
+
+func positiveNumberText(value string) bool {
+	text := strings.TrimSpace(value)
+	if text == "" || strings.HasPrefix(text, "-") || text == "0" {
+		return false
+	}
+	for _, ch := range text {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
 }

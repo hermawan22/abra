@@ -79,3 +79,37 @@ func TestValidateSourceConfigInputAllowsOverlaySource(t *testing.T) {
 		t.Fatalf("overlay source should be accepted by core API contract: %v", err)
 	}
 }
+
+func TestValidateSourceConfigInputValidatesFreshnessPolicy(t *testing.T) {
+	base := store.SourceConfigRecord{
+		Scope:           "team:a",
+		SourceType:      "jira",
+		Name:            "project",
+		BaseURL:         "https://jira.example.local",
+		ConnectorKind:   "overlay",
+		Config:          map[string]any{"project": "ABRA"},
+		FreshnessPolicy: map[string]any{"max_age_seconds": float64(300)},
+		ScheduleCron:    "@every 10m",
+	}
+	if err := validateSourceConfigInput(base); err != nil {
+		t.Fatalf("valid freshness policy rejected: %v", err)
+	}
+
+	invalidPolicy := base
+	invalidPolicy.FreshnessPolicy = map[string]any{"max_age_seconds": float64(0)}
+	if err := validateSourceConfigInput(invalidPolicy); err == nil {
+		t.Fatal("expected zero freshness policy to be rejected")
+	}
+
+	invalidKey := base
+	invalidKey.FreshnessPolicy = map[string]any{"cron": float64(1)}
+	if err := validateSourceConfigInput(invalidKey); err == nil {
+		t.Fatal("expected unsupported freshness policy key to be rejected")
+	}
+
+	invalidSchedule := base
+	invalidSchedule.ScheduleCron = "0 * * * *"
+	if err := validateSourceConfigInput(invalidSchedule); err == nil {
+		t.Fatal("expected full cron schedule to be rejected")
+	}
+}

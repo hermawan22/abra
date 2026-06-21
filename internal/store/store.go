@@ -492,22 +492,24 @@ type RelationRecord struct {
 }
 
 type SourceConfigRecord struct {
-	ID             string         `json:"id"`
-	Scope          string         `json:"scope"`
-	SourceType     string         `json:"source_type"`
-	Name           string         `json:"name"`
-	BaseURL        string         `json:"base_url,omitempty"`
-	ConnectorKind  string         `json:"connector_kind"`
-	Status         string         `json:"status"`
-	Authority      string         `json:"authority"`
-	AuthorityScore float64        `json:"authority_score"`
-	Config         map[string]any `json:"config"`
-	Metadata       map[string]any `json:"metadata"`
-	LastSuccessAt  *string        `json:"last_success_at,omitempty"`
-	LastErrorAt    *string        `json:"last_error_at,omitempty"`
-	LastError      *string        `json:"last_error,omitempty"`
-	CreatedBy      string         `json:"created_by,omitempty"`
-	ApprovalID     string         `json:"approval_id,omitempty"`
+	ID              string         `json:"id"`
+	Scope           string         `json:"scope"`
+	SourceType      string         `json:"source_type"`
+	Name            string         `json:"name"`
+	BaseURL         string         `json:"base_url,omitempty"`
+	ConnectorKind   string         `json:"connector_kind"`
+	Status          string         `json:"status"`
+	Authority       string         `json:"authority"`
+	AuthorityScore  float64        `json:"authority_score"`
+	FreshnessPolicy map[string]any `json:"freshness_policy"`
+	ScheduleCron    string         `json:"schedule_cron,omitempty"`
+	Config          map[string]any `json:"config"`
+	Metadata        map[string]any `json:"metadata"`
+	LastSuccessAt   *string        `json:"last_success_at,omitempty"`
+	LastErrorAt     *string        `json:"last_error_at,omitempty"`
+	LastError       *string        `json:"last_error,omitempty"`
+	CreatedBy       string         `json:"created_by,omitempty"`
+	ApprovalID      string         `json:"approval_id,omitempty"`
 }
 
 type IngestionJobRecord struct {
@@ -648,6 +650,8 @@ type MemoryHealthSource struct {
 	Paused   int `json:"paused"`
 	Disabled int `json:"disabled"`
 	Error    int `json:"error"`
+	Due      int `json:"due"`
+	Overdue  int `json:"overdue"`
 }
 
 type MemoryHealthIngestion struct {
@@ -1991,9 +1995,9 @@ func (s *Store) UpsertSourceConfig(ctx context.Context, source SourceConfigRecor
 	_, err := s.queryRunner().Exec(ctx, `
 		INSERT INTO source_configs (
 		  id, scope, source_type, name, base_url, connector_kind, status,
-		  authority, authority_score, config, metadata, created_by
+		  authority, authority_score, freshness_policy, schedule_cron, config, metadata, created_by
 		)
-		VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6, $7, $8, $9, $10::jsonb, $11::jsonb, NULLIF($12, ''))
+		VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6, $7, $8, $9, $10::jsonb, NULLIF($11, ''), $12::jsonb, $13::jsonb, NULLIF($14, ''))
 		ON CONFLICT (scope, source_type, name)
 		DO UPDATE SET
 		  base_url = EXCLUDED.base_url,
@@ -2001,10 +2005,12 @@ func (s *Store) UpsertSourceConfig(ctx context.Context, source SourceConfigRecor
 		  status = EXCLUDED.status,
 		  authority = EXCLUDED.authority,
 		  authority_score = EXCLUDED.authority_score,
+		  freshness_policy = EXCLUDED.freshness_policy,
+		  schedule_cron = EXCLUDED.schedule_cron,
 		  config = EXCLUDED.config,
 		  metadata = source_configs.metadata || EXCLUDED.metadata,
 		  updated_at = now()
-	`, source.ID, source.Scope, source.SourceType, source.Name, source.BaseURL, source.ConnectorKind, source.Status, source.Authority, source.AuthorityScore, jsonb(source.Config), jsonb(source.Metadata), source.CreatedBy)
+	`, source.ID, source.Scope, source.SourceType, source.Name, source.BaseURL, source.ConnectorKind, source.Status, source.Authority, source.AuthorityScore, jsonb(source.FreshnessPolicy), source.ScheduleCron, jsonb(source.Config), jsonb(source.Metadata), source.CreatedBy)
 	if err != nil {
 		return "", err
 	}
@@ -2188,21 +2194,88 @@ func (s *Store) MemoryHealth(ctx context.Context, scope string) (MemoryHealthRes
 	}
 	result.Summaries.Levels = levels
 	if err := s.pool.QueryRow(ctx, `
+		WITH source_readiness AS (
+		  SELECT
+		    sc.*,
+		    freshness.freshness_interval,
+		    freshness.schedule_interval,
+		    (
+		      sc.status = 'active'
+		      AND sc.source_type IN ('local_repo', 'markdown', 'git_repo', 'mcp')
+		      AND NOT EXISTS (
+		        SELECT 1
+		        FROM ingestion_jobs ij
+		        WHERE ij.source_config_id = sc.id
+		          AND ij.status IN ('queued', 'retry', 'running')
+		      )
+		      AND (
+		        sc.last_success_at IS NULL
+		        OR sc.updated_at > sc.last_success_at
+		        OR (freshness.freshness_interval IS NOT NULL AND sc.last_success_at < now() - freshness.freshness_interval)
+		        OR (freshness.schedule_interval IS NOT NULL AND sc.last_success_at < now() - freshness.schedule_interval)
+		      )
+		    ) AS refresh_due
+		  FROM source_configs sc
+		  CROSS JOIN LATERAL (
+		    SELECT
+		      CASE
+		        WHEN sc.freshness_policy->>'max_age_seconds' ~ '^[1-9][0-9]*$'
+		          THEN make_interval(secs => (sc.freshness_policy->>'max_age_seconds')::int)
+		        WHEN sc.freshness_policy->>'max_age_minutes' ~ '^[1-9][0-9]*$'
+		          THEN make_interval(mins => (sc.freshness_policy->>'max_age_minutes')::int)
+		        WHEN sc.freshness_policy->>'max_age_hours' ~ '^[1-9][0-9]*$'
+		          THEN make_interval(hours => (sc.freshness_policy->>'max_age_hours')::int)
+		        WHEN sc.freshness_policy->>'max_age_days' ~ '^[1-9][0-9]*$'
+		          THEN make_interval(days => (sc.freshness_policy->>'max_age_days')::int)
+		        ELSE NULL
+		      END AS freshness_interval,
+		      CASE
+		        WHEN sc.schedule_cron = '@hourly' THEN interval '1 hour'
+		        WHEN sc.schedule_cron = '@daily' THEN interval '24 hours'
+		        WHEN sc.schedule_cron ~ '^@every[[:space:]]+[1-9][0-9]*[smhd]$' THEN
+		          CASE right(sc.schedule_cron, 1)
+		            WHEN 's' THEN make_interval(secs => regexp_replace(sc.schedule_cron, '[^0-9]', '', 'g')::int)
+		            WHEN 'm' THEN make_interval(mins => regexp_replace(sc.schedule_cron, '[^0-9]', '', 'g')::int)
+		            WHEN 'h' THEN make_interval(hours => regexp_replace(sc.schedule_cron, '[^0-9]', '', 'g')::int)
+		            WHEN 'd' THEN make_interval(days => regexp_replace(sc.schedule_cron, '[^0-9]', '', 'g')::int)
+		          END
+		        ELSE NULL
+		      END AS schedule_interval
+		  ) freshness
+		  WHERE ($1 = '' OR sc.scope = $1)
+		)
 		SELECT
 		  COUNT(*)::int,
 		  COUNT(*) FILTER (WHERE status = 'active')::int,
 		  COUNT(*) FILTER (WHERE status = 'paused')::int,
 		  COUNT(*) FILTER (WHERE status = 'disabled')::int,
 		  COUNT(*) FILTER (WHERE status = 'error')::int,
+		  COUNT(*) FILTER (WHERE refresh_due)::int,
+		  COUNT(*) FILTER (
+		    WHERE refresh_due
+		      AND (
+		        (COALESCE(freshness_interval, schedule_interval) IS NOT NULL
+		          AND (
+		            (last_success_at IS NULL AND created_at < now() - COALESCE(freshness_interval, schedule_interval))
+		            OR last_success_at < now() - (COALESCE(freshness_interval, schedule_interval) * 2)
+		          ))
+		        OR (COALESCE(freshness_interval, schedule_interval) IS NULL
+		          AND (
+		            (last_success_at IS NULL AND created_at < now() - interval '24 hours')
+		            OR (last_success_at IS NOT NULL AND updated_at > last_success_at AND updated_at < now() - interval '24 hours')
+		          ))
+		      )
+		  )::int,
 		  COALESCE(MAX(updated_at)::text, '')
-		FROM source_configs
-		WHERE ($1 = '' OR scope = $1)
+		FROM source_readiness
 	`, scope).Scan(
 		&result.Sources.Total,
 		&result.Sources.Active,
 		&result.Sources.Paused,
 		&result.Sources.Disabled,
 		&result.Sources.Error,
+		&result.Sources.Due,
+		&result.Sources.Overdue,
 		stringMapTarget(result.LastUpdated, "sources"),
 	); err != nil {
 		return MemoryHealthResult{}, err
@@ -2445,6 +2518,11 @@ func assessMemoryHealth(result MemoryHealthResult) memoryHealthAssessment {
 	if result.Sources.Error > 0 {
 		penalize(15, "source_configs_error", "sources", "critical", result.Sources.Error, "source configs are in error", "fix source configuration or credentials and retry ingestion")
 	}
+	if result.Sources.Overdue > 0 {
+		penalize(20, "source_refresh_overdue", "sources", "critical", result.Sources.Overdue, "source refresh is overdue", "refresh stale sources before relying on affected memory")
+	} else if result.Sources.Due > 0 {
+		penalize(5, "source_refresh_due", "sources", "warning", result.Sources.Due, "source refresh is due", "refresh stale sources or confirm the source is intentionally unchanged")
+	}
 	if result.Ingestion.FailedJobs > 0 {
 		penalize(12, "ingestion_jobs_failed", "ingestion", "critical", result.Ingestion.FailedJobs, "ingestion jobs failed", "inspect failed jobs and retry after fixing the source error")
 	}
@@ -2474,9 +2552,9 @@ func assessMemoryHealth(result MemoryHealthResult) memoryHealthAssessment {
 	}
 	status := "healthy"
 	switch {
-	case result.Conflicts.Blocking > 0 || result.Sources.Error > 0 || result.Ingestion.FailedJobs > 0 || result.Ingestion.StaleRunningJobs > 0 || result.Claims.TrustedFromCodeDocuments > 0 || result.Learning.DuplicatePendingGroups > 0 || score < 55:
+	case result.Conflicts.Blocking > 0 || result.Sources.Error > 0 || result.Sources.Overdue > 0 || result.Ingestion.FailedJobs > 0 || result.Ingestion.StaleRunningJobs > 0 || result.Claims.TrustedFromCodeDocuments > 0 || result.Learning.DuplicatePendingGroups > 0 || score < 55:
 		status = "critical"
-	case score < 80 || result.Conflicts.Open+result.Conflicts.Reviewing > 0 || result.Ingestion.RetryJobs > 0 || result.Learning.Pending > 0 || result.Approvals.Pending > 0:
+	case score < 80 || result.Conflicts.Open+result.Conflicts.Reviewing > 0 || result.Sources.Due+result.Sources.Overdue > 0 || result.Ingestion.RetryJobs > 0 || result.Learning.Pending > 0 || result.Approvals.Pending > 0:
 		status = "needs_review"
 	}
 	if len(reasons) == 0 {
@@ -3400,7 +3478,7 @@ func (s *Store) ListSourceConfigs(ctx context.Context, scope string, limit int) 
 	rows, err := s.pool.Query(ctx, `
 		SELECT
 		  id, scope, source_type, name, COALESCE(base_url, ''), connector_kind,
-		  status, authority, authority_score, config, metadata,
+		  status, authority, authority_score, freshness_policy, COALESCE(schedule_cron, ''), config, metadata,
 		  last_success_at::text, last_error_at::text, last_error, COALESCE(created_by, '')
 		FROM source_configs
 		WHERE ($1 = '' OR scope = $1)
@@ -3414,7 +3492,7 @@ func (s *Store) ListSourceConfigs(ctx context.Context, scope string, limit int) 
 	sources := []SourceConfigRecord{}
 	for rows.Next() {
 		var source SourceConfigRecord
-		var configRaw, metadataRaw []byte
+		var freshnessPolicyRaw, configRaw, metadataRaw []byte
 		if err := rows.Scan(
 			&source.ID,
 			&source.Scope,
@@ -3425,6 +3503,8 @@ func (s *Store) ListSourceConfigs(ctx context.Context, scope string, limit int) 
 			&source.Status,
 			&source.Authority,
 			&source.AuthorityScore,
+			&freshnessPolicyRaw,
+			&source.ScheduleCron,
 			&configRaw,
 			&metadataRaw,
 			&source.LastSuccessAt,
@@ -3434,6 +3514,7 @@ func (s *Store) ListSourceConfigs(ctx context.Context, scope string, limit int) 
 		); err != nil {
 			return nil, err
 		}
+		source.FreshnessPolicy = decodeJSONMap(freshnessPolicyRaw)
 		source.Config = decodeJSONMap(configRaw)
 		source.Metadata = decodeJSONMap(metadataRaw)
 		sources = append(sources, source)
@@ -3501,11 +3582,11 @@ func (s *Store) ListScopes(ctx context.Context, limit int) ([]ScopeSummary, erro
 
 func (s *Store) GetSourceConfig(ctx context.Context, id string) (SourceConfigRecord, error) {
 	var source SourceConfigRecord
-	var configRaw, metadataRaw []byte
+	var freshnessPolicyRaw, configRaw, metadataRaw []byte
 	err := s.pool.QueryRow(ctx, `
 		SELECT
 		  id, scope, source_type, name, COALESCE(base_url, ''), connector_kind,
-		  status, authority, authority_score, config, metadata,
+		  status, authority, authority_score, freshness_policy, COALESCE(schedule_cron, ''), config, metadata,
 		  last_success_at::text, last_error_at::text, last_error, COALESCE(created_by, '')
 		FROM source_configs
 		WHERE id = $1
@@ -3519,6 +3600,8 @@ func (s *Store) GetSourceConfig(ctx context.Context, id string) (SourceConfigRec
 		&source.Status,
 		&source.Authority,
 		&source.AuthorityScore,
+		&freshnessPolicyRaw,
+		&source.ScheduleCron,
 		&configRaw,
 		&metadataRaw,
 		&source.LastSuccessAt,
@@ -3532,6 +3615,7 @@ func (s *Store) GetSourceConfig(ctx context.Context, id string) (SourceConfigRec
 	if err != nil {
 		return SourceConfigRecord{}, err
 	}
+	source.FreshnessPolicy = decodeJSONMap(freshnessPolicyRaw)
 	source.Config = decodeJSONMap(configRaw)
 	source.Metadata = decodeJSONMap(metadataRaw)
 	return source, nil

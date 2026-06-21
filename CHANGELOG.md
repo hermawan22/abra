@@ -17,6 +17,8 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Add fail-fast MCP `ingest_documents` batching that validates every document first, embeds chunks and extracted claims across the whole request, then persists only after the embedding provider succeeds.
 - Add top-level `abra --version` and `abra -v` aliases for standard CLI install and troubleshooting checks.
 - Apply the configured request body limit to stateless MCP requests so MCP batch ingestion cannot bypass the HTTP ingest/webhook body guardrail.
+- Add source freshness policy and schedule fields for HTTP, MCP, and CLI source configs, including `--freshness-seconds` and `--schedule` for CLI-created sources.
+- Add source freshness health signals (`source_refresh_due`, `source_refresh_overdue`) so agents can distinguish stale memory from missing context.
 
 ### Changed
 
@@ -35,6 +37,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Make setup and ready next steps present `abra agents bootstrap` as the primary path and label `agents init` / `ingest` / `verify` / `mcp install-codex` as the manual alternative.
 - Make `abra agents bootstrap` install Codex MCP before the final readiness check, make restart requirements explicit, and require explicit Compose database credentials through env files instead of a fixed production-looking password.
 - Add `abra sources sync` for refreshing existing source configs from the CLI, including job-specific wait behavior and clean JSON output for automation.
+- Gate scheduled worker refreshes on source freshness and schedule due checks while keeping manual sync available for forced operator refreshes.
 - Bound reranker rank boosts instead of adding raw provider scores directly to recall ranking.
 - Omit raw rerank query text from retrieval warnings, keep rerank metadata JSON stable, and only mark recall as reranked when a returned candidate index was actually applied.
 - Default `base_rank_score` to `rank_score` for non-reranked recall results so public ranking metadata remains internally consistent.

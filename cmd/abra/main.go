@@ -1676,6 +1676,12 @@ func sourceIngest(ctx context.Context, args cliArgs) error {
 		},
 		"created_by": flag(args, "created-by", "abra-cli"),
 	}
+	if freshnessSeconds := intFlag(args, "freshness-seconds", 0); freshnessSeconds > 0 {
+		body["freshness_policy"] = map[string]any{"max_age_seconds": freshnessSeconds}
+	}
+	if schedule := flag(args, "schedule", ""); schedule != "" {
+		body["schedule_cron"] = schedule
+	}
 	if approvalID := flag(args, "approval-id", ""); approvalID != "" {
 		body["approval_id"] = approvalID
 	}
@@ -3716,9 +3722,9 @@ Usage:
   abra ingest ./notes.md
   abra ingest --scope repo:demo --text "Agents should use Abra" [--title Intro]
   abra ingest --git https://github.com/owner/repo.git [--ref main] [--scope repo:demo]
-  abra watch local --scope repo:demo --path . [--wait] [--wait-timeout 10m]
-  abra watch git --scope repo:demo --git https://github.com/owner/repo.git [--wait] [--wait-timeout 10m]
-  abra source mcp --scope team:platform --mcp-url https://mcp.example/mcp --tool export_documents [--wait]
+  abra watch local --scope repo:demo --path . [--freshness-seconds 3600] [--schedule "@every 1h"] [--wait]
+  abra watch git --scope repo:demo --git https://github.com/owner/repo.git [--ref main] [--freshness-seconds 3600] [--wait]
+  abra source mcp --scope team:platform --mcp-url https://mcp.example/mcp --tool export_documents [--schedule "@every 10m"] [--wait]
   abra sources [--scope repo:demo]
   abra jobs [--scope repo:demo]
   abra observe "Agents should rerun release checks before tagging" [--scope repo:demo] [--propose]
@@ -3778,6 +3784,9 @@ Source ingestion flags:
   --tracked        register a local path source and queue a worker job; path must be worker-visible
   --no-wait        return immediately after queueing a tracked local path ingestion job
   --wait-timeout   max wait for queued worker jobs, default 1m
+  --freshness-seconds
+                  mark the source due when the last successful refresh is older than this many seconds
+  --schedule       worker refresh cadence: @hourly, @daily, or @every <N><s|m|h|d>
   --direct         force direct local ingestion through /ingest/documents
   --continue-on-error
                   keep direct local ingestion running after per-file failures; exits nonzero if any fail
@@ -3830,15 +3839,18 @@ onboarding, or abra up for non-interactive stack startup.
 `
 	case "watch", "source":
 		return `Usage:
-  abra watch local --scope repo:demo --path . [--include "**/*.md"] [--code] [--wait] [--wait-timeout 10m]
-  abra watch git --scope repo:demo --git https://github.com/owner/repo.git [--ref main] [--wait] [--wait-timeout 10m]
-  abra source mcp --scope team:platform --mcp-url https://mcp.example/mcp --tool export_documents [--arguments-json '{"space":"ENG"}'] [--document-source-type confluence] [--wait]
+  abra watch local --scope repo:demo --path . [--include "**/*.md"] [--code] [--freshness-seconds 3600] [--schedule "@every 1h"] [--wait]
+  abra watch git --scope repo:demo --git https://github.com/owner/repo.git [--ref main] [--freshness-seconds 3600] [--wait]
+  abra source mcp --scope team:platform --mcp-url https://mcp.example/mcp --tool export_documents [--arguments-json '{"space":"ENG"}'] [--document-source-type confluence] [--schedule "@every 10m"] [--wait]
 
 This creates or updates a source config, then enqueues an ingestion job.
 The OSS worker supports markdown, local_repo, git_repo, and MCP HTTP sources
 whose configured tool returns normalized Abra documents. External systems such
 as Jira, Confluence, Slack, and Drive can either expose an MCP document-export
 tool or push normalized documents through the HTTP/MCP ingestion API.
+Use --freshness-seconds for max source age and --schedule for @hourly, @daily,
+or @every <N><s|m|h|d> worker refresh cadence. Manual sync still bypasses the
+due check.
 Use --wait-timeout or ABRA_CLI_WAIT_TIMEOUT for slow local model or large repo runs.
 `
 	case "sources":

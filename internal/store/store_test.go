@@ -628,6 +628,26 @@ func TestScoreMemoryHealthStatuses(t *testing.T) {
 	if !strings.Contains(strings.Join(reasons, "\n"), "ingestion jobs are waiting to retry") {
 		t.Fatalf("retry backlog reasons = %v, want retry reason", reasons)
 	}
+
+	sourceDue := healthy
+	sourceDue.Sources.Due = 2
+	score, status, reasons = scoreMemoryHealth(sourceDue)
+	if status != "needs_review" {
+		t.Fatalf("source due status = %s score=%d reasons=%v, want needs_review", status, score, reasons)
+	}
+	if !strings.Contains(strings.Join(reasons, "\n"), "source refresh is due") {
+		t.Fatalf("source due reasons = %v, want due reason", reasons)
+	}
+
+	sourceOverdue := healthy
+	sourceOverdue.Sources.Overdue = 1
+	score, status, reasons = scoreMemoryHealth(sourceOverdue)
+	if status != "critical" {
+		t.Fatalf("source overdue status = %s score=%d reasons=%v, want critical", status, score, reasons)
+	}
+	if !strings.Contains(strings.Join(reasons, "\n"), "source refresh is overdue") {
+		t.Fatalf("source overdue reasons = %v, want overdue reason", reasons)
+	}
 }
 
 func TestAssessMemoryHealthSignals(t *testing.T) {
@@ -670,6 +690,28 @@ func TestAssessMemoryHealthSignals(t *testing.T) {
 		if got.Category != want.category || got.Severity != want.severity || got.Count != want.count || got.Action == "" || got.ScoreImpact <= 0 {
 			t.Fatalf("signal %q = %#v, want category=%s severity=%s count=%d action and score impact", code, got, want.category, want.severity, want.count)
 		}
+	}
+
+	refreshDue := healthy
+	refreshDue.Sources.Due = 3
+	assessment = assessMemoryHealth(refreshDue)
+	got, ok := findMemoryHealthSignal(assessment.Signals, "source_refresh_due")
+	if !ok {
+		t.Fatalf("signals missing source_refresh_due: %#v", assessment.Signals)
+	}
+	if got.Category != "sources" || got.Severity != "warning" || got.Count != 3 || got.Action == "" {
+		t.Fatalf("source_refresh_due signal = %#v, want sources warning count=3 action", got)
+	}
+
+	refreshOverdue := healthy
+	refreshOverdue.Sources.Overdue = 2
+	assessment = assessMemoryHealth(refreshOverdue)
+	got, ok = findMemoryHealthSignal(assessment.Signals, "source_refresh_overdue")
+	if !ok {
+		t.Fatalf("signals missing source_refresh_overdue: %#v", assessment.Signals)
+	}
+	if got.Category != "sources" || got.Severity != "critical" || got.Count != 2 || got.Action == "" {
+		t.Fatalf("source_refresh_overdue signal = %#v, want sources critical count=2 action", got)
 	}
 }
 

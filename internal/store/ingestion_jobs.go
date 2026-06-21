@@ -79,16 +79,64 @@ func (s *Store) EnqueueIngestionJob(ctx context.Context, input EnqueueIngestionJ
 		  status, authority, max_attempts, created_by, metadata
 		)
 		SELECT
-		  $1, id, scope, source_type, base_url, $2,
-		  'queued', authority, $3, NULLIF($4, ''), $5::jsonb
-		FROM source_configs
-		WHERE id = $6
-		  AND status IN ('active', 'error')
+		  $1, sc.id, sc.scope, sc.source_type, sc.base_url, $2,
+		  'queued', sc.authority, $3, NULLIF($4, ''), $5::jsonb
+		FROM source_configs sc
+		CROSS JOIN LATERAL (
+		  SELECT
+		    CASE
+		      WHEN sc.freshness_policy->>'max_age_seconds' ~ '^[1-9][0-9]*$'
+		        THEN make_interval(secs => (sc.freshness_policy->>'max_age_seconds')::int)
+		      WHEN sc.freshness_policy->>'max_age_minutes' ~ '^[1-9][0-9]*$'
+		        THEN make_interval(mins => (sc.freshness_policy->>'max_age_minutes')::int)
+		      WHEN sc.freshness_policy->>'max_age_hours' ~ '^[1-9][0-9]*$'
+		        THEN make_interval(hours => (sc.freshness_policy->>'max_age_hours')::int)
+		      WHEN sc.freshness_policy->>'max_age_days' ~ '^[1-9][0-9]*$'
+		        THEN make_interval(days => (sc.freshness_policy->>'max_age_days')::int)
+		      ELSE NULL
+		    END AS freshness_interval,
+		    CASE
+		      WHEN sc.schedule_cron = '@hourly' THEN interval '1 hour'
+		      WHEN sc.schedule_cron = '@daily' THEN interval '24 hours'
+		      WHEN sc.schedule_cron ~ '^@every[[:space:]]+[1-9][0-9]*[smhd]$' THEN
+		        CASE right(sc.schedule_cron, 1)
+		          WHEN 's' THEN make_interval(secs => regexp_replace(sc.schedule_cron, '[^0-9]', '', 'g')::int)
+		          WHEN 'm' THEN make_interval(mins => regexp_replace(sc.schedule_cron, '[^0-9]', '', 'g')::int)
+		          WHEN 'h' THEN make_interval(hours => regexp_replace(sc.schedule_cron, '[^0-9]', '', 'g')::int)
+		          WHEN 'd' THEN make_interval(days => regexp_replace(sc.schedule_cron, '[^0-9]', '', 'g')::int)
+		        END
+		      ELSE NULL
+		    END AS schedule_interval
+		) freshness
+		WHERE sc.id = $6
+		  AND sc.status IN ('active', 'error')
+		  AND (
+		    $2 <> 'schedule'
+		    OR (
+		      sc.status = 'active'
+		      AND sc.source_type IN ('local_repo', 'markdown', 'git_repo', 'mcp')
+		      AND NOT EXISTS (
+		        SELECT 1
+		        FROM ingestion_jobs ij
+		        WHERE ij.source_config_id = sc.id
+		          AND ij.status IN ('queued', 'retry', 'running')
+		      )
+		      AND (
+		        sc.last_success_at IS NULL
+		        OR sc.updated_at > sc.last_success_at
+		        OR (freshness.freshness_interval IS NOT NULL AND sc.last_success_at < now() - freshness.freshness_interval)
+		        OR (freshness.schedule_interval IS NOT NULL AND sc.last_success_at < now() - freshness.schedule_interval)
+		      )
+		    )
+		  )
 	`, jobID, triggerType, input.MaxAttempts, strings.TrimSpace(input.CreatedBy), jsonb(metadata), input.SourceConfigID)
 	if err != nil {
 		return IngestionJobRecord{}, err
 	}
 	if tag.RowsAffected() == 0 {
+		if triggerType == "schedule" {
+			return IngestionJobRecord{}, fmt.Errorf("source_config_id %q is not due for scheduled ingestion or has an active job", input.SourceConfigID)
+		}
 		return IngestionJobRecord{}, fmt.Errorf("source_config_id %q is not active or does not exist", input.SourceConfigID)
 	}
 	return s.GetIngestionJob(ctx, jobID)

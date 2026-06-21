@@ -482,6 +482,8 @@ func normalizeMemoryHealthSignalCode(value string) string {
 		"blocking_conflicts",
 		"active_conflicts",
 		"source_configs_error",
+		"source_refresh_due",
+		"source_refresh_overdue",
 		"ingestion_jobs_failed",
 		"ingestion_jobs_stale_running",
 		"ingestion_jobs_retrying",

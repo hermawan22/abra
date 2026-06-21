@@ -3065,6 +3065,8 @@ func TestSourceMCPQueuesSourceConfig(t *testing.T) {
 		"--arguments-json", `{"space":"ENG"}`,
 		"--document-source-type", "confluence",
 		"--bearer-token-env", "CONFLUENCE_MCP_TOKEN",
+		"--freshness-seconds", "600",
+		"--schedule", "@every 10m",
 		"--base-url", server.URL,
 		"--token", "test-token",
 	})
@@ -3084,6 +3086,13 @@ func TestSourceMCPQueuesSourceConfig(t *testing.T) {
 	args, _ := config["arguments"].(map[string]any)
 	if args["space"] != "ENG" {
 		t.Fatalf("arguments = %#v", args)
+	}
+	freshness, _ := sourceRequest["freshness_policy"].(map[string]any)
+	if freshness["max_age_seconds"] != float64(600) {
+		t.Fatalf("freshness_policy = %#v", freshness)
+	}
+	if sourceRequest["schedule_cron"] != "@every 10m" {
+		t.Fatalf("schedule_cron = %v", sourceRequest["schedule_cron"])
 	}
 	if jobRequest["source_config_id"] != "source-mcp" {
 		t.Fatalf("job request = %#v", jobRequest)

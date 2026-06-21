@@ -315,6 +315,7 @@ From a source checkout, run the CLI as `go run ./cmd/abra <command>`. In a relea
 | ingest remote git | `abra ingest --git https://github.com/owner/repo.git --ref main --code --scope repo:owner-repo --wait --wait-timeout 10m` |
 | list sources | `abra sources` |
 | refresh an existing source config | `abra sources sync <source-config-id> --scope <scope> --wait --wait-timeout 10m` |
+| register an auto-refreshing MCP source | `abra source mcp --scope team:platform --mcp-url https://mcp.example/mcp --tool export_documents --schedule "@every 10m" --freshness-seconds 600` |
 | list jobs | `abra jobs` |
 | capture raw observation | `abra observe "Agents should rerun release checks" --scope repo:demo` |
 | capture and propose observation | `abra observe "Agents should rerun release checks" --scope repo:demo --propose --source-url file://release-runbook.md` |
@@ -412,6 +413,8 @@ abra source mcp \
   --arguments-json '{"space":"ENG"}' \
   --document-source-type confluence \
   --bearer-token-env CONFLUENCE_MCP_TOKEN \
+  --freshness-seconds 3600 \
+  --schedule "@every 1h" \
   --wait
 ```
 
@@ -423,6 +426,11 @@ To run an existing source again without changing its config:
 ```sh
 abra sources sync <source-config-id> --scope team:platform --wait --wait-timeout 10m
 ```
+
+Manual `sources sync` bypasses due checks. Scheduled worker refresh only queues
+sources whose `freshness_policy` or `schedule_cron` says they are due, and skips
+sources with active queued, retrying, or running jobs. Supported schedules are
+`@hourly`, `@daily`, and `@every <N><s|m|h|d>`.
 
 Tracked local sources require the worker process to see the same filesystem path;
 use direct `abra ingest . --code` for ordinary Docker-backed local setup.

@@ -151,6 +151,8 @@ func healthRequiredActions(health store.MemoryHealthResult) []string {
 			actions = appendUnique(actions, "inspect_ingestion_liveness")
 		case "blocking_conflicts", "active_conflicts":
 			actions = appendUnique(actions, "resolve_active_conflicts")
+		case "source_refresh_due", "source_refresh_overdue":
+			actions = appendUnique(actions, "refresh_stale_sources")
 		case "source_configs_error":
 			actions = appendUnique(actions, "fix_source_configs")
 		case "memory_health_unavailable":

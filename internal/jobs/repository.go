@@ -121,6 +121,32 @@ func (r *Repository) EnqueueScheduledSources(ctx context.Context, limit int) (in
 		    sc.name,
 		    sc.connector_kind
 		  FROM source_configs sc
+		  CROSS JOIN LATERAL (
+		    SELECT
+		      CASE
+		        WHEN sc.freshness_policy->>'max_age_seconds' ~ '^[1-9][0-9]*$'
+		          THEN make_interval(secs => (sc.freshness_policy->>'max_age_seconds')::int)
+		        WHEN sc.freshness_policy->>'max_age_minutes' ~ '^[1-9][0-9]*$'
+		          THEN make_interval(mins => (sc.freshness_policy->>'max_age_minutes')::int)
+		        WHEN sc.freshness_policy->>'max_age_hours' ~ '^[1-9][0-9]*$'
+		          THEN make_interval(hours => (sc.freshness_policy->>'max_age_hours')::int)
+		        WHEN sc.freshness_policy->>'max_age_days' ~ '^[1-9][0-9]*$'
+		          THEN make_interval(days => (sc.freshness_policy->>'max_age_days')::int)
+		        ELSE NULL
+		      END AS freshness_interval,
+		      CASE
+		        WHEN sc.schedule_cron = '@hourly' THEN interval '1 hour'
+		        WHEN sc.schedule_cron = '@daily' THEN interval '24 hours'
+		        WHEN sc.schedule_cron ~ '^@every[[:space:]]+[1-9][0-9]*[smhd]$' THEN
+		          CASE right(sc.schedule_cron, 1)
+		            WHEN 's' THEN make_interval(secs => regexp_replace(sc.schedule_cron, '[^0-9]', '', 'g')::int)
+		            WHEN 'm' THEN make_interval(mins => regexp_replace(sc.schedule_cron, '[^0-9]', '', 'g')::int)
+		            WHEN 'h' THEN make_interval(hours => regexp_replace(sc.schedule_cron, '[^0-9]', '', 'g')::int)
+		            WHEN 'd' THEN make_interval(days => regexp_replace(sc.schedule_cron, '[^0-9]', '', 'g')::int)
+		          END
+		        ELSE NULL
+		      END AS schedule_interval
+		  ) freshness
 		  WHERE sc.status = 'active'
 		    AND sc.source_type IN ('local_repo', 'markdown', 'git_repo', 'mcp')
 		    AND NOT EXISTS (
@@ -129,9 +155,15 @@ func (r *Repository) EnqueueScheduledSources(ctx context.Context, limit int) (in
 		      WHERE ij.source_config_id = sc.id
 		        AND ij.status IN ('queued', 'retry', 'running')
 		    )
+		    AND (
+		      sc.last_success_at IS NULL
+		      OR sc.updated_at > sc.last_success_at
+		      OR (freshness.freshness_interval IS NOT NULL AND sc.last_success_at < now() - freshness.freshness_interval)
+		      OR (freshness.schedule_interval IS NOT NULL AND sc.last_success_at < now() - freshness.schedule_interval)
+		    )
 		  ORDER BY sc.priority ASC, sc.updated_at ASC, sc.id ASC
 		  LIMIT $1
-		  FOR UPDATE SKIP LOCKED
+		  FOR UPDATE OF sc SKIP LOCKED
 		)
 		INSERT INTO ingestion_jobs (
 		  id, source_config_id, scope, source_type, source_url, trigger_type,
@@ -175,7 +207,7 @@ func (r *Repository) ClaimQueuedIngestionJobs(ctx context.Context, limit int, le
 		  WHERE ij.status IN ('queued', 'retry')
 		    AND ij.attempts < ij.max_attempts
 		    AND (
-		      (sc.status IN ('active', 'error') AND sc.source_type IN ('local_repo', 'markdown', 'git_repo'))
+		      (sc.status IN ('active', 'error') AND sc.source_type IN ('local_repo', 'markdown', 'git_repo', 'mcp'))
 		      OR (ij.trigger_type = 'webhook' AND EXISTS (
 		        SELECT 1 FROM ingestion_job_documents payload WHERE payload.job_id = ij.id
 		      ))
