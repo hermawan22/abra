@@ -260,6 +260,7 @@ async function main() {
   await runCommand("agent_context_files", "go", ["run", "./cmd/abra", "agents", "verify", ".", "--scope", "repo:abra", "--files-only", "--strict"]);
   await runCommand("script_checks", "npm", ["run", "check:scripts"]);
   await runCommand("installer_fail_closed", "npm", ["run", "test:installer"]);
+  await runCommand("npm_pack_allowlist", "npm", ["run", "test:npm-pack"]);
   await runCommand("oss_hygiene", "npm", ["run", "check:oss"]);
   await runCommand("go_tests", "go", ["test", "./..."]);
   await runCommand("docker_compose_config", "docker", ["compose", "config"], {

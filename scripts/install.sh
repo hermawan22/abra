@@ -233,10 +233,22 @@ main() {
 
   install_binary "$binary" "$dst_dir"
   log "Installed: $dst_dir/abra"
-  if ! command -v abra >/dev/null 2>&1; then
-    log "Add this to PATH if needed: export PATH=\"$dst_dir:\$PATH\""
+  installed_version="$("$dst_dir/abra" version 2>/dev/null | head -n 1 || true)"
+  if [ -n "$installed_version" ]; then
+    log "Version:   $installed_version"
   fi
-  log "Next: abra setup"
+  resolved_abra="$(command -v abra 2>/dev/null || true)"
+  next_command="abra setup"
+  if [ -z "$resolved_abra" ]; then
+    log "Add this to PATH if needed: export PATH=\"$dst_dir:\$PATH\""
+  elif [ "$resolved_abra" != "$dst_dir/abra" ]; then
+    next_command="$dst_dir/abra setup"
+    log "Warning: PATH resolves 'abra' to $resolved_abra, not $dst_dir/abra"
+    log "Run this binary directly or move $dst_dir earlier in PATH:"
+    log "  $dst_dir/abra setup"
+    log "  export PATH=\"$dst_dir:\$PATH\""
+  fi
+  log "Next: $next_command"
 }
 
 main "$@"

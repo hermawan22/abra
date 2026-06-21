@@ -334,6 +334,11 @@ jobs:
             ABRA_VERIFY_ATTESTATION=0 \
             sh scripts/install.sh
           "$install_dir/abra" version --json
+          "$install_dir/abra" scope | tee /tmp/abra-staged-scope.txt
+          grep -F 'discover_scopes with expected_scope="repo:abra"' /tmp/abra-staged-scope.txt
+          grep -F 'task=<current task>' /tmp/abra-staged-scope.txt
+          grep -F 'agent="codex"' /tmp/abra-staged-scope.txt
+          grep -F 'source-backed context' /tmp/abra-staged-scope.txt
           "$install_dir/abra" agents verify . --scope repo:abra --files-only --strict
 
       - name: Attest release artifacts

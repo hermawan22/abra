@@ -1,6 +1,6 @@
 {
   "name": "abra",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "description": "Private developer scripts for Abra. The production runtime, CLI, and release image are Go.",
   "type": "module",
   "private": true,
@@ -29,7 +29,7 @@
   "scripts": {
     "quickstart": "go run ./cmd/abra demo",
     "quickstart:down": "go run ./cmd/abra down",
-    "check:scripts": "bash -n scripts/*.sh && node --check scripts/abra-install-test.mjs && node --check scripts/abra-oss-hygiene.mjs && node --check scripts/abra-tier1-eval.mjs && node --check scripts/abra-tier23-eval.mjs && node --check scripts/abra-golden-eval.mjs && node --check scripts/abra-provider-benchmark.mjs && node --check scripts/abra-perf-eval.mjs && node --check scripts/abra-dogfood-eval.mjs && node --check scripts/abra-queue-pressure-eval.mjs && node --check scripts/abra-release-gate.mjs",
+    "check:scripts": "bash -n scripts/*.sh && node --check scripts/abra-install-test.mjs && node --check scripts/abra-oss-hygiene.mjs && node --check scripts/abra-npm-pack-check.mjs && node --check scripts/abra-tier1-eval.mjs && node --check scripts/abra-tier23-eval.mjs && node --check scripts/abra-golden-eval.mjs && node --check scripts/abra-provider-benchmark.mjs && node --check scripts/abra-perf-eval.mjs && node --check scripts/abra-dogfood-eval.mjs && node --check scripts/abra-queue-pressure-eval.mjs && node --check scripts/abra-release-gate.mjs",
     "check:oss": "node scripts/abra-oss-hygiene.mjs",
     "ops:backup": "bash scripts/abra-backup.sh",
     "ops:restore-drill": "bash scripts/abra-restore-drill.sh",
@@ -46,6 +46,7 @@
     "release:gate:dry-run": "ABRA_RELEASE_DRY_RUN=1 node scripts/abra-release-gate.mjs",
     "test:installer": "node scripts/abra-install-test.mjs",
     "test:oss-hygiene": "node scripts/abra-oss-hygiene.mjs --self-test",
-    "test": "npm run check:scripts && npm run test:installer && npm run test:oss-hygiene && npm run check:oss"
+    "test:npm-pack": "node scripts/abra-npm-pack-check.mjs",
+    "test": "npm run check:scripts && npm run test:installer && npm run test:oss-hygiene && npm run test:npm-pack && npm run check:oss"
   }
 }

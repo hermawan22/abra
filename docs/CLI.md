@@ -9,7 +9,7 @@ Local embedding calls default to a 10-minute provider timeout because CPU-backed
 ## 3-Minute Local Flow
 
 Run the installer script from this checkout to install the latest or pinned
-release binary:
+published release binary. It does not install untagged local source changes:
 
 ```sh
 ./scripts/install.sh
@@ -212,6 +212,15 @@ For repeated local use, build a binary:
 ```sh
 go build -o .tmp/abra ./cmd/abra
 .tmp/abra up
+```
+
+To replace the `abra` on your PATH with this checkout for development, build
+explicitly to that path and confirm the binary before setup:
+
+```sh
+go build -o "$HOME/.local/bin/abra" ./cmd/abra
+abra version
+abra scope
 ```
 
 The generated config uses:

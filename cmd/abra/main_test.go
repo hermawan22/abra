@@ -27,6 +27,21 @@ func TestCommandHelpDoesNotRequireFlags(t *testing.T) {
 	}
 }
 
+func TestVersionJSONIncludesExecutablePath(t *testing.T) {
+	output := captureStdout(t, func() {
+		if err := run(context.Background(), []string{"version", "--json"}); err != nil {
+			t.Fatalf("version error = %v", err)
+		}
+	})
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
+		t.Fatalf("decode version: %v\n%s", err, output)
+	}
+	if stringValue(payload["version"], "") == "" || stringValue(payload["executable"], "") == "" {
+		t.Fatalf("version payload missing version or executable: %#v", payload)
+	}
+}
+
 func TestObservePostsObservation(t *testing.T) {
 	var got map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -361,6 +376,9 @@ func TestAgentsVerifyChecksMCPAndScopeDiscovery(t *testing.T) {
 				if args["diagnostic"] != true {
 					t.Fatalf("working_memory_compose diagnostic = %#v, want true", args["diagnostic"])
 				}
+				if args["agent"] != "codex" {
+					t.Fatalf("working_memory_compose agent = %#v, want codex", args["agent"])
+				}
 				payload, _ = json.Marshal(map[string]any{
 					"stats": map[string]any{
 						"facts":                1,
@@ -453,6 +471,9 @@ func TestAgentsBootstrapIngestsAndVerifiesContext(t *testing.T) {
 					args, _ := params["arguments"].(map[string]any)
 					if args["diagnostic"] != true {
 						t.Fatalf("working_memory_compose diagnostic = %#v, want true", args["diagnostic"])
+					}
+					if args["agent"] != "codex" {
+						t.Fatalf("working_memory_compose agent = %#v, want codex", args["agent"])
 					}
 					payload, _ = json.Marshal(map[string]any{
 						"stats": map[string]any{
@@ -690,6 +711,9 @@ func TestAgentsVerifyFailsWhenWorkingMemoryIsEmpty(t *testing.T) {
 				args, _ := params["arguments"].(map[string]any)
 				if args["diagnostic"] != true {
 					t.Fatalf("working_memory_compose diagnostic = %#v, want true", args["diagnostic"])
+				}
+				if args["agent"] != "codex" {
+					t.Fatalf("working_memory_compose agent = %#v, want codex", args["agent"])
 				}
 				payload, _ = json.Marshal(map[string]any{
 					"stats": map[string]any{
@@ -1003,6 +1027,75 @@ func TestCodexInstallCommandIncludesCustomTokenEnv(t *testing.T) {
 	}
 }
 
+func TestCodexMCPListHasAbra(t *testing.T) {
+	for _, output := range []string{
+		"abra\n",
+		"abra http://127.0.0.1:18080/mcp\n",
+		`{"name":"abra","url":"http://127.0.0.1:18080/mcp"}`,
+	} {
+		if !codexMCPListHasAbra(output) {
+			t.Fatalf("expected abra in output %q", output)
+		}
+	}
+	if codexMCPListHasAbra("other http://127.0.0.1:18080/mcp\n") {
+		t.Fatal("unexpected abra match")
+	}
+}
+
+func TestCodexMCPClientCheckReportsCodexConfigFailure(t *testing.T) {
+	root := t.TempDir()
+	codexPath := filepath.Join(root, "codex")
+	mustWrite(t, codexPath, "#!/bin/sh\nprintf 'config parse error\\n' >&2\nexit 2\n")
+	if err := os.Chmod(codexPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ABRA_CODEX_COMMAND", codexPath)
+	t.Setenv("ABRA_API_TOKEN", defaultToken)
+
+	check := codexMCPClientCheck(parseArgs([]string{"doctor"}))
+	if check["ok"] != false {
+		t.Fatalf("check = %#v", check)
+	}
+	if detail := stringValue(check["detail"], ""); !strings.Contains(detail, "could not be read") || !strings.Contains(detail, "config parse error") {
+		t.Fatalf("detail = %q", detail)
+	}
+}
+
+func TestCodexMCPClientCheckRequiresAbraEntry(t *testing.T) {
+	root := t.TempDir()
+	codexPath := filepath.Join(root, "codex")
+	mustWrite(t, codexPath, "#!/bin/sh\nif [ \"$1 $2\" = 'mcp list' ]; then printf 'other http://127.0.0.1:18080/mcp\\n'; exit 0; fi\nexit 1\n")
+	if err := os.Chmod(codexPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ABRA_CODEX_COMMAND", codexPath)
+	t.Setenv("ABRA_API_TOKEN", defaultToken)
+
+	check := codexMCPClientCheck(parseArgs([]string{"doctor"}))
+	if check["ok"] != false {
+		t.Fatalf("check = %#v", check)
+	}
+	if detail := stringValue(check["detail"], ""); !strings.Contains(detail, "entry `abra` is not installed") {
+		t.Fatalf("detail = %q", detail)
+	}
+}
+
+func TestCodexMCPClientCheckPassesWhenRegisteredAndTokenMatches(t *testing.T) {
+	root := t.TempDir()
+	codexPath := filepath.Join(root, "codex")
+	mustWrite(t, codexPath, "#!/bin/sh\nif [ \"$1 $2\" = 'mcp list' ]; then printf 'abra http://127.0.0.1:18080/mcp\\n'; exit 0; fi\nexit 1\n")
+	if err := os.Chmod(codexPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ABRA_CODEX_COMMAND", codexPath)
+	t.Setenv("ABRA_API_TOKEN", defaultToken)
+
+	check := codexMCPClientCheck(parseArgs([]string{"doctor"}))
+	if check["ok"] != true {
+		t.Fatalf("check = %#v", check)
+	}
+}
+
 func TestSetupNormalizesAggressiveWorkerInterval(t *testing.T) {
 	root := t.TempDir()
 	home := t.TempDir()
@@ -1060,12 +1153,15 @@ func TestInstallScriptDownloadErrorExplainsRecovery(t *testing.T) {
 		"download Abra install script failed",
 		"404",
 		installScript,
-		"ABRA_INSTALL_SCRIPT",
+		"release's install.sh URL",
 		"abra upgrade --version vX.Y.Z",
 	} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("error missing %q:\n%s", want, message)
 		}
+	}
+	if strings.Contains(message, "raw install.sh") || strings.Contains(message, "raw.githubusercontent.com") {
+		t.Fatalf("error should not recommend raw branch installer URLs:\n%s", message)
 	}
 }
 
@@ -1219,10 +1315,9 @@ func TestSetupYesNoStartDefaultsLocalQwen(t *testing.T) {
 			t.Fatalf("setup next steps missing %q:\n%s", want, output)
 		}
 	}
-	wantScope := "repo:" + slug(filepath.Base(root))
-	if !strings.Contains(output, "abra ingest . --code --scope "+shellQuote(wantScope)) ||
-		!strings.Contains(output, `abra think "What should I know before changing this project?" --scope `+shellQuote(wantScope)) {
-		t.Fatalf("setup next steps should include exact scope %s:\n%s", wantScope, output)
+	if !strings.Contains(output, "abra ingest . --code --scope <scope-from-abra-scope>") ||
+		!strings.Contains(output, `abra think "What should I know before changing this project?" --scope <scope-from-abra-scope>`) {
+		t.Fatalf("setup next steps should defer scope until after cd and abra scope:\n%s", output)
 	}
 }
 

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	ingestpkg "github.com/hermawan22/abra/internal/ingest"
+	internalversion "github.com/hermawan22/abra/internal/version"
 )
 
 const (
@@ -34,9 +35,9 @@ const (
 )
 
 var (
-	version = "dev"
-	commit  = "unknown"
-	date    = "unknown"
+	version = internalversion.Version
+	commit  = internalversion.Commit
+	date    = internalversion.Date
 )
 
 type cliArgs struct {
@@ -133,12 +134,14 @@ func run(ctx context.Context, argv []string) error {
 }
 
 func printVersion(args cliArgs) error {
+	executable, _ := os.Executable()
 	info := map[string]any{
-		"version": version,
-		"commit":  commit,
-		"date":    date,
-		"goos":    runtime.GOOS,
-		"goarch":  runtime.GOARCH,
+		"version":    version,
+		"commit":     commit,
+		"date":       date,
+		"goos":       runtime.GOOS,
+		"goarch":     runtime.GOARCH,
+		"executable": executable,
 	}
 	if boolFlag(args, "json") {
 		return printJSON(info)
@@ -255,7 +258,7 @@ script: %s%s
 Recovery:
   1. Check the installer URL. The official script is:
      %s
-  2. If you are using a fork, set ABRA_INSTALL_SCRIPT to that fork's raw install.sh URL.
+  2. If you are using a fork, publish a signed release and set ABRA_INSTALL_SCRIPT to that release's install.sh URL.
   3. If you want a specific release, run: abra upgrade --version vX.Y.Z`, err, script, detail, installScript)
 }
 
@@ -1094,6 +1097,24 @@ func codexMCPClientCheck(args cliArgs) map[string]any {
 		"path":      codex,
 		"token_env": tokenEnv,
 	}
+	mcpList, err := commandOutput(codex, "mcp", "list")
+	if err != nil {
+		check["ok"] = false
+		detail := "Codex MCP configuration could not be read: " + err.Error()
+		if strings.TrimSpace(mcpList) != "" {
+			detail += ": " + strings.TrimSpace(mcpList)
+		}
+		check["detail"] = detail
+		check["hint"] = "fix Codex MCP config, then rerun: " + codexInstallCommand(tokenEnv)
+		return check
+	}
+	if !codexMCPListHasAbra(mcpList) {
+		check["ok"] = false
+		check["detail"] = "Codex MCP entry `abra` is not installed"
+		check["hint"] = "run: " + codexInstallCommand(tokenEnv)
+		check["next"] = codexMCPRecoverySteps(args, tokenEnv)
+		return check
+	}
 	if strings.TrimSpace(expectedToken) == "" {
 		check["ok"] = false
 		check["detail"] = "Abra token is empty"
@@ -1117,6 +1138,16 @@ func codexMCPClientCheck(args cliArgs) map[string]any {
 	check["ok"] = true
 	check["detail"] = tokenEnv + " is set in this shell; restart Codex Desktop if this changed after Codex launched"
 	return check
+}
+
+func codexMCPListHasAbra(output string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "abra" || strings.HasPrefix(line, "abra ") || strings.HasPrefix(line, "abra\t") || strings.Contains(line, `"abra"`) {
+			return true
+		}
+	}
+	return false
 }
 
 func codexMCPRecoverySteps(args cliArgs, tokenEnv string) []string {
@@ -2043,7 +2074,7 @@ func agentsCommand(ctx context.Context, args cliArgs) error {
 	if action == "bootstrap" {
 		return bootstrapAgentContext(ctx, args, abs, scope)
 	}
-	agent := flag(args, "agent", "agent")
+	agent := flag(args, "agent", "codex")
 	force := boolFlag(args, "force")
 	dryRun := boolFlag(args, "dry-run")
 	results, err := writeAgentInstructionFiles(abs, scope, agent, force, dryRun)
@@ -2329,7 +2360,7 @@ func workingMemoryContextCheck(ctx context.Context, args cliArgs, scope string) 
 	result, err := callMCPTool(ctx, args, "working_memory_compose", map[string]any{
 		"task":         "verify agent context for " + scope,
 		"scope":        scope,
-		"agent":        "abra-agent-verify",
+		"agent":        "codex",
 		"limit":        3,
 		"max_queries":  3,
 		"token_budget": 600,

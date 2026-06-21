@@ -42,7 +42,7 @@ Source systems are ingested through the API, signed webhooks, or `source_configs
 ## 3-Minute CLI Install
 
 Run the installer script from this checkout to install the latest or pinned
-release binary:
+published release binary. This does not install untagged local source changes:
 
 ```sh
 ./scripts/install.sh
@@ -74,7 +74,8 @@ installation. Missing platform assets, missing checksums, checksum mismatches,
 failed available attestation checks, and invalid archives stop the install.
 
 Source builds are disabled by default so a missing release asset cannot silently
-replace a verified binary install. For local development only, opt in explicitly:
+replace a verified binary install. For local development only, opt in explicitly;
+this still builds the selected release source tag, not your uncommitted checkout:
 
 ```sh
 ABRA_ALLOW_SOURCE_BUILD=1 ./scripts/install.sh
@@ -247,6 +248,15 @@ go build -o .tmp/abra ./cmd/abra
 .tmp/abra up
 ```
 
+To replace the `abra` on your PATH with the current checkout for development,
+build explicitly to that path and confirm the version before running setup:
+
+```sh
+go build -o "$HOME/.local/bin/abra" ./cmd/abra
+abra version
+abra scope
+```
+
 The `demo` command is still available when you want seed data and an immediate `brain/think` probe:
 
 ```sh
@@ -415,7 +425,7 @@ Generic manifests live in `deploy/kubernetes`. Apply them with your own image, n
 The Helm chart lives in `deploy/helm`; render it with `helm template abra ./deploy/helm` and install it with your image, secret, namespace, and ingress settings.
 For released builds, use the first-party GHCR image
 `ghcr.io/hermawan22/abra` and pin production installs to the digest published
-in the release `IMAGE_DIGEST` asset. Tags such as `v0.3.7`, `0.3.7`, and the
+in the release `IMAGE_DIGEST` asset. Tags such as `v0.3.8`, `0.3.8`, and the
 commit SHA are traceability labels; the digest is the deployable identity.
 
 ## Services

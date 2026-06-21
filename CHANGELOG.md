@@ -6,6 +6,8 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 
 ## Unreleased
 
+## 0.3.8 - 2026-06-21
+
 ### Added
 
 - Add repo-local `AGENTS.md` guidance so Codex-style agents use Abra MCP with the exact `repo:abra` scope before code changes.
@@ -45,6 +47,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Add the full managed release gate, vulnerability checks, runtime version alignment, and main-branch ancestry checks to the tag release workflow before CLI archives are built and published.
 - Add hot query embedding caching for recall and working-memory paths, and make full release dogfood/performance gates stable on the default local Qwen embedding runner.
 - Add staged install-script verification, installer asset publishing, and pre-upload attestation verification to the release workflow so CLI archives must pass the same installer path users run with `curl | sh`.
+- Add an npm pack allowlist gate so the developer npm package can only contain `LICENSE`, `README.md`, and `package.json`.
 
 ### Changed
 
@@ -88,6 +91,9 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Raise local demo/setup and managed release-gate worker intervals to reduce background ingestion contention during recall and working-memory latency gates.
 - Warn on overly aggressive `WORKER_INTERVAL` values in `abra doctor` and normalize stale local setup env files back to the safer default.
 - Make `abra doctor` warn when local-Qwen compose recall fan-out exceeds configured AI provider concurrency.
+- Make source-built CLIs report the tracked runtime version by default and make installers warn when `PATH` resolves to a different `abra` binary.
+- Make `abra setup` defer project-scoped ingest, verify, and think commands to the scope printed after `cd /path/to/project`.
+- Make `abra agents init` default to Codex instructions and make agent context verification compose as `codex`.
 - Improve chunk splitting and embedding batch token estimation for oversized paragraphs, minified JSON, and dense code.
 - Expand default `--code` ingestion includes to supported code files repo-wide instead of only `src` JavaScript/TypeScript paths.
 - Gate low-confidence retrieval on lexical and semantic relevance signal instead of allowing boosted rank alone to make weak matches look strong, while preserving moderate rank-only compatibility paths.
@@ -117,6 +123,7 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Use digest-pinned image placeholders in raw Kubernetes examples instead of mutable version tags.
 - Make Helm's default render use a digest placeholder and add an OSS hygiene guard so chart defaults do not regress to mutable image tags.
 - Include `LICENSE` and `README.md` in CLI release tarballs alongside the `abra` binary.
+- Make `abra doctor` validate that Codex can read MCP config and has an `abra` MCP entry before reporting token-env readiness.
 
 ### Security
 

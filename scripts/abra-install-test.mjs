@@ -136,6 +136,14 @@ exit 0
 `,
     );
   }
+  if (options.existingAbra === true) {
+    await writeExecutable(
+      join(dir, 'abra'),
+      `#!/bin/sh
+printf '%s\\n' 'abra old-test-binary'
+`,
+    );
+  }
 }
 
 async function makeArchive(releaseDir, options = {}) {
@@ -318,6 +326,15 @@ await test('trims trailing slash from custom release base URL', async () => {
   const urls = readFileSync(result.curlLog, 'utf8').trim().split('\n');
   assert.equal(urls[0], `file://${releaseDir}/${assetName}`);
   assert.equal(urls[1], `file://${releaseDir}/SHA256SUMS`);
+});
+
+await test('warns when PATH resolves a different abra binary after install', async () => {
+  const result = await runInstaller({ attestation: '0', existingAbra: true });
+  await assertInstalled(result);
+  assert.match(result.stderr, /Warning: PATH resolves 'abra' to /);
+  assert.match(result.stderr, /not .*\/bin\/abra/);
+  assert.match(result.stderr, /export PATH=/);
+  assert.match(result.stderr, /Next: .*\/bin\/abra setup/);
 });
 
 if (process.exitCode) {
