@@ -22,6 +22,10 @@ ABRA_API_KEYS=replace-with-generated-token
 ABRA_WEBHOOK_SECRETS=replace-with-webhook-signing-secret
 ABRA_ALLOW_UNSIGNED_WEBHOOKS_IN_PRODUCTION=false
 ABRA_APPROVAL_MODE=enforce
+POSTGRES_USER=abra
+POSTGRES_PASSWORD=replace-with-generated-database-password
+POSTGRES_DB=abra
+ABRA_DATABASE_URL=postgres://abra:replace-with-generated-database-password@postgres:5432/abra
 EMBEDDING_PROVIDER=compatible
 EMBEDDING_BASE_URL=https://embedding-provider.example/v1
 EMBEDDING_API_KEY=replace-with-embedding-key
@@ -42,7 +46,9 @@ ABRA_PUBLISH_ADDR=127.0.0.1
 ABRA_PORT=18080
 ```
 
-The Compose file uses its bundled Postgres service unless `ABRA_DATABASE_URL` is set. To point Compose at managed Postgres with `pgvector`, add:
+The Compose file uses its bundled Postgres service with the `POSTGRES_*` and
+`ABRA_DATABASE_URL` values above. Replace the database password before first
+boot. To point Compose at managed Postgres with `pgvector`, set:
 
 ```text
 ABRA_DATABASE_URL=postgres://user:password@postgres.example.invalid:5432/abra
@@ -293,7 +299,7 @@ Production ingestion should be automated but bounded:
 
 - Prefer source webhooks or scheduled connector jobs over manual uploads.
 - Ingest only approved sources and map each source to a stable scope and authority.
-- Keep private connector credentials outside the Abra OSS image.
+- Keep connector credentials outside the Abra OSS image.
 - Use `mcp` source configs when an internal MCP server can export normalized Abra documents, or `POST /ingest/webhooks` for connector overlays that can push normalized documents. Configure `ABRA_WEBHOOK_SECRETS` and send `x-abra-signature: sha256=<hmac>` so webhook bodies are tamper-evident in addition to API-key auth.
 - Treat source refresh as idempotent. Re-ingestion deprecates missing claims and graph relations, reactivates still-present claims and relations from the same source, and replaces source-scoped summaries.
 - Store connector state outside the request path so ingestion spikes do not affect recall latency.
@@ -463,6 +469,6 @@ The OSS v1 target is complete only when these operator-owned surfaces are presen
 - reindex and embedding migration runbooks
 - scheduled audit push or authenticated audit pull for SIEM
 - smoke and quality eval gates
-- clear extension boundary for private connectors, ACLs, SSO, and deployment-specific approval gates
+- clear extension boundary for connector adapters, ACLs, SSO, and deployment-specific approval gates
 
 Features outside that boundary can be deployment overlay work, but they must not be required for the OSS service to run safely.

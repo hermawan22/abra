@@ -2,15 +2,15 @@ services:
   postgres:
     image: pgvector/pgvector:pg16
     environment:
-      POSTGRES_USER: abra
-      POSTGRES_PASSWORD: abra
-      POSTGRES_DB: abra
+      POSTGRES_USER: ${POSTGRES_USER:-abra}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-abra}
     ports:
       - "${POSTGRES_BIND_ADDR:-127.0.0.1}:${POSTGRES_PORT:-5433}:5432"
     volumes:
       - abra-postgres:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U abra -d abra"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-abra} -d ${POSTGRES_DB:-abra}"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -20,7 +20,7 @@ services:
     image: ${ABRA_IMAGE:-abra:local}
     command: ["/app/abra-migrate"]
     environment:
-      DATABASE_URL: ${ABRA_DATABASE_URL:-postgres://abra:abra@postgres:5432/abra}
+      DATABASE_URL: ${ABRA_DATABASE_URL:?set ABRA_DATABASE_URL}
       NODE_ENV: ${NODE_ENV:-production}
       ABRA_API_KEYS: ${ABRA_API_KEYS:?set ABRA_API_KEYS}
       ABRA_WEBHOOK_SECRETS: ${ABRA_WEBHOOK_SECRETS:-}
@@ -49,7 +49,7 @@ services:
     image: ${ABRA_IMAGE:-abra:local}
     command: ["/app/abra-api"]
     environment:
-      DATABASE_URL: ${ABRA_DATABASE_URL:-postgres://abra:abra@postgres:5432/abra}
+      DATABASE_URL: ${ABRA_DATABASE_URL:?set ABRA_DATABASE_URL}
       PORT: ${PORT:-8080}
       ABRA_BIND_ADDR: ${ABRA_BIND_ADDR:-0.0.0.0}
       ABRA_API_READ_TIMEOUT: ${ABRA_API_READ_TIMEOUT:-}
@@ -97,7 +97,7 @@ services:
     image: ${ABRA_IMAGE:-abra:local}
     command: ["/app/abra-worker"]
     environment:
-      DATABASE_URL: ${ABRA_DATABASE_URL:-postgres://abra:abra@postgres:5432/abra}
+      DATABASE_URL: ${ABRA_DATABASE_URL:?set ABRA_DATABASE_URL}
       NODE_ENV: ${NODE_ENV:-production}
       ABRA_API_KEYS: ${ABRA_API_KEYS:?set ABRA_API_KEYS}
       ABRA_APPROVAL_MODE: ${ABRA_APPROVAL_MODE:-enforce}

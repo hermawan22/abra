@@ -2223,13 +2223,6 @@ func bootstrapAgentContext(ctx context.Context, args cliArgs, path, scope string
 		return err
 	}
 
-	fmt.Println("Verifying source-backed working memory...")
-	verifyArgs := copyCLIArgs(args)
-	delete(verifyArgs.Bools, "json")
-	if err := verifyAgentContext(ctx, verifyArgs, path, scope); err != nil {
-		return err
-	}
-
 	if boolFlag(args, "no-mcp") || boolFlag(args, "skip-mcp") {
 		fmt.Println("MCP install skipped by flag.")
 	} else if isCodexAgent(agent) {
@@ -2243,6 +2236,13 @@ func bootstrapAgentContext(ctx context.Context, args cliArgs, path, scope string
 		fmt.Println("Automatic MCP install is currently Codex-only.")
 		fmt.Println("MCP config: abra mcp > .tmp/abra.mcp.json")
 		fmt.Println("Then configure " + agent + " to use the generated MCP config or " + strings.TrimRight(cfg(args).BaseURL, "/") + "/mcp.")
+	}
+
+	fmt.Println("Verifying source-backed working memory...")
+	verifyArgs := copyCLIArgs(args)
+	delete(verifyArgs.Bools, "json")
+	if err := verifyAgentContext(ctx, verifyArgs, path, scope); err != nil {
+		return err
 	}
 	fmt.Println("Ready prompt:")
 	fmt.Println(agentReadyPrompt(scope, agent))
@@ -2358,7 +2358,7 @@ func verifyAgentContext(ctx context.Context, args cliArgs, path, scope string) e
 		return nil
 	}
 	if clientReady {
-		fmt.Println("Ready: server and configured AI client can use scope " + scope + " with working_memory_compose.")
+		fmt.Println("Ready: server and Codex MCP config can use scope " + scope + " with working_memory_compose. Restart Codex if this changed after the active app launched.")
 	} else {
 		fmt.Printf("Ready: Abra server can use scope %s with working_memory_compose, but AI client readiness has %d warning(s).\n", scope, clientWarnings)
 	}
@@ -2682,7 +2682,7 @@ func installCodexMCP(ctx context.Context, args cliArgs) error {
 	if err := runQuiet(codex, "mcp", "add", "abra", "--url", strings.TrimRight(cfg(args).BaseURL, "/")+"/mcp", "--bearer-token-env-var", tokenEnv); err != nil {
 		return fmt.Errorf("codex mcp add failed: %w", err)
 	}
-	fmt.Println("Installed Abra MCP for Codex:")
+	fmt.Println("Installed Abra MCP for Codex future launches:")
 	fmt.Println("  url:       " + strings.TrimRight(cfg(args).BaseURL, "/") + "/mcp")
 	fmt.Println("  token env: " + tokenEnv)
 	fmt.Printf("  endpoint:  validated (%d tools)\n", toolCount)
@@ -2695,8 +2695,8 @@ func installCodexMCP(ctx context.Context, args cliArgs) error {
 	}
 	fmt.Println("Verify runtime: abra doctor")
 	fmt.Println("For each repo: cd /path/to/project && abra agents bootstrap --agent codex")
-	fmt.Println("If Codex says Abra has no context: cd into the repo, run `abra scope`, `abra ingest . --code --scope <scope-from-abra-scope>`, then `abra agents verify . --scope <scope-from-abra-scope>`.")
-	fmt.Println("Then fully quit and reopen Codex Desktop and retry with the `Prompt:` printed by verify.")
+	fmt.Println("Active Codex sessions will not see this until you fully quit and reopen Codex Desktop.")
+	fmt.Println("If Codex says Abra has no context after restart: cd into the repo and run `abra agents verify . --scope <scope-from-abra-scope>`; re-ingest only if verify says scope or source-backed memory is missing.")
 	return nil
 }
 
@@ -2997,11 +2997,10 @@ func printReady(args cliArgs) {
 	fmt.Println("Abra is ready")
 	fmt.Println("MCP:       " + strings.TrimRight(cfg(args).BaseURL, "/") + "/mcp")
 	fmt.Println("Token env: ABRA_API_TOKEN (configured; value not printed)")
-	fmt.Println("Codex:     abra mcp install-codex")
-	fmt.Println("Scope:     cd /path/to/project && abra scope")
-	fmt.Println("Agent:     cd /path/to/project && abra agents bootstrap --agent codex")
+	fmt.Println("Next:      cd /path/to/project && abra agents bootstrap --agent codex")
+	fmt.Println("Restart:   fully quit and reopen Codex Desktop after bootstrap")
 	fmt.Println(`Then:      abra think "What should I know before changing this project?" --scope <scope>`)
-	fmt.Println("Manual:    abra agents init --agent codex && abra ingest . --code --scope <scope> && abra agents verify . --scope <scope>")
+	fmt.Println("Manual:    abra mcp install-codex && abra agents init --agent codex && abra ingest . --code --scope <scope> && abra agents verify . --scope <scope>")
 }
 
 func runCommand(name string, args ...string) error {
@@ -3635,7 +3634,7 @@ Usage:
 Common flags:
   --base-url http://127.0.0.1:18080
   --env-file <path>
-  --token dev-token
+  --token demo-only-dev-token
   --json
 
 First run:
@@ -3818,8 +3817,8 @@ CLAUDE.md importing AGENTS.md so Claude Code reads the same guidance without
 duplicating content. Existing files are skipped unless --force is set.
 
 ` + "`abra agents bootstrap`" + ` is the one-command Codex-ready path: it writes
-agent instructions, ingests the repo with the exact scope and --code, verifies
-source-backed working memory, and installs the Abra MCP endpoint into Codex
+agent instructions, ingests the repo with the exact scope and --code, installs
+the Abra MCP endpoint into Codex, and verifies source-backed working memory
 unless --no-mcp is set.
 
 ` + "`abra agents verify`" + ` checks AGENTS.md, CLAUDE.md, the MCP endpoint, required
@@ -3926,12 +3925,16 @@ volumes, env files, runtime bundles, or memory data.
 	}
 }
 
-const demoEnv = `ABRA_API_KEYS=dev-token
-ABRA_API_TOKEN=dev-token
+const demoEnv = `ABRA_API_KEYS=demo-only-dev-token
+ABRA_API_TOKEN=demo-only-dev-token
 NODE_ENV=development
 ABRA_APPROVAL_MODE=advisory
 ABRA_PORT=18080
+POSTGRES_USER=abra
+POSTGRES_PASSWORD=dev-only-postgres-password
+POSTGRES_DB=abra
 POSTGRES_PORT=5433
+ABRA_DATABASE_URL=postgres://abra:dev-only-postgres-password@postgres:5432/abra
 EMBEDDING_PROVIDER=local
 EMBEDDING_BASE_URL=http://host.docker.internal:8080/v1
 EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0
@@ -3960,6 +3963,10 @@ const productionEnvExample = `NODE_ENV=production
 ABRA_API_KEYS=replace-with-generated-token
 ABRA_WEBHOOK_SECRETS=replace-with-webhook-signing-secret
 ABRA_APPROVAL_MODE=enforce
+POSTGRES_USER=abra
+POSTGRES_PASSWORD=replace-with-generated-database-password
+POSTGRES_DB=abra
+ABRA_DATABASE_URL=postgres://abra:replace-with-generated-database-password@postgres:5432/abra
 EMBEDDING_PROVIDER=compatible
 EMBEDDING_BASE_URL=https://embedding-provider.example/v1
 EMBEDDING_API_KEY=replace-with-embedding-key

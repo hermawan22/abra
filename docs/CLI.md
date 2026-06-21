@@ -8,10 +8,19 @@ Local embedding calls default to a 10-minute provider timeout because CPU-backed
 
 ## 3-Minute Local Flow
 
-For OSS users, install the latest published release binary from GitHub releases:
+For OSS users, this convenience command installs the latest published release
+binary from GitHub releases:
 
 ```sh
 curl -fsSL https://github.com/hermawan22/abra/releases/latest/download/install.sh | sh
+```
+
+For production workstations or repeatable automation, pin the release and
+require GitHub Artifact Attestation verification:
+
+```sh
+curl -fsSL https://github.com/hermawan22/abra/releases/download/vX.Y.Z/install.sh \
+  | ABRA_VERSION=vX.Y.Z ABRA_VERIFY_ATTESTATION=1 sh
 ```
 
 If you already cloned the repo, this checkout-local installer does the same
@@ -46,14 +55,31 @@ abra config model compatible --base-url https://api.example.com/v1 --model embed
 For non-interactive local setup, use `abra setup --yes`. For authenticated compatible providers during onboarding, use `printf '%s' "$PROVIDER_API_KEY" | abra setup --compatible --embedding-base-url https://api.example.com/v1 --embedding-model embedding-model --api-key-stdin`. For OpenAI, non-interactive setup requires `--api-key-stdin` or `OPENAI_API_KEY`.
 Use `abra setup --yes --no-models` only when you intentionally manage the embedding endpoint yourself; otherwise the default local provider is started for you by setup or `abra up`.
 
-Generate repo-local AI agent instruction files after setup:
+Make the current repo Codex-ready after setup:
 
 ```sh
-abra agents init --agent codex
+abra agents bootstrap --agent codex
 ```
 
-This writes `AGENTS.md` with the exact Abra scope and `CLAUDE.md` as an import for tools that read Claude Code instructions.
-After ingesting the project with the exact scope printed by `abra scope`, `abra agents verify . --scope <scope-from-abra-scope> --agent <agent>` checks both files, validates the MCP endpoint, calls `discover_scopes` with that exact project scope, and confirms `working_memory_compose` returns source-backed context for the selected agent profile. `abra agents ready` is a non-mutating alias for the same check. Both commands print a ready prompt and next steps for the AI client; `--json` returns `server_ready`, `client_ready`, `ready_prompt`, and `next_steps` for automation. The compose call runs in diagnostic mode, so verification does not write compose audit events or automatic learning proposals. If a coding agent says Abra has no context, run this before changing prompts or env files. If verification is ready but the agent still says there is no context, fully restart that AI client so it reloads MCP config and token environment, then rerun the same `abra agents verify ... --scope ... --agent <agent>` command.
+This writes `AGENTS.md` with the exact Abra scope, adds `CLAUDE.md` as an
+import for tools that read Claude Code instructions, ingests the repo with
+`--code`, installs Abra MCP into Codex without writing the token literally to
+disk, and verifies `working_memory_compose` returns source-backed context.
+Fully quit and reopen Codex Desktop after bootstrap so the active app process
+reloads the MCP config and token environment.
+
+Use `abra agents init --agent codex`, `abra ingest . --code --scope
+<scope-from-abra-scope>`, and `abra agents verify . --scope
+<scope-from-abra-scope> --agent codex` separately only when you need the manual
+steps. `abra agents ready` is a non-mutating alias for verify. Both commands
+print a ready prompt and next steps for the AI client; `--json` returns
+`server_ready`, `client_ready`, `ready_prompt`, and `next_steps` for automation.
+The compose call runs in diagnostic mode, so verification does not write compose
+audit events or automatic learning proposals. If `abra doctor` says MCP is ok
+but Codex has no Abra tools or no context, run `abra mcp install-codex`, fully
+quit and reopen Codex Desktop, then rerun `abra agents verify . --scope
+<scope-from-abra-scope>`; re-ingest only if verify says the exact scope or
+source-backed memory is missing.
 For CI or release checks that should not contact a live MCP server, run
 `abra agents verify --files-only --strict`.
 
@@ -71,7 +97,7 @@ Use these defaults for the remaining commands:
 
 ```sh
 export ABRA_BASE_URL=http://localhost:18080
-export ABRA_API_TOKEN=dev-token
+export ABRA_API_TOKEN=demo-only-dev-token
 ```
 
 Ingest a demo document:

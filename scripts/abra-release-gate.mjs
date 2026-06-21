@@ -16,6 +16,11 @@ const defaultReleaseToken = `release-gate-${releaseSecretSuffix}`;
 const token = manageStack && placeholderSecret(process.env.ABRA_API_TOKEN) ? defaultReleaseToken : process.env.ABRA_API_TOKEN || "dev-token";
 const defaultWebhookSecret = `release-gate-webhook-${releaseSecretSuffix}`;
 const webhookSecret = manageStack && placeholderSecret(process.env.ABRA_WEBHOOK_SECRET) ? defaultWebhookSecret : process.env.ABRA_WEBHOOK_SECRET || "dev-webhook-secret";
+const defaultPostgresPassword = `release-gate-db-${releaseSecretSuffix}`;
+const postgresUser = process.env.POSTGRES_USER || "abra";
+const postgresDb = process.env.POSTGRES_DB || "abra";
+const postgresPassword = manageStack && placeholderSecret(process.env.POSTGRES_PASSWORD) ? defaultPostgresPassword : process.env.POSTGRES_PASSWORD || "dev-only-postgres-password";
+const databaseUrl = process.env.ABRA_DATABASE_URL || `postgres://${postgresUser}:${postgresPassword}@postgres:5432/${postgresDb}`;
 const commandTimeoutMs = numberEnv("ABRA_RELEASE_COMMAND_TIMEOUT_MS", quick ? 120_000 : 600_000);
 const outputLimit = numberEnv("ABRA_RELEASE_OUTPUT_LIMIT", 12_000);
 const prepareDogfoodSource = !quick && boolEnv("ABRA_RELEASE_PREPARE_DOGFOOD_SOURCE", manageStack);
@@ -38,6 +43,10 @@ const managedStackEnv = {
   } : {}),
   ABRA_API_KEYS: managedApiKeys,
   ABRA_WEBHOOK_SECRETS: managedWebhookSecrets,
+  POSTGRES_USER: postgresUser,
+  POSTGRES_PASSWORD: postgresPassword,
+  POSTGRES_DB: postgresDb,
+  ABRA_DATABASE_URL: databaseUrl,
   ABRA_APPROVAL_MODE: process.env.ABRA_APPROVAL_MODE || "advisory",
   ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION: process.env.ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION || "true",
   EMBEDDING_PROVIDER: process.env.EMBEDDING_PROVIDER || "local",
@@ -57,6 +66,8 @@ function placeholderSecret(value) {
   const primary = normalized.split(/[|,;]/, 1)[0].trim();
   return [
     "dev-token",
+    "demo-only-dev-token",
+    "dev-only-postgres-password",
     "dev-webhook-secret",
     "changeme",
     "change-me",

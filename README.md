@@ -45,10 +45,19 @@ Abra is not distributed through npm. The npm package metadata in this repo is
 private maintainer tooling only; install Abra from GitHub release binaries or
 deploy the published container images.
 
-For OSS users, install the latest published release binary from GitHub releases:
+For OSS users, this convenience command installs the latest published release
+binary from GitHub releases:
 
 ```sh
 curl -fsSL https://github.com/hermawan22/abra/releases/latest/download/install.sh | sh
+```
+
+For production workstations or repeatable automation, pin the release and
+require GitHub Artifact Attestation verification:
+
+```sh
+curl -fsSL https://github.com/hermawan22/abra/releases/download/vX.Y.Z/install.sh \
+  | ABRA_VERSION=vX.Y.Z ABRA_VERIFY_ATTESTATION=1 sh
 ```
 
 If you already cloned the repo, this checkout-local installer does the same
@@ -62,14 +71,6 @@ Pin a specific published release from a checkout:
 
 ```sh
 ABRA_VERSION=vX.Y.Z ./scripts/install.sh
-```
-
-For a hardened install, pin the release and require GitHub Artifact
-Attestation verification:
-
-```sh
-curl -fsSL https://github.com/hermawan22/abra/releases/download/vX.Y.Z/install.sh \
-  | ABRA_VERSION=vX.Y.Z ABRA_VERIFY_ATTESTATION=1 sh
 ```
 
 The installer downloads the matching platform release archive, verifies it
@@ -123,8 +124,10 @@ abra agents bootstrap --agent codex
 
 This writes `AGENTS.md` with the exact Abra scope, adds a `CLAUDE.md` import so
 Claude Code reads the same instructions, ingests the repo with `--code`,
-verifies source-backed `working_memory_compose` for that scope, and installs
-the Abra MCP endpoint into Codex without writing the token literally to disk.
+installs the Abra MCP endpoint into Codex without writing the token literally
+to disk, and verifies source-backed `working_memory_compose` for that scope.
+Fully quit and reopen Codex Desktop after bootstrap so the active app process
+reloads the MCP config and token environment.
 Use `abra agents init` and `abra agents verify` separately when you want the
 manual steps. `abra agents verify` and `abra agents ready` print the exact
 ready prompt plus next steps. Use `abra agents ready . --scope <scope-from-abra-scope> --json`
@@ -301,7 +304,7 @@ go run ./cmd/abra up
 When it finishes:
 
 - MCP endpoint: `http://localhost:18080/mcp`
-- Demo token: `dev-token`
+- Demo token: `demo-only-dev-token` for loopback demos only; never expose it on a network.
 
 Run the guided CLI onboarding:
 
@@ -381,7 +384,11 @@ cp examples/env/production.env.example .env.production
 $EDITOR .env.production
 ```
 
-By default this uses the Compose-managed Postgres service. To use an external Postgres with `pgvector`, add `ABRA_DATABASE_URL=postgres://...` to `.env.production`; Compose maps that value to the container's `DATABASE_URL`.
+By default this uses the Compose-managed Postgres service with the
+`POSTGRES_*` and `ABRA_DATABASE_URL` values from `.env.production`. Replace the
+database password before first boot. To use an external Postgres with
+`pgvector`, set `ABRA_DATABASE_URL=postgres://...`; Compose maps that value to
+the container's `DATABASE_URL`.
 
 Start Postgres, run migrations, then start the API and worker:
 
@@ -783,7 +790,7 @@ Forgetting a claim marks it `deprecated`. Source re-ingestion will not reactivat
 ## Environment
 
 ```text
-DATABASE_URL=postgres://abra:abra@localhost:5433/abra
+DATABASE_URL=postgres://abra:dev-only-postgres-password@localhost:5433/abra
 PORT=18080
 NODE_ENV=development
 ABRA_API_KEYS=replace-me
@@ -1032,7 +1039,7 @@ Abra stores normalized fields as document metadata (`git_remote_url`, `git_ref`,
 
 Abra is open source and self-hostable. The core project stays generic: CLI, API, worker, Postgres, pgvector, MCP, ingestion, source configs, metrics, approval requests and enforcement for core memory operations, audit export, and release gates.
 
-Deployment-specific identity, ACL sync, private connector automation, SIEM routing, and managed operations should be added through extensions or overlays without making the OSS runtime unusable.
+Deployment-specific identity, ACL sync, connector automation, audit routing, and operations integrations should be added through extensions or overlays without making the OSS runtime unusable.
 
 ## V1 Roadmap
 
@@ -1045,9 +1052,9 @@ Deployment-specific identity, ACL sync, private connector automation, SIEM routi
 
 ## Extension Path
 
-Keep OSS Abra generic. Add deployment-specific behavior in an extension, private connector, or overlay:
+Keep OSS Abra generic. Add deployment-specific behavior in an extension or overlay:
 
-- private identity gateway auth
+- identity gateway auth
 - Confluence/Jira/source-system connector automation
 - Slack thread source URLs
 - team ACL mapping

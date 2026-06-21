@@ -540,6 +540,113 @@ func TestAgentsBootstrapIngestsAndVerifiesContext(t *testing.T) {
 	}
 }
 
+func TestAgentsBootstrapInstallsCodexMCPBeforeFinalVerify(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "demo project")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(root, "README.md"), "# Demo\n\nAbra keeps AI agents source-backed.")
+	wantScope := "repo:" + slug(filepath.Base(root))
+
+	binDir := t.TempDir()
+	logPath := filepath.Join(binDir, "commands.log")
+	codexPath := filepath.Join(binDir, "codex")
+	mustWrite(t, codexPath, "#!/bin/sh\nprintf 'codex %s\\n' \"$*\" >> "+shellQuote(logPath)+"\nif [ \"$1 $2\" = 'mcp list' ]; then printf 'abra http://127.0.0.1:18080/mcp\\n'; fi\nexit 0\n")
+	if err := os.Chmod(codexPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	launchctlPath := filepath.Join(binDir, "launchctl")
+	mustWrite(t, launchctlPath, "#!/bin/sh\nprintf 'launchctl %s\\n' \"$*\" >> "+shellQuote(logPath)+"\nif [ \"$1\" = 'getenv' ]; then printf 'test-token\\n'; fi\nexit 0\n")
+	if err := os.Chmod(launchctlPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ABRA_CODEX_COMMAND", codexPath)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	ingestRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/ingest/documents":
+			ingestRequests++
+			writeTestJSON(t, w, map[string]any{"chunks": 1, "claims": 1})
+		case "/mcp":
+			var rpc map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&rpc); err != nil {
+				t.Fatalf("decode rpc: %v", err)
+			}
+			switch rpc["method"] {
+			case "tools/list":
+				writeTestJSON(t, w, map[string]any{
+					"jsonrpc": "2.0",
+					"id":      rpc["id"],
+					"result": map[string]any{"tools": []map[string]any{
+						{"name": "discover_scopes"},
+						{"name": "working_memory_compose"},
+					}},
+				})
+			case "tools/call":
+				params, _ := rpc["params"].(map[string]any)
+				var payload []byte
+				switch params["name"] {
+				case "discover_scopes":
+					payload, _ = json.Marshal(map[string]any{
+						"recommended_scope": wantScope,
+						"matches":           []map[string]any{{"scope": wantScope}},
+					})
+				case "working_memory_compose":
+					payload, _ = json.Marshal(map[string]any{
+						"stats": map[string]any{
+							"facts":                1,
+							"supporting_documents": 1,
+							"summaries":            1,
+							"graph_relations":      1,
+						},
+					})
+				default:
+					t.Fatalf("unexpected tool %v", params["name"])
+				}
+				writeTestJSON(t, w, map[string]any{
+					"jsonrpc": "2.0",
+					"id":      rpc["id"],
+					"result":  map[string]any{"content": []map[string]any{{"type": "text", "text": string(payload)}}},
+				})
+			default:
+				t.Fatalf("unexpected method %v", rpc["method"])
+			}
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	output := captureStdout(t, func() {
+		if err := run(context.Background(), []string{"agents", "bootstrap", root, "--base-url", server.URL, "--token", "test-token"}); err != nil {
+			t.Fatalf("agents bootstrap error = %v", err)
+		}
+	})
+	if ingestRequests == 0 {
+		t.Fatal("bootstrap did not ingest any documents")
+	}
+	installIndex := strings.Index(output, "Installing Abra MCP into Codex")
+	verifyIndex := strings.Index(output, "Verifying source-backed working memory")
+	if installIndex < 0 || verifyIndex < 0 || installIndex > verifyIndex {
+		t.Fatalf("bootstrap should install MCP before final verify:\n%s", output)
+	}
+	if !strings.Contains(output, "Ready: server and Codex MCP config can use scope") {
+		t.Fatalf("bootstrap should finish with server/client ready output:\n%s", output)
+	}
+	logBytes, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logText := string(logBytes)
+	for _, want := range []string{"codex mcp add abra", "launchctl setenv", "launchctl getenv"} {
+		if !strings.Contains(logText, want) {
+			t.Fatalf("command log missing %q:\n%s", want, logText)
+		}
+	}
+}
+
 func TestAgentsVerifyFilesOnlyStrictSkipsMCP(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "demo project")
 	if err := os.MkdirAll(root, 0o755); err != nil {
@@ -2187,9 +2294,10 @@ func TestInstallCodexMutatesConfigAfterSuccessfulMCPValidation(t *testing.T) {
 		t.Fatalf("%s was not set", tokenEnv)
 	}
 	for _, want := range []string{
-		"Installed Abra MCP for Codex:",
+		"Installed Abra MCP for Codex future launches:",
 		"token env: " + tokenEnv,
 		"endpoint:  validated (2 tools)",
+		"Active Codex sessions will not see this until you fully quit and reopen Codex Desktop.",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output missing %q:\n%s", want, output)
