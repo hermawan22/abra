@@ -309,6 +309,11 @@ func TestAgentsInitCreatesCrossAgentInstructionFiles(t *testing.T) {
 		"Use exact scope `" + wantScope + "`",
 		"working_memory_compose",
 		`agent: "claude"`,
+		"Abra MCP tools are unavailable",
+		"abra doctor",
+		"fully restart the AI client",
+		"retry before re-ingesting",
+		"abra agents verify . --scope " + wantScope + " --agent claude",
 		"Do not include secrets",
 	} {
 		if !strings.Contains(string(agents), want) {

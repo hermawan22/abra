@@ -12,11 +12,20 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type Store struct {
-	pool *pgxpool.Pool
+	pool   *pgxpool.Pool
+	runner storeRunner
+	inTx   bool
+}
+
+type storeRunner interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
 type ScopeSummary struct {
@@ -58,11 +67,55 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 		pool.Close()
 		return nil, fmt.Errorf("ping postgres: %w", err)
 	}
-	return &Store{pool: pool}, nil
+	return &Store{pool: pool, runner: pool}, nil
 }
 
 func (s *Store) Close() {
 	s.pool.Close()
+}
+
+func (s *Store) queryRunner() storeRunner {
+	if s.runner != nil {
+		return s.runner
+	}
+	return s.pool
+}
+
+func (s *Store) WithTx(ctx context.Context, fn func(*Store) error) error {
+	if s.inTx {
+		return fn(s)
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+	txStore := *s
+	txStore.runner = tx
+	txStore.inTx = true
+	if err := fn(&txStore); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *Store) withTxRunner(ctx context.Context, fn func(storeRunner) error) error {
+	if s.inTx {
+		return fn(s.queryRunner())
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *Store) Ready(ctx context.Context) error {
@@ -163,7 +216,7 @@ func (s *Store) ExpireClaims(ctx context.Context) (int64, error) {
 }
 
 func (s *Store) EnsureMigrationTable(ctx context.Context) error {
-	_, err := s.pool.Exec(ctx, `
+	_, err := s.queryRunner().Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			filename TEXT PRIMARY KEY,
 			applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -672,7 +725,7 @@ func (s *Store) UpsertDocument(ctx context.Context, record DocumentRecord) (stri
 		record.AuthorityScore = 0.35
 	}
 	metadata := jsonb(record.Metadata)
-	_, err := s.pool.Exec(ctx, `
+	_, err := s.queryRunner().Exec(ctx, `
 		INSERT INTO documents (
 		  id, source_type, source_url, source_id, title, scope, content_checksum,
 		  source_updated_at, source_config_id, ingestion_job_id, authority,
@@ -698,12 +751,12 @@ func (s *Store) UpsertDocument(ctx context.Context, record DocumentRecord) (stri
 	if err != nil {
 		return "", err
 	}
-	err = s.pool.QueryRow(ctx, "SELECT id FROM documents WHERE source_type = $1 AND source_url = $2 AND scope = $3", record.SourceType, record.SourceURL, record.Scope).Scan(&id)
+	err = s.queryRunner().QueryRow(ctx, "SELECT id FROM documents WHERE source_type = $1 AND source_url = $2 AND scope = $3", record.SourceType, record.SourceURL, record.Scope).Scan(&id)
 	return id, err
 }
 
 func (s *Store) MarkDocumentIngestComplete(ctx context.Context, documentID string) error {
-	_, err := s.pool.Exec(ctx, `
+	_, err := s.queryRunner().Exec(ctx, `
 		UPDATE documents
 		SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{ingest_complete}', 'true'::jsonb, true),
 		    ingested_at = now()
@@ -713,25 +766,19 @@ func (s *Store) MarkDocumentIngestComplete(ctx context.Context, documentID strin
 }
 
 func (s *Store) ReplaceChunks(ctx context.Context, documentID, scope string, chunks []ChunkRecord) error {
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		_ = tx.Rollback(ctx)
-	}()
-	if _, err := tx.Exec(ctx, "DELETE FROM chunks WHERE document_id = $1", documentID); err != nil {
-		return err
-	}
-	for index, chunk := range chunks {
-		id := stableID("chunk", documentID, fmt.Sprint(index), chunk.Content)
-		if chunk.SourceConfigID == "" {
-			chunk.SourceConfigID = metadataString(chunk.Metadata, "source_config_id")
+	return s.withTxRunner(ctx, func(tx storeRunner) error {
+		if _, err := tx.Exec(ctx, "DELETE FROM chunks WHERE document_id = $1", documentID); err != nil {
+			return err
 		}
-		if chunk.IngestionJobID == "" {
-			chunk.IngestionJobID = metadataString(chunk.Metadata, "ingestion_job_id")
-		}
-		if _, err := tx.Exec(ctx, `
+		for index, chunk := range chunks {
+			id := stableID("chunk", documentID, fmt.Sprint(index), chunk.Content)
+			if chunk.SourceConfigID == "" {
+				chunk.SourceConfigID = metadataString(chunk.Metadata, "source_config_id")
+			}
+			if chunk.IngestionJobID == "" {
+				chunk.IngestionJobID = metadataString(chunk.Metadata, "ingestion_job_id")
+			}
+			if _, err := tx.Exec(ctx, `
 			INSERT INTO chunks (
 			  id, document_id, chunk_index, content, embedding, scope,
 			  embedding_provider, embedding_model, embedding_dimensions,
@@ -741,11 +788,12 @@ func (s *Store) ReplaceChunks(ctx context.Context, documentID, scope string, chu
 				  $1, $2, $3, $4, $5::vector, $6, $7, $8, $9,
 				  NULLIF($10, ''), NULLIF($11, ''), $12::jsonb
 				)
-		`, id, documentID, index, chunk.Content, vectorLiteral(chunk.Embedding), scope, chunk.EmbeddingProvider, chunk.EmbeddingModel, chunk.EmbeddingDimensions, chunk.SourceConfigID, chunk.IngestionJobID, jsonb(chunk.Metadata)); err != nil {
-			return err
+			`, id, documentID, index, chunk.Content, vectorLiteral(chunk.Embedding), scope, chunk.EmbeddingProvider, chunk.EmbeddingModel, chunk.EmbeddingDimensions, chunk.SourceConfigID, chunk.IngestionJobID, jsonb(chunk.Metadata)); err != nil {
+				return err
+			}
 		}
-	}
-	return tx.Commit(ctx)
+		return nil
+	})
 }
 
 func (s *Store) InsertClaim(ctx context.Context, claim ClaimRecord) (string, error) {
@@ -771,7 +819,7 @@ func (s *Store) InsertClaim(ctx context.Context, claim ClaimRecord) (string, err
 	if claim.AuthorityScore == 0 {
 		claim.AuthorityScore = 0.35
 	}
-	_, err := s.pool.Exec(ctx, `
+	_, err := s.queryRunner().Exec(ctx, `
 		INSERT INTO claims (
 		  id, claim_text, scope, source_url, source_type, authority, status,
 		  confidence, embedding, last_verified_at, metadata,
@@ -787,7 +835,7 @@ func (s *Store) InsertClaim(ctx context.Context, claim ClaimRecord) (string, err
 	if err != nil {
 		return "", err
 	}
-	_, err = s.pool.Exec(ctx, `
+	_, err = s.queryRunner().Exec(ctx, `
 		UPDATE claims
 		SET source_config_id = COALESCE(NULLIF($4, ''), source_config_id),
 		    ingestion_job_id = COALESCE(NULLIF($5, ''), ingestion_job_id),
@@ -820,7 +868,7 @@ func (s *Store) InsertClaim(ctx context.Context, claim ClaimRecord) (string, err
 	if err != nil {
 		return "", err
 	}
-	err = s.pool.QueryRow(ctx, `
+	err = s.queryRunner().QueryRow(ctx, `
 		SELECT id FROM claims
 		WHERE scope = $1 AND COALESCE(source_url, '') = COALESCE(NULLIF($2, ''), '') AND claim_text = $3
 		LIMIT 1
@@ -835,7 +883,7 @@ func (s *Store) BeginSourceClaimRefresh(ctx context.Context, scope, sourceType, 
 	if scope == "" || sourceType == "" || sourceURL == "" {
 		return SourceRefreshClaimResult{}, fmt.Errorf("scope, source_type, and source_url are required")
 	}
-	tag, err := s.pool.Exec(ctx, `
+	tag, err := s.queryRunner().Exec(ctx, `
 		UPDATE claims
 		SET status = 'deprecated',
 		    confidence = 0,
@@ -862,7 +910,7 @@ func (s *Store) BeginSourceGraphRefresh(ctx context.Context, scope, sourceURL, i
 	if scope == "" || sourceURL == "" {
 		return SourceRefreshGraphResult{}, fmt.Errorf("scope and source_url are required")
 	}
-	relationTag, err := s.pool.Exec(ctx, `
+	relationTag, err := s.queryRunner().Exec(ctx, `
 		UPDATE relations
 		SET status = 'deprecated',
 		    confidence = 0,
@@ -879,7 +927,7 @@ func (s *Store) BeginSourceGraphRefresh(ctx context.Context, scope, sourceURL, i
 	if err != nil {
 		return SourceRefreshGraphResult{}, err
 	}
-	summaryTag, err := s.pool.Exec(ctx, `
+	summaryTag, err := s.queryRunner().Exec(ctx, `
 		DELETE FROM memory_summaries
 		WHERE scope = $1
 		  AND source_urls @> jsonb_build_array($2::text)
@@ -895,7 +943,7 @@ func (s *Store) BeginSourceGraphRefresh(ctx context.Context, scope, sourceURL, i
 
 func (s *Store) AddEvidence(ctx context.Context, evidence EvidenceRecord) error {
 	id := stableID("evidence", evidence.ClaimID, evidence.DocumentID, evidence.Quote)
-	_, err := s.pool.Exec(ctx, `
+	_, err := s.queryRunner().Exec(ctx, `
 		INSERT INTO evidence (id, claim_id, document_id, quote, source_url, source_type)
 		VALUES ($1, $2, NULLIF($3, ''), $4, $5, NULLIF($6, ''))
 		ON CONFLICT DO NOTHING
@@ -943,36 +991,30 @@ func (s *Store) UpsertClaimConflict(ctx context.Context, conflict ConflictRecord
 	}
 	primaryID, conflictingID := orderedPair(conflict.PrimaryClaimID, conflict.ConflictingClaimID)
 	id := stableID("claim-conflict", conflict.Scope, primaryID, conflictingID, conflict.ConflictType)
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return "", err
-	}
-	defer func() {
-		_ = tx.Rollback(ctx)
-	}()
-	var primaryScope, conflictingScope string
-	if err := tx.QueryRow(ctx, "SELECT scope FROM claims WHERE id = $1", conflict.PrimaryClaimID).Scan(&primaryScope); err != nil {
-		if err == pgx.ErrNoRows {
-			return "", fmt.Errorf("primary claim %q not found", conflict.PrimaryClaimID)
+	err := s.withTxRunner(ctx, func(tx storeRunner) error {
+		var primaryScope, conflictingScope string
+		if err := tx.QueryRow(ctx, "SELECT scope FROM claims WHERE id = $1", conflict.PrimaryClaimID).Scan(&primaryScope); err != nil {
+			if err == pgx.ErrNoRows {
+				return fmt.Errorf("primary claim %q not found", conflict.PrimaryClaimID)
+			}
+			return err
 		}
-		return "", err
-	}
-	if err := tx.QueryRow(ctx, "SELECT scope FROM claims WHERE id = $1", conflict.ConflictingClaimID).Scan(&conflictingScope); err != nil {
-		if err == pgx.ErrNoRows {
-			return "", fmt.Errorf("conflicting claim %q not found", conflict.ConflictingClaimID)
+		if err := tx.QueryRow(ctx, "SELECT scope FROM claims WHERE id = $1", conflict.ConflictingClaimID).Scan(&conflictingScope); err != nil {
+			if err == pgx.ErrNoRows {
+				return fmt.Errorf("conflicting claim %q not found", conflict.ConflictingClaimID)
+			}
+			return err
 		}
-		return "", err
-	}
-	if primaryScope != conflictingScope {
-		return "", fmt.Errorf("conflicting claims must be in the same scope")
-	}
-	if conflict.Scope == "" {
-		conflict.Scope = primaryScope
-	}
-	if conflict.Scope != primaryScope {
-		return "", fmt.Errorf("conflict scope %q does not match claim scope %q", conflict.Scope, primaryScope)
-	}
-	if _, err := tx.Exec(ctx, `
+		if primaryScope != conflictingScope {
+			return fmt.Errorf("conflicting claims must be in the same scope")
+		}
+		if conflict.Scope == "" {
+			conflict.Scope = primaryScope
+		}
+		if conflict.Scope != primaryScope {
+			return fmt.Errorf("conflict scope %q does not match claim scope %q", conflict.Scope, primaryScope)
+		}
+		if _, err := tx.Exec(ctx, `
 		INSERT INTO conflicts (
 		  id, scope, conflict_type, status, severity,
 		  primary_claim_id, conflicting_claim_id,
@@ -988,9 +1030,9 @@ func (s *Store) UpsertClaimConflict(ctx context.Context, conflict ConflictRecord
 		  metadata = conflicts.metadata || EXCLUDED.metadata,
 		  updated_at = now()
 	`, id, conflict.Scope, conflict.ConflictType, conflict.Severity, conflict.PrimaryClaimID, conflict.ConflictingClaimID, conflict.DetectedBy, conflict.Authority, jsonb(conflict.Metadata)); err != nil {
-		return "", err
-	}
-	if _, err := tx.Exec(ctx, `
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
 		UPDATE claims
 		SET status = 'challenged',
 		    confidence = GREATEST(confidence - 0.25, 0),
@@ -998,9 +1040,11 @@ func (s *Store) UpsertClaimConflict(ctx context.Context, conflict ConflictRecord
 		WHERE id = ANY($1)
 		  AND status NOT IN ('deprecated', 'expired')
 	`, []string{conflict.PrimaryClaimID, conflict.ConflictingClaimID}); err != nil {
-		return "", err
-	}
-	return id, tx.Commit(ctx)
+			return err
+		}
+		return nil
+	})
+	return id, err
 }
 
 func (s *Store) UpsertRelationConflict(ctx context.Context, conflict ConflictRecord) (string, error) {
@@ -1013,42 +1057,36 @@ func (s *Store) UpsertRelationConflict(ctx context.Context, conflict ConflictRec
 	}
 	primaryID, conflictingID := orderedPair(conflict.PrimaryRelationID, conflict.ConflictingRelationID)
 	id := stableID("relation-conflict", conflict.Scope, primaryID, conflictingID, conflict.ConflictType)
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return "", err
-	}
-	defer func() {
-		_ = tx.Rollback(ctx)
-	}()
-	var primaryScope, primaryEntity, conflictingScope, conflictingEntity string
-	if err := tx.QueryRow(ctx, "SELECT scope, source_entity_id FROM relations WHERE id = $1", conflict.PrimaryRelationID).Scan(&primaryScope, &primaryEntity); err != nil {
-		if err == pgx.ErrNoRows {
-			return "", fmt.Errorf("primary relation %q not found", conflict.PrimaryRelationID)
+	err := s.withTxRunner(ctx, func(tx storeRunner) error {
+		var primaryScope, primaryEntity, conflictingScope, conflictingEntity string
+		if err := tx.QueryRow(ctx, "SELECT scope, source_entity_id FROM relations WHERE id = $1", conflict.PrimaryRelationID).Scan(&primaryScope, &primaryEntity); err != nil {
+			if err == pgx.ErrNoRows {
+				return fmt.Errorf("primary relation %q not found", conflict.PrimaryRelationID)
+			}
+			return err
 		}
-		return "", err
-	}
-	if err := tx.QueryRow(ctx, "SELECT scope, source_entity_id FROM relations WHERE id = $1", conflict.ConflictingRelationID).Scan(&conflictingScope, &conflictingEntity); err != nil {
-		if err == pgx.ErrNoRows {
-			return "", fmt.Errorf("conflicting relation %q not found", conflict.ConflictingRelationID)
+		if err := tx.QueryRow(ctx, "SELECT scope, source_entity_id FROM relations WHERE id = $1", conflict.ConflictingRelationID).Scan(&conflictingScope, &conflictingEntity); err != nil {
+			if err == pgx.ErrNoRows {
+				return fmt.Errorf("conflicting relation %q not found", conflict.ConflictingRelationID)
+			}
+			return err
 		}
-		return "", err
-	}
-	if primaryScope != conflictingScope {
-		return "", fmt.Errorf("conflicting relations must be in the same scope")
-	}
-	if primaryEntity != conflictingEntity {
-		return "", fmt.Errorf("conflicting relations must share the same source entity")
-	}
-	if conflict.Scope == "" {
-		conflict.Scope = primaryScope
-	}
-	if conflict.Scope != primaryScope {
-		return "", fmt.Errorf("conflict scope %q does not match relation scope %q", conflict.Scope, primaryScope)
-	}
-	if conflict.EntityID == "" {
-		conflict.EntityID = primaryEntity
-	}
-	if _, err := tx.Exec(ctx, `
+		if primaryScope != conflictingScope {
+			return fmt.Errorf("conflicting relations must be in the same scope")
+		}
+		if primaryEntity != conflictingEntity {
+			return fmt.Errorf("conflicting relations must share the same source entity")
+		}
+		if conflict.Scope == "" {
+			conflict.Scope = primaryScope
+		}
+		if conflict.Scope != primaryScope {
+			return fmt.Errorf("conflict scope %q does not match relation scope %q", conflict.Scope, primaryScope)
+		}
+		if conflict.EntityID == "" {
+			conflict.EntityID = primaryEntity
+		}
+		if _, err := tx.Exec(ctx, `
 		INSERT INTO conflicts (
 		  id, scope, conflict_type, status, severity,
 		  primary_relation_id, conflicting_relation_id, entity_id,
@@ -1065,9 +1103,9 @@ func (s *Store) UpsertRelationConflict(ctx context.Context, conflict ConflictRec
 		  metadata = conflicts.metadata || EXCLUDED.metadata,
 		  updated_at = now()
 	`, id, conflict.Scope, conflict.ConflictType, conflict.Severity, conflict.PrimaryRelationID, conflict.ConflictingRelationID, conflict.EntityID, conflict.DetectedBy, conflict.Authority, jsonb(conflict.Metadata)); err != nil {
-		return "", err
-	}
-	if _, err := tx.Exec(ctx, `
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
 		UPDATE relations
 		SET status = 'challenged',
 		    confidence = GREATEST(confidence - 0.15, 0),
@@ -1075,9 +1113,11 @@ func (s *Store) UpsertRelationConflict(ctx context.Context, conflict ConflictRec
 		WHERE id = ANY($1)
 		  AND status NOT IN ('deprecated', 'expired')
 	`, []string{conflict.PrimaryRelationID, conflict.ConflictingRelationID}); err != nil {
-		return "", err
-	}
-	return id, tx.Commit(ctx)
+			return err
+		}
+		return nil
+	})
+	return id, err
 }
 
 func (s *Store) ListOpenConflictsForClaims(ctx context.Context, scope string, claimIDs []string) ([]ConflictResult, error) {
@@ -1247,7 +1287,7 @@ func (s *Store) ResolveConflict(ctx context.Context, id string, input ResolveCon
 	metadata := mergeMetadata(input.Metadata, map[string]any{
 		"decided_at": time.Now().UTC().Format(time.RFC3339Nano),
 	})
-	_, err := s.pool.Exec(ctx, `
+	_, err := s.queryRunner().Exec(ctx, `
 		UPDATE conflicts
 		SET status = $2,
 		    resolved_at = CASE WHEN $2 IN ('resolved', 'suppressed') THEN now() ELSE NULL END,
@@ -1339,7 +1379,7 @@ func (s *Store) SearchClaims(ctx context.Context, query, scope, excludeID string
 		limit = 20
 	}
 	anyQuery := fullTextAnyQuery(query)
-	rows, err := s.pool.Query(ctx, searchClaimsSQL(), query, scope, excludeID, limit, anyQuery)
+	rows, err := s.queryRunner().Query(ctx, searchClaimsSQL(), query, scope, excludeID, limit, anyQuery)
 	if err != nil {
 		return nil, err
 	}
@@ -1426,7 +1466,7 @@ func (s *Store) DeprecateClaim(ctx context.Context, claimID, reason, createdBy s
 
 func (s *Store) InsertAuditEvent(ctx context.Context, eventType, targetType, targetID, scope, sourceURL string, metadata map[string]any) error {
 	id := stableID("audit", eventType, targetType, targetID, fmt.Sprint(metadata))
-	_, err := s.pool.Exec(ctx, `
+	_, err := s.queryRunner().Exec(ctx, `
 		INSERT INTO audit_events (id, event_type, target_type, target_id, scope, source_url, metadata)
 		VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, ''), NULLIF($6, ''), $7::jsonb)
 		ON CONFLICT DO NOTHING
@@ -1633,7 +1673,7 @@ func (s *Store) GetIntegrationCursor(ctx context.Context, id string) (Integratio
 	var record IntegrationCursorRecord
 	var cursorTime sql.NullTime
 	var metadataRaw []byte
-	err := s.pool.QueryRow(ctx, `
+	err := s.queryRunner().QueryRow(ctx, `
 		SELECT
 		  id,
 		  integration_type,
@@ -1818,7 +1858,7 @@ func (s *Store) UpsertEntity(ctx context.Context, entity EntityRecord) (string, 
 	if entity.IngestionJobID == "" {
 		entity.IngestionJobID = metadataString(entity.Metadata, "ingestion_job_id")
 	}
-	_, err := s.pool.Exec(ctx, `
+	_, err := s.queryRunner().Exec(ctx, `
 		INSERT INTO entities (
 		  id, scope, entity_type, canonical_name, description, authority,
 		  authority_score, confidence, source_url, source_type, embedding,
@@ -1853,7 +1893,7 @@ func (s *Store) UpsertRelation(ctx context.Context, relation RelationRecord) (st
 	if relation.IngestionJobID == "" {
 		relation.IngestionJobID = metadataString(relation.Metadata, "ingestion_job_id")
 	}
-	err := s.pool.QueryRow(ctx, `
+	err := s.queryRunner().QueryRow(ctx, `
 		UPDATE relations
 		SET claim_id = COALESCE(NULLIF($2, ''), claim_id),
 		    status = CASE
@@ -1886,7 +1926,7 @@ func (s *Store) UpsertRelation(ctx context.Context, relation RelationRecord) (st
 	if err != pgx.ErrNoRows {
 		return "", err
 	}
-	err = s.pool.QueryRow(ctx, `
+	err = s.queryRunner().QueryRow(ctx, `
 		INSERT INTO relations (
 		  id, scope, relation_type, source_entity_id, target_entity_id, claim_id,
 		  authority, authority_score, confidence, source_url, source_type,
@@ -1929,7 +1969,7 @@ func (s *Store) UpsertSourceConfig(ctx context.Context, source SourceConfigRecor
 	if source.AuthorityScore == 0 {
 		source.AuthorityScore = 0.35
 	}
-	_, err := s.pool.Exec(ctx, `
+	_, err := s.queryRunner().Exec(ctx, `
 		INSERT INTO source_configs (
 		  id, scope, source_type, name, base_url, connector_kind, status,
 		  authority, authority_score, config, metadata, created_by
@@ -1949,7 +1989,7 @@ func (s *Store) UpsertSourceConfig(ctx context.Context, source SourceConfigRecor
 	if err != nil {
 		return "", err
 	}
-	err = s.pool.QueryRow(ctx, `
+	err = s.queryRunner().QueryRow(ctx, `
 		SELECT id
 		FROM source_configs
 		WHERE scope = $1 AND source_type = $2 AND name = $3
@@ -1962,7 +2002,7 @@ func (s *Store) UpsertMemorySummary(ctx context.Context, summary MemorySummaryRe
 		return "", fmt.Errorf("scope, level, key, title, and summary are required")
 	}
 	id := stableID("summary", summary.Scope, summary.Level, summary.Key)
-	_, err := s.pool.Exec(ctx, `
+	_, err := s.queryRunner().Exec(ctx, `
 		INSERT INTO memory_summaries (
 		  id, scope, level, summary_key, title, summary, source_count,
 		  relation_count, token_estimate, source_urls, metadata
@@ -1982,7 +2022,7 @@ func (s *Store) UpsertMemorySummary(ctx context.Context, summary MemorySummaryRe
 	if err != nil {
 		return "", err
 	}
-	err = s.pool.QueryRow(ctx, `
+	err = s.queryRunner().QueryRow(ctx, `
 		SELECT id
 		FROM memory_summaries
 		WHERE scope = $1 AND level = $2 AND summary_key = $3
@@ -2271,7 +2311,7 @@ func (s *Store) MemoryHealth(ctx context.Context, scope string) (MemoryHealthRes
 }
 
 func (s *Store) memorySummaryLevels(ctx context.Context, scope string) (map[string]int, error) {
-	rows, err := s.pool.Query(ctx, `
+	rows, err := s.queryRunner().Query(ctx, `
 		SELECT level, COUNT(*)::int
 		FROM memory_summaries
 		WHERE ($1 = '' OR scope = $1)
@@ -2483,7 +2523,7 @@ func (s *Store) ListDocumentsForSummary(ctx context.Context, scope string, limit
 	if limit < 1 || limit > 10000 {
 		limit = 1000
 	}
-	rows, err := s.pool.Query(ctx, `
+	rows, err := s.queryRunner().Query(ctx, `
 		SELECT
 		  d.id,
 		  d.source_type,

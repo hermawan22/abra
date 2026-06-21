@@ -26,7 +26,8 @@ This project uses semantic versioning for public releases. Until v1.0.0, minor v
 - Keep Codex MCP installation automatic only for Codex while guiding other agents to the generic MCP config.
 - Treat a working directory as an Abra source checkout only when it matches the Abra repo fingerprint, so user projects with their own Compose files still use the global CLI runtime and env paths.
 - Make agent ready prompts distinguish unavailable MCP/token setup from missing source-backed memory, and make `abra compose` ignore generic gate blocks when deciding whether source-backed context exists.
-- Report fail-fast batch persistence errors with the failing document index, committed document count, and idempotent retry guidance.
+- Make generated `AGENTS.md` recovery guidance use the same MCP/token-before-reingest order as the ready prompt.
+- Persist fail-fast batch ingestion inside one database transaction after validation and embedding, rolling back the batch on the first persistence error.
 - Bound reranker rank boosts instead of adding raw provider scores directly to recall ranking.
 - Omit raw rerank query text from retrieval warnings, keep rerank metadata JSON stable, and only mark recall as reranked when a returned candidate index was actually applied.
 - Default `base_rank_score` to `rank_score` for non-reranked recall results so public ranking metadata remains internally consistent.

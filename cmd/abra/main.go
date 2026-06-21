@@ -2612,8 +2612,8 @@ Before answering architecture questions or changing code in this repository, use
 2. If discovering scopes first, call ` + "`discover_scopes`" + ` with ` + "`expected_scope: \"" + scope + "\"`" + ` so this repo is not hidden by unrelated scopes.
 3. Call ` + "`working_memory_compose`" + ` with the current task, scope ` + "`" + scope + "`" + `, and ` + "`agent: \"" + agent + "\"`" + ` before implementation work.
 4. Follow the returned ` + "`agent_decision`" + `, verification, memory health, conflicts, impact map, and validation plan.
-5. If the packet has no source-backed context or the exact scope is missing from discovery, run ` + "`abra ingest . --code --scope " + scope + "`" + `, then ` + "`abra agents verify . --scope " + scope + "`" + `, and retry the MCP call.
-6. If Abra MCP is unavailable, run ` + "`abra scope`" + ` and ` + "`abra doctor`" + ` to confirm local setup before continuing with normal repository inspection.
+5. If Abra MCP tools are unavailable, run ` + "`abra doctor`" + `, fix the MCP/token warning, fully restart the AI client, and retry before re-ingesting.
+6. If the packet has no source-backed context or the exact scope is missing from discovery, run ` + "`abra scope`" + `, then ` + "`abra ingest . --code --scope " + scope + "`" + `, then ` + "`abra agents verify . --scope " + scope + " --agent " + agent + "`" + `, and retry the MCP call.
 7. Do not include secrets, API keys, local tokens, or private business context in committed files.
 `
 }

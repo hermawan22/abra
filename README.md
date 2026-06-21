@@ -45,8 +45,14 @@ Abra is not distributed through npm. The npm package metadata in this repo is
 private maintainer tooling only; install Abra from GitHub release binaries or
 deploy the published container images.
 
-Run the installer script from this checkout to install the latest published
-release binary. This does not install untagged local source changes:
+For OSS users, install the latest published release binary from GitHub releases:
+
+```sh
+curl -fsSL https://github.com/hermawan22/abra/releases/latest/download/install.sh | sh
+```
+
+If you already cloned the repo, this checkout-local installer does the same
+release install. It does not install untagged local source changes:
 
 ```sh
 ./scripts/install.sh
@@ -56,12 +62,6 @@ Pin a specific published release from a checkout:
 
 ```sh
 ABRA_VERSION=vX.Y.Z ./scripts/install.sh
-```
-
-Install from GitHub releases:
-
-```sh
-curl -fsSL https://github.com/hermawan22/abra/releases/latest/download/install.sh | sh
 ```
 
 For a hardened install, pin the release and require GitHub Artifact
@@ -584,7 +584,7 @@ MCP tools:
 - `decide_learning_proposal(proposal_id, status, reviewed_by?, review_reason?, approval_id?, metadata?)`
 - `request_approval(action, scope, reason, target_type?, target_id?, requested_by?, payload?, metadata?, expires_at?)`
 
-`ingest_documents` defaults to fail-fast semantics: Abra validates every document, batches chunk and claim embeddings across the request, and only then persists results. Persistence is sequential and idempotent by `source_type`, `source_url`, and `scope`, not an all-or-nothing transaction; if a persistence error happens after earlier documents landed, the error reports the failing document index and the committed count. Set `continue_on_error=true` when a connector needs per-document success/error entries; that mode keeps documents isolated instead of batching across the whole request.
+`ingest_documents` defaults to fail-fast semantics: Abra validates every document, batches chunk and claim embeddings across the request, and then persists the batch in one database transaction. If a persistence error happens, the error reports the failing document index and the transaction rolls back the batch. Set `continue_on_error=true` when a connector needs per-document success/error entries; that mode keeps documents isolated instead of batching across the whole request.
 
 ## HTTP API
 
@@ -775,15 +775,8 @@ Recall responses include `retrieval_mode`, plus `text_score` and `vector_score` 
 
 ## Local Runtime
 
-1. Copy `examples/env/production.env.example` to `.env.production`.
-2. Start Postgres with Docker Compose.
-3. Install dependencies.
-4. Run the migration.
-5. Start the API, MCP server, or worker process.
-
-The default embedding provider is `local`, meaning self-hosted Qwen-compatible neural retrieval. `abra models up` starts Qwen/Qwen3-Embedding-0.6B-GGUF through a local llama.cpp OpenAI-compatible embedding runner. Local embeddings default to `EMBEDDING_TIMEOUT=10m` because CPU-backed model calls can take longer than normal API requests on large files, and local neural providers default to `ABRA_AI_PROVIDER_CONCURRENCY=1` so ingest, recall, readiness checks, and reranking do not overwhelm a single local model runner. Compatible remote providers default to `ABRA_AI_PROVIDER_CONCURRENCY=4`; raise it only after watching provider latency, timeout rate, and Abra p95 under expected agent and ingestion traffic. Qwen/Qwen3-Reranker-0.6B remains configurable for deployments that expose a compatible rerank endpoint. Custom providers replace the local defaults by setting `EMBEDDING_PROVIDER=compatible`, `EMBEDDING_BASE_URL`, `EMBEDDING_MODEL`, and `EMBEDDING_DIMENSIONS`; set `RERANKER_PROVIDER` only when the custom provider also exposes a rerank endpoint.
-
-`abra models status/up/logs/down` manages only the built-in local Qwen runner. The runner publishes on `127.0.0.1` by default, uses Docker pull policy `missing` instead of silently updating on every start, and is recreated when runner-relevant model, dimension, port, cache, publish, image, pull, pooling, or context settings change. Set `ABRA_LOCAL_EMBEDDING_IMAGE` to an operator-verified `@sha256` image reference when using local embeddings in production; production local embeddings fail closed without a digest-pinned runner image. When `EMBEDDING_PROVIDER=compatible`, model commands report the local runner as inactive unless `--force` is passed, because Abra will use the configured custom endpoint instead. For non-interactive OpenAI setup, pass the key with `--api-key-stdin` or set `OPENAI_API_KEY`.
+For first-run setup, local model runner behavior, source-checkout commands, and
+CLI troubleshooting, use [docs/CLI.md](./docs/CLI.md).
 
 Forgetting a claim marks it `deprecated`. Source re-ingestion will not reactivate a manually forgotten claim; only claims and relations temporarily deprecated by source refresh can be reactivated.
 

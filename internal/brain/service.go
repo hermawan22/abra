@@ -581,7 +581,18 @@ func (s *Service) IngestDocument(ctx context.Context, input IngestDocumentInput)
 	if err != nil {
 		return IngestDocumentResult{}, err
 	}
-	return s.persistPreparedIngestDocument(ctx, docs[0])
+	var result IngestDocumentResult
+	err = s.db.WithTx(ctx, func(txStore *store.Store) error {
+		txService := *s
+		txService.db = txStore
+		persisted, err := txService.persistPreparedIngestDocument(ctx, docs[0])
+		if err != nil {
+			return err
+		}
+		result = persisted
+		return nil
+	})
+	return result, err
 }
 
 func (s *Service) IngestDocuments(ctx context.Context, inputs []IngestDocumentInput) ([]IngestDocumentResult, error) {
@@ -601,15 +612,20 @@ func (s *Service) IngestDocuments(ctx context.Context, inputs []IngestDocumentIn
 		return nil, err
 	}
 	results := make([]IngestDocumentResult, 0, len(prepared))
-	for index, doc := range prepared {
-		result, err := s.persistPreparedIngestDocument(ctx, doc)
-		if err != nil {
-			if len(results) > 0 {
-				return nil, fmt.Errorf("document %d persistence failed after %d document(s) were persisted; retry is idempotent for the same source_type/source_url/scope: %w", index, len(results), err)
+	err = s.db.WithTx(ctx, func(txStore *store.Store) error {
+		txService := *s
+		txService.db = txStore
+		for index, doc := range prepared {
+			result, err := txService.persistPreparedIngestDocument(ctx, doc)
+			if err != nil {
+				return fmt.Errorf("document %d: %w", index, err)
 			}
-			return nil, fmt.Errorf("document %d: %w", index, err)
+			results = append(results, result)
 		}
-		results = append(results, result)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return results, nil
 }
@@ -856,7 +872,9 @@ func (s *Service) persistPreparedIngestDocument(ctx context.Context, doc prepare
 		return IngestDocumentResult{}, err
 	}
 	summaryCount += summaries
-	_ = s.db.InsertAuditEvent(ctx, "document.ingested", "document", documentID, input.Scope, input.SourceURL, map[string]any{"chunks": len(chunks), "claims": len(claims), "deprecated_claims": deprecatedClaimCount, "deprecated_relations": deprecatedRelationCount, "deleted_summaries": deletedSummaryCount, "conflicts": conflictCount, "entities": entityCount, "relations": relationCount, "summaries": summaryCount})
+	if err := s.db.InsertAuditEvent(ctx, "document.ingested", "document", documentID, input.Scope, input.SourceURL, map[string]any{"chunks": len(chunks), "claims": len(claims), "deprecated_claims": deprecatedClaimCount, "deprecated_relations": deprecatedRelationCount, "deleted_summaries": deletedSummaryCount, "conflicts": conflictCount, "entities": entityCount, "relations": relationCount, "summaries": summaryCount}); err != nil {
+		return IngestDocumentResult{}, err
+	}
 	if err := s.db.MarkDocumentIngestComplete(ctx, documentID); err != nil {
 		return IngestDocumentResult{}, err
 	}

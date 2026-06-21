@@ -8,17 +8,17 @@ Local embedding calls default to a 10-minute provider timeout because CPU-backed
 
 ## 3-Minute Local Flow
 
-Run the installer script from this checkout to install the latest or pinned
-published release binary. It does not install untagged local source changes:
-
-```sh
-./scripts/install.sh
-```
-
-Install from GitHub releases:
+For OSS users, install the latest published release binary from GitHub releases:
 
 ```sh
 curl -fsSL https://github.com/hermawan22/abra/releases/latest/download/install.sh | sh
+```
+
+If you already cloned the repo, this checkout-local installer does the same
+release install. It does not install untagged local source changes:
+
+```sh
+./scripts/install.sh
 ```
 
 Release downloads are verified against `SHA256SUMS` before the binary is installed. If GitHub CLI is available, the installer also verifies GitHub Artifact Attestations automatically. Set `ABRA_VERIFY_ATTESTATION=1` to require provenance verification, `ABRA_VERSION=vX.Y.Z` to install a specific release, or `ABRA_ALLOW_SOURCE_BUILD=1` to intentionally build from the release source tag when no platform asset exists.
