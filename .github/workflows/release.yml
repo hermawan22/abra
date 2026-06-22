@@ -187,8 +187,10 @@ jobs:
           COMMIT: ${{ github.sha }}
         run: |
           mkdir -p dist
+          runtime_version="${VERSION#v}"
+          build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           go build -trimpath \
-            -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -ldflags="-s -w -X github.com/hermawan22/abra/internal/version.Version=${runtime_version} -X github.com/hermawan22/abra/internal/version.Commit=${COMMIT} -X github.com/hermawan22/abra/internal/version.Date=${build_date}" \
             -o dist/abra ./cmd/abra
           cp LICENSE README.md dist/
           tar -C dist -czf "dist/abra_${GOOS}_${GOARCH}.tar.gz" abra LICENSE README.md
