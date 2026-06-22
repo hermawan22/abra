@@ -2,7 +2,7 @@
 
 Abra is a CLI-only, source-cited memory control plane and governed brain layer for AI agents.
 
-It is not a generic RAG box, vector database UI, browser UI, or chatbot. Abra is meant to be installed, operated, and connected to agents from the terminal through the `abra` CLI, HTTP, and MCP contracts.
+It is not a generic RAG box, vector database UI, or chatbot. Abra is meant to be installed, operated, and connected to agents from the terminal through the `abra` CLI, HTTP, and MCP contracts.
 
 Abra stores organizational knowledge as claims backed by evidence, scope, freshness, and trust status. Agents can recall the best-supported claims through hybrid lexical/vector retrieval, compose task-specific working memory, or ask `brain_think` for a governed answer with citations, gap analysis, graph context, memory-health status, and an explicit agent decision gate.
 
@@ -108,7 +108,7 @@ Then run the guided CLI onboarding:
 abra setup
 ```
 
-`abra setup` checks required commands, creates the runtime env file, asks which embedding provider to use, can start the built-in local Qwen embedding runner, and can start the local stack. From a source checkout it uses `.tmp/quickstart.env`; from a global CLI install it stores runtime files under your Abra config directory and can be run from any folder. `abra install` is a compatibility alias for `abra setup`; the curl script is what installs the CLI binary. If you skip setup startup and later run `abra up`, the default local provider starts the Qwen embedding runner automatically before API readiness is checked. `qwen3` and `local-smart` are accepted as local neural provider aliases and use the same runner lifecycle. The default runner image is a local-development convenience; production installs should use a digest-pinned local runner image or configure a compatible self-hosted/managed embedding endpoint.
+`abra setup` checks required commands, creates the runtime env file, asks which embedding provider to use, can start the default built-in local Qwen embedding runner, and can start the local stack. From a source checkout it uses `.tmp/quickstart.env`; from a global CLI install it stores runtime files under your Abra config directory and can be run from any folder. `abra install` is a compatibility alias for `abra setup`; the curl script is what installs the CLI binary. If you skip setup startup and later run `abra up`, the default local provider starts the Qwen embedding runner automatically before API readiness is checked. `qwen3` and `local-smart` are accepted as local neural provider aliases and use the same runner lifecycle. The default runner image is a local-development convenience; production installs should use a digest-pinned local runner image or configure a compatible self-hosted/managed embedding endpoint.
 
 If setup completes but ingest or Codex still cannot use Abra, run `abra doctor` before editing env files. It separates runtime env issues, worker interval problems, API/MCP readiness, Codex token-env visibility, model config, and local model readiness. With the default local provider, `abra up` starts the embedding runner automatically; use `abra models status` to inspect it and `abra models up` to repair or manage it directly.
 
@@ -163,6 +163,8 @@ Connect a custom compatible embedding provider during setup without editing env 
 ```sh
 printf '%s' "$PROVIDER_API_KEY" | abra setup --compatible --embedding-base-url https://api.example.com/v1 --embedding-model embedding-model --dimensions 1024 --api-key-stdin
 ```
+
+Custom compatible embedding providers replace the built-in local Qwen embedding path when configured. DeepSeek-style OpenAI chat-compatible endpoints can be useful for chat clients, but they are not Abra's embedding default and should not be documented as one; point Abra at an embeddings-compatible model and set dimensions explicitly when the model is not recognized.
 
 Try the governed brain:
 
@@ -380,7 +382,7 @@ Reset demo data:
 go run ./cmd/abra down --reset
 ```
 
-The demo uses the default local neural embedding path. `abra setup` and `abra up` start the local embedding runner automatically for the default local provider; use `abra models status` and `abra models up` only when you need to inspect or repair that runner directly. For production, keep approval enforcement on and either self-host compatible embedding/rerank endpoints or configure a managed compatible custom provider.
+The demo uses the default local neural embedding path. `abra setup` and `abra up` start the local Qwen embedding runner automatically for the default local provider; use `abra models status` and `abra models up` only when you need to inspect or repair that runner directly. For production, keep approval enforcement on and either self-host compatible embedding/rerank endpoints or configure a managed compatible provider.
 
 For command-by-command local and self-host usage, read [docs/CLI.md](./docs/CLI.md).
 
@@ -789,7 +791,7 @@ body='{
   "connector_kind": "jira",
   "event_type": "issue.updated",
   "delivery_id": "delivery-123",
-  "scope": "team:platform",
+  "scope": "team:docs",
   "source_type": "jira",
   "source_url": "https://jira.example/browse/PLAT-1",
   "source_id": "PLAT-1",
@@ -837,7 +839,7 @@ runner image as hardened deployment defaults.
 ```text
 ABRA_PORT=18080
 POSTGRES_PORT=5433
-ABRA_DATABASE_URL=postgres://abra:dev-only-postgres-password@postgres:5432/abra
+ABRA_DATABASE_URL=postgres://abra:abra@postgres:5432/abra
 NODE_ENV=development
 ABRA_API_KEYS=replace-me
 ABRA_WEBHOOK_SECRETS=replace-webhook-secret
@@ -855,7 +857,7 @@ RERANKER_MODEL=
 ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=false
 REDACT_PII=true
 RATE_LIMIT_MAX=120
-RATE_LIMIT_WINDOW=1 minute
+RATE_LIMIT_WINDOW=1m
 # OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
 # ABRA_TRACING_SAMPLE_RATIO=0.25
 ```
@@ -940,7 +942,7 @@ ABRA_AI_PROVIDER_CONCURRENCY=4
 RERANKER_PROVIDER=
 ```
 
-The provider contract is generic: any embedding endpoint that implements the configured embeddings API shape can be used by setting `EMBEDDING_BASE_URL`, `EMBEDDING_API_KEY`, `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`, and optionally `EMBEDDING_TIMEOUT`. Empty API keys are allowed for self-hosted endpoints. The CLI infers dimensions for known OpenAI, Qwen, BGE, Nomic, and Gemini embedding model names; unknown compatible models require `--dimensions` so vector storage is configured intentionally. `EMBEDDING_PROVIDER=local`, `qwen3`, and `local-smart` all mean the built-in local neural runner; `abra models up` normalizes those aliases back to `local` after syncing runtime env. Abra does not use an LLM for answer generation; the provider is used to embed chunks, claims, and recall queries for hybrid retrieval. `ABRA_AI_PROVIDER_CONCURRENCY` is a service-wide guard around embedding and reranker calls, separate from compose fan-out settings; keep it low for one local model runner and tune upward for horizontally scaled provider endpoints. `ABRA_EMBEDDING_BATCH_MAX_ITEMS` and `ABRA_EMBEDDING_BATCH_MAX_TOKENS` bound each embedding provider request; local Qwen defaults to smaller batches (`6` items and `3000` estimated tokens) to avoid context-window failures on large files, while compatible providers default to `16` and `6000`. The optional reranker uses `RERANKER_PROVIDER`, `RERANKER_BASE_URL`, `RERANKER_API_KEY`, and `RERANKER_MODEL`. If reranking fails, recall keeps the hybrid retrieval result instead of failing the user query.
+The provider contract is generic: any embedding endpoint that implements the configured embeddings API shape can be used by setting `EMBEDDING_BASE_URL`, `EMBEDDING_API_KEY`, `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`, and optionally `EMBEDDING_TIMEOUT`. Empty API keys are allowed for self-hosted endpoints. The CLI infers dimensions for known OpenAI, Qwen, BGE, Nomic, and Gemini embedding model names; unknown compatible models require `--dimensions` so vector storage is configured intentionally. `EMBEDDING_PROVIDER=local`, `qwen3`, and `local-smart` all mean the default built-in local Qwen neural runner; `abra models up` normalizes those aliases back to `local` after syncing runtime env. Setting `EMBEDDING_PROVIDER=compatible` replaces that local runner in the active embedding path, and `abra models status` reports the local runner as inactive unless forced. DeepSeek-style OpenAI chat-compatible endpoints are chat-compatible, not Abra's embedding default; configure DeepSeek only where a chat-compatible consumer expects it, or use a real embeddings-compatible model with explicit dimensions. Abra does not use an LLM for answer generation; the provider is used to embed chunks, claims, and recall queries for hybrid retrieval. `ABRA_AI_PROVIDER_CONCURRENCY` is a service-wide guard around embedding and reranker calls, separate from compose fan-out settings; keep it low for one local model runner and tune upward for horizontally scaled provider endpoints. `ABRA_EMBEDDING_BATCH_MAX_ITEMS` and `ABRA_EMBEDDING_BATCH_MAX_TOKENS` bound each embedding provider request; local Qwen defaults to smaller batches (`6` items and `3000` estimated tokens) to avoid context-window failures on large files, while compatible providers default to `16` and `6000`. The optional reranker uses `RERANKER_PROVIDER`, `RERANKER_BASE_URL`, `RERANKER_API_KEY`, and `RERANKER_MODEL`. If reranking fails, recall keeps the hybrid retrieval result instead of failing the user query.
 
 ## V1 Direction
 
@@ -1019,13 +1021,14 @@ Worker runs are written to `ingestion_jobs` and exposed through `GET /ingestion/
 For MCP-backed connectors, the end-to-end flow is:
 
 1. Build a user-owned MCP tool that returns normalized Abra documents.
-2. Inspect the exporter when the tool name is unknown: `abra connectors mcp inspect --scope <scope> --mcp-url <url>` or MCP `inspect_connector_source`.
-3. Validate the tool without saving state: `abra connectors mcp validate --scope <scope> --mcp-url <url> --tool <tool>`, `POST /sources/configs/validate`, or MCP `validate_connector_source`.
-4. Register and enable it with `abra connectors mcp register ... --schedule ... --wait --verify`, HTTP `POST /sources/configs`, or MCP `upsert_connector_source` plus `sync_connector_source`.
-5. For repeated setup, keep URL, tool, env refs, authority, schedule, and verification query in a manifest such as `examples/connectors/mcp-confluence.connector.json`.
-6. Inspect ingestion with `abra sources status`, `abra sources logs`, `abra jobs`, or `GET /ingestion/jobs`, then verify recall or `working_memory_compose`.
+2. Generate a repeatable manifest when you want a CLI-only add flow: `abra connectors mcp template --scope <scope> --connector knowledge-base --output connector.json`.
+3. Inspect the exporter when the tool name is unknown: `abra connectors mcp inspect --scope <scope> --mcp-url <url>` or MCP `inspect_connector_source`.
+4. Let Abra inspect, validate, register, and optionally verify in one guided headless command: `abra connectors mcp add --manifest connector.json --wait --verify`. Pass `--tool <tool>` when the upstream MCP server exposes multiple tools.
+5. For automation, run the steps separately with `abra connectors mcp validate ...`, `abra connectors mcp register ... --schedule ... --wait --verify`, HTTP `POST /sources/configs`, or MCP `upsert_connector_source` plus `sync_connector_source`.
+6. Keep URL, tool, env refs, authority, schedule, metadata, and verification query in a manifest such as `examples/connectors/mcp-knowledge-base.connector.json`.
+7. Inspect ingestion with `abra connectors status`, `abra connectors logs`, `abra jobs`, or `GET /ingestion/jobs`, then verify recall or `working_memory_compose`.
 
-From the CLI, inspect connector health with `abra sources status <source-config-id>` and job history with `abra sources logs <source-config-id>`. Queue an existing source again with `abra sources sync <source-config-id> --scope <scope> --wait --wait-timeout 10m`, or record an explicit historical reprocess with `abra sources backfill <source-config-id> --scope <scope> --approval-id <approval-id> --wait --wait-timeout 10m`. Manual sync and backfill bypass source due checks so operators can force a refresh after an incident, source migration, credential rotation, or normalization change. Pause or resume a source without rewriting its connector config with `abra sources pause <source-config-id>` and `abra sources resume <source-config-id> --approval-id <approval-id>`; active source config writes and resume may require approval when enforcement is active.
+From the CLI, inspect connector health with `abra connectors status <source-config-id>` and job history with `abra connectors logs <source-config-id>`. Queue an existing connector again with `abra connectors sync <source-config-id> --scope <scope> --wait --wait-timeout 10m`, or record an explicit historical reprocess with `abra sources backfill <source-config-id> --scope <scope> --approval-id <approval-id> --wait --wait-timeout 10m`. Manual sync and backfill bypass source due checks so operators can force a refresh after an incident, source migration, credential rotation, or normalization change. Pause or resume a source without rewriting its connector config with `abra sources pause <source-config-id>` and `abra sources resume <source-config-id> --approval-id <approval-id>`; active source config writes and resume may require approval when enforcement is active.
 
 ### Git/local-repo source configs
 

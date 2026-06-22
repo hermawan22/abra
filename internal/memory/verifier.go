@@ -30,6 +30,7 @@ type VerificationReport struct {
 	MemoryHealthStatus    string                     `json:"memory_health_status,omitempty"`
 	MemoryHealthSignals   []store.MemoryHealthSignal `json:"memory_health_signals,omitempty"`
 	MissingEvidenceClaims []string                   `json:"missing_evidence_claims,omitempty"`
+	WeakEvidenceAnchors   []string                   `json:"weak_evidence_anchor_claims,omitempty"`
 	RequiredActions       []string                   `json:"required_actions,omitempty"`
 	Recommendations       []string                   `json:"recommendations"`
 }
@@ -93,6 +94,9 @@ func verifyPacket(summaries []store.MemorySummaryResult, facts []store.ClaimResu
 			report.MissingEvidenceClaims = append(report.MissingEvidenceClaims, fact.ID)
 		} else {
 			sourced++
+			if claimNeedsTextAnchor(fact) && !claimHasTextAnchor(fact, docs) {
+				report.WeakEvidenceAnchors = append(report.WeakEvidenceAnchors, fact.ID)
+			}
 		}
 		switch fact.Status {
 		case "unverified":
@@ -124,10 +128,11 @@ func verifyPacket(summaries []store.MemorySummaryResult, facts []store.ClaimResu
 	report.Checks = append(report.Checks, unsafeSignalCheck("challenged_claims", len(report.ChallengedClaims), "challenged claims are present"))
 	report.ConflictClaims = conflictClaimIDs(conflicts)
 	report.Checks = append(report.Checks, unsafeSignalCheck("active_conflicts", len(report.ActiveConflicts), "active memory conflicts are present"))
-	report.Checks = append(report.Checks, retrievalCompletenessCheck(len(report.RetrievalWarnings)))
+	report.Checks = append(report.Checks, retrievalCompletenessCheck(len(report.RetrievalWarnings), report.RetrievalCoverage.Complete))
 	report.Checks = append(report.Checks, graphConsistencyCheck(len(report.GraphWarnings)))
 	report.Checks = append(report.Checks, unsafeSignalCheck("missing_evidence", len(report.MissingEvidenceClaims), "claims without source URLs are present"))
 	report.Checks = append(report.Checks, unsafeSignalCheck("unsourced_retrieval_results", report.RetrievalQuality.UnsourcedResults, "retrieval results without source URLs are present"))
+	report.Checks = append(report.Checks, evidenceAnchorCheck(len(report.WeakEvidenceAnchors)))
 
 	score := 0.0
 	for _, check := range report.Checks {
@@ -137,7 +142,7 @@ func verifyPacket(summaries []store.MemorySummaryResult, facts []store.ClaimResu
 		score = score / float64(len(report.Checks))
 	}
 	report.Score = round2(score)
-	report.ActionRequired = len(report.ActiveConflicts) > 0 || len(report.ChallengedClaims) > 0 || len(report.StaleClaims) > 0 || len(report.RetrievalWarnings) > 0 || len(report.GraphWarnings) > 0 || len(report.MissingEvidenceClaims) > 0 || report.RetrievalQuality.UnsourcedResults > 0 || report.RetrievalQuality.LowConfidence || report.RetrievalQuality.LowSourceDiversity || !report.RetrievalCoverage.Complete || memoryHealthActionRequired(report.MemoryHealthStatus)
+	report.ActionRequired = len(report.ActiveConflicts) > 0 || len(report.ChallengedClaims) > 0 || len(report.StaleClaims) > 0 || retrievalWarningsBlock(report) || len(report.GraphWarnings) > 0 || len(report.MissingEvidenceClaims) > 0 || report.RetrievalQuality.UnsourcedResults > 0 || report.RetrievalQuality.LowConfidence || report.RetrievalQuality.LowSourceDiversity || !report.RetrievalCoverage.Complete || memoryHealthActionRequired(report.MemoryHealthStatus)
 	report.Verdict = verificationVerdict(report)
 	report.RequiredActions = verificationRequiredActions(report, len(facts), len(graph))
 	report.Recommendations = verificationRecommendations(report, len(facts), len(graph))
@@ -147,6 +152,7 @@ func verifyPacket(summaries []store.MemorySummaryResult, facts []store.ClaimResu
 	sort.Strings(report.ChallengedClaims)
 	sort.Strings(report.ConflictClaims)
 	sort.Strings(report.MissingEvidenceClaims)
+	sort.Strings(report.WeakEvidenceAnchors)
 	return report
 }
 
@@ -260,6 +266,104 @@ func retrievalQuality(facts []store.ClaimResult, docs []store.DocumentResult) Re
 	return quality
 }
 
+func claimNeedsTextAnchor(fact store.ClaimResult) bool {
+	switch strings.TrimSpace(fact.Status) {
+	case "verified", "inferred":
+		return strings.TrimSpace(fact.Claim) != ""
+	default:
+		return false
+	}
+}
+
+func claimHasTextAnchor(fact store.ClaimResult, docs []store.DocumentResult) bool {
+	source := ""
+	if fact.Source != nil {
+		source = canonicalSourceID(*fact.Source)
+	}
+	if source == "" {
+		return false
+	}
+	claimText := normalizeEvidenceText(fact.Claim)
+	if claimText == "" {
+		return false
+	}
+	for _, doc := range docs {
+		if canonicalSourceID(doc.Source) != source {
+			continue
+		}
+		if contentAnchorsClaim(claimText, normalizeEvidenceText(doc.Content)) {
+			return true
+		}
+	}
+	return false
+}
+
+func contentAnchorsClaim(claimText, contentText string) bool {
+	if claimText == "" || contentText == "" {
+		return false
+	}
+	if strings.Contains(contentText, claimText) {
+		return true
+	}
+	claimTokens := evidenceTokens(claimText)
+	if len(claimTokens) == 0 {
+		return false
+	}
+	contentTokens := map[string]struct{}{}
+	for _, token := range evidenceTokens(contentText) {
+		contentTokens[token] = struct{}{}
+	}
+	matched := 0
+	for _, token := range claimTokens {
+		if _, ok := contentTokens[token]; ok {
+			matched++
+		}
+	}
+	if len(claimTokens) <= 3 {
+		return matched == len(claimTokens)
+	}
+	return matched >= 4 && float64(matched)/float64(len(claimTokens)) >= 0.8
+}
+
+func normalizeEvidenceText(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return ""
+	}
+	var b strings.Builder
+	lastSpace := true
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastSpace = false
+			continue
+		}
+		if !lastSpace {
+			b.WriteByte(' ')
+			lastSpace = true
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func evidenceTokens(value string) []string {
+	fields := strings.Fields(value)
+	out := make([]string, 0, len(fields))
+	for _, field := range fields {
+		if _, ok := evidenceAnchorStopwords[field]; ok {
+			continue
+		}
+		out = append(out, field)
+	}
+	return out
+}
+
+var evidenceAnchorStopwords = map[string]struct{}{
+	"a": {}, "an": {}, "and": {}, "are": {}, "as": {}, "be": {}, "by": {},
+	"for": {}, "from": {}, "in": {}, "is": {}, "it": {}, "of": {}, "on": {},
+	"or": {}, "the": {}, "to": {}, "with": {},
+}
+
 func canonicalSourceID(raw string) string {
 	value := strings.TrimSpace(raw)
 	if value == "" {
@@ -351,9 +455,12 @@ func claimCoverageCheck(coverage float64, total int, target int) VerificationChe
 	return coverageCheck("source_coverage", coverage, total, "claims include source URLs")
 }
 
-func retrievalCompletenessCheck(warnings int) VerificationCheck {
+func retrievalCompletenessCheck(warnings int, coverageComplete bool) VerificationCheck {
 	if warnings == 0 {
 		return VerificationCheck{Name: "retrieval_completeness", Status: "pass", Score: 1, Message: "all retrieval branches completed"}
+	}
+	if coverageComplete {
+		return VerificationCheck{Name: "retrieval_completeness", Status: "review", Score: 0.9, Message: "some retrieval branches reported warnings, but required coverage was satisfied"}
 	}
 	return VerificationCheck{Name: "retrieval_completeness", Status: "review", Score: 0.3, Message: "some retrieval branches failed and the packet is degraded"}
 }
@@ -432,6 +539,13 @@ func unsafeSignalCheck(name string, count int, message string) VerificationCheck
 	return VerificationCheck{Name: name, Status: "review", Score: 0.25, Message: message}
 }
 
+func evidenceAnchorCheck(count int) VerificationCheck {
+	if count == 0 {
+		return VerificationCheck{Name: "evidence_anchors", Status: "pass", Score: 1, Message: "verified claims include same-source text anchors"}
+	}
+	return VerificationCheck{Name: "evidence_anchors", Status: "advisory", Score: 1, Message: "verified claims lack same-source quote or text-span evidence"}
+}
+
 func conflictClaimIDs(conflicts []store.ConflictResult) []string {
 	seen := map[string]struct{}{}
 	out := []string{}
@@ -453,6 +567,37 @@ func conflictClaimIDs(conflicts []store.ConflictResult) []string {
 	return out
 }
 
+func retrievalWarningsBlock(report VerificationReport) bool {
+	if len(report.RetrievalWarnings) == 0 {
+		return false
+	}
+	for _, warning := range report.RetrievalWarnings {
+		if retrievalWarningBlocks(report, warning) {
+			return true
+		}
+	}
+	return false
+}
+
+func retrievalWarningBlocks(report VerificationReport, warning RetrievalWarning) bool {
+	operation := strings.TrimSpace(warning.Operation)
+	switch operation {
+	case "rerank_claims", "rerank_documents":
+		return false
+	case "task_summary_lookup", "query_summary_lookup":
+		return report.RetrievalCoverage.Actual.Summaries < report.RetrievalCoverage.Targets.Summaries
+	case "direct_task_graph_lookup", "seed_graph_expansion":
+		return report.RetrievalCoverage.Actual.GraphRelations < report.RetrievalCoverage.Targets.GraphRelations
+	case "recall":
+		return report.RetrievalQuality.LowConfidence ||
+			report.RetrievalQuality.ResultCount == 0 ||
+			report.RetrievalCoverage.Actual.Facts < report.RetrievalCoverage.Targets.Facts ||
+			report.RetrievalCoverage.Actual.SupportingDocuments < report.RetrievalCoverage.Targets.SupportingDocuments
+	default:
+		return true
+	}
+}
+
 func verificationVerdict(report VerificationReport) string {
 	switch {
 	case len(report.ActiveConflicts) > 0:
@@ -461,7 +606,7 @@ func verificationVerdict(report VerificationReport) string {
 		return "unsafe"
 	case len(report.ChallengedClaims) > 0 || len(report.MissingEvidenceClaims) > 0:
 		return "unsafe"
-	case len(report.RetrievalWarnings) > 0:
+	case retrievalWarningsBlock(report):
 		return "partial"
 	case memoryHealthActionRequired(report.MemoryHealthStatus):
 		return "partial"
@@ -513,7 +658,7 @@ func verificationRequiredActions(report VerificationReport, facts, graph int) []
 	if len(report.ActiveConflicts) > 0 {
 		actions = appendUnique(actions, "resolve_active_conflicts", "review_conflict_evidence")
 	}
-	if len(report.RetrievalWarnings) > 0 {
+	if retrievalWarningsBlock(report) {
 		actions = appendUnique(actions, "rerun_degraded_retrieval")
 	}
 	if report.RetrievalQuality.LowConfidence {
@@ -579,6 +724,9 @@ func verificationRecommendations(report VerificationReport, facts, graph int) []
 	if len(report.MissingEvidenceClaims) > 0 {
 		out = append(out, "Resolve claims without source URLs before treating them as trusted memory.")
 	}
+	if len(report.WeakEvidenceAnchors) > 0 {
+		out = append(out, "Retrieve a same-source quote or text-span before treating verified claims as strong memory.")
+	}
 	if report.RetrievalQuality.UnsourcedResults > 0 {
 		out = append(out, "Attach source URLs to unsourced retrieval results or discard them before using the packet autonomously.")
 	}
@@ -588,8 +736,10 @@ func verificationRecommendations(report VerificationReport, facts, graph int) []
 	if len(report.ActiveConflicts) > 0 {
 		out = append(out, "Resolve active memory conflicts before using contradictory claims or graph relations for autonomous work.")
 	}
-	if len(report.RetrievalWarnings) > 0 {
+	if retrievalWarningsBlock(report) {
 		out = append(out, "Rerun degraded retrieval branches before autonomous work; use current results only as partial context.")
+	} else if len(report.RetrievalWarnings) > 0 {
+		out = append(out, "Review degraded retrieval branch warnings; required source-backed coverage was still satisfied.")
 	}
 	if report.RetrievalQuality.LowConfidence {
 		out = append(out, "Rerun retrieval with a more specific query or rebuild embeddings before using low-signal results.")

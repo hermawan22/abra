@@ -604,7 +604,14 @@ func (r *Repository) DocumentStates(ctx context.Context, docs []ingest.Document)
 }
 
 func (r *Repository) MarkSourceSuccess(ctx context.Context, sourceID string, stats SourceStats) error {
-	_, err := r.pool.Exec(ctx, `
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+	if _, err := tx.Exec(ctx, `
 		UPDATE source_configs
 		SET last_success_at = CASE WHEN $3::boolean THEN now() ELSE last_success_at END,
 		    last_error_at = NULL,
@@ -622,8 +629,105 @@ func (r *Repository) MarkSourceSuccess(ctx context.Context, sourceID string, sta
 		"last_worker_files_skipped_generated": stats.FilesSkippedGenerated,
 		"last_worker_chunks_written":          stats.ChunksWritten,
 		"last_worker_claims_written":          stats.ClaimsWritten,
-	}), sourceFullyDrained(stats))
+	}), sourceFullyDrained(stats)); err != nil {
+		return err
+	}
+	if err := retireMissingSourceDocuments(ctx, tx, sourceID, stats.SourceDocuments); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func retireMissingSourceDocuments(ctx context.Context, tx pgx.Tx, sourceID string, refs []SourceDocumentRef) error {
+	if sourceID == "" || len(refs) == 0 {
+		return nil
+	}
+	sourceTypes := make([]string, 0, len(refs))
+	sourceURLs := make([]string, 0, len(refs))
+	scopes := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		sourceTypes = append(sourceTypes, ref.SourceType)
+		sourceURLs = append(sourceURLs, ref.SourceURL)
+		scopes = append(scopes, ref.Scope)
+	}
+	_, err := tx.Exec(ctx, retireMissingSourceDocumentsSQL(), sourceID, sourceTypes, sourceURLs, scopes)
 	return err
+}
+
+func retireMissingSourceDocumentsSQL() string {
+	return `
+		WITH seen AS (
+		  SELECT source_type, source_url, scope
+		  FROM unnest($2::text[], $3::text[], $4::text[]) AS input(source_type, source_url, scope)
+		),
+		retired_docs AS (
+		  UPDATE documents d
+		  SET status = 'deleted',
+		      freshness_status = 'expired',
+		      freshness_checked_at = now(),
+		      updated_at = now(),
+		      metadata = metadata || jsonb_build_object(
+		        'source_sync_deleted', true,
+		        'source_sync_deleted_at', now()::text
+		      )
+		  WHERE d.source_config_id = $1
+		    AND d.status NOT IN ('deprecated', 'deleted')
+		    AND NOT EXISTS (
+		      SELECT 1
+		      FROM seen
+		      WHERE seen.source_type = d.source_type
+		        AND seen.source_url = d.source_url
+		        AND seen.scope = d.scope
+		    )
+		  RETURNING d.scope, d.source_type, d.source_url
+		),
+		retired_claims AS (
+		  UPDATE claims c
+		  SET status = 'deprecated',
+		      confidence = 0,
+		      updated_at = now(),
+		      metadata = metadata || jsonb_build_object(
+		        'source_sync_deleted', true,
+		        'source_sync_deleted_at', now()::text
+		      )
+		  WHERE c.source_config_id = $1
+		    AND c.status NOT IN ('deprecated', 'expired')
+		    AND EXISTS (
+		      SELECT 1
+		      FROM retired_docs d
+		      WHERE d.scope = c.scope
+		        AND COALESCE(d.source_type, '') = COALESCE(c.source_type, '')
+		        AND COALESCE(d.source_url, '') = COALESCE(c.source_url, '')
+		    )
+		  RETURNING c.id
+		),
+		retired_relations AS (
+		  UPDATE relations r
+		  SET status = 'deprecated',
+		      confidence = 0,
+		      updated_at = now(),
+		      metadata = metadata || jsonb_build_object(
+		        'source_sync_deleted', true,
+		        'source_sync_deleted_at', now()::text
+		      )
+		  WHERE r.source_config_id = $1
+		    AND r.status NOT IN ('deprecated', 'expired')
+		    AND EXISTS (
+		      SELECT 1
+		      FROM retired_docs d
+		      WHERE d.scope = r.scope
+		        AND COALESCE(d.source_url, '') = COALESCE(r.source_url, '')
+		    )
+		  RETURNING r.id
+		)
+		DELETE FROM memory_summaries ms
+		WHERE EXISTS (
+		  SELECT 1
+		  FROM retired_docs d
+		  WHERE d.scope = ms.scope
+		    AND ms.source_urls @> jsonb_build_array(d.source_url)
+		)
+	`
 }
 
 func sourceFullyDrained(stats SourceStats) bool {

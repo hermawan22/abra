@@ -84,6 +84,9 @@ func ValidateMCPSourceReport(ctx context.Context, source SourceConfig) (MCPValid
 			ContentBytes: len([]byte(doc.Content)),
 		})
 	}
+	if len(out) == 0 {
+		return MCPValidationReport{}, fmt.Errorf("mcp source returned no documents; refusing empty snapshot")
+	}
 	return MCPValidationReport{
 		Status:    "ok",
 		Count:     len(out),
@@ -132,11 +135,11 @@ func (r *Runner) runMCPSource(ctx context.Context, source SourceConfig, jobID st
 		}
 		return SourceStats{}, err
 	}
-	stats := SourceStats{DocumentsSeen: len(docs)}
 	ingestDocs := make([]ingest.Document, 0, len(docs))
 	for _, doc := range docs {
 		ingestDocs = append(ingestDocs, doc.ingestDocument(source))
 	}
+	stats := SourceStats{DocumentsSeen: len(docs), SourceDocuments: sourceDocumentRefs(ingestDocs)}
 	states, err := r.documentStates(sourceCtx, ingestDocs)
 	if err != nil {
 		return stats, err

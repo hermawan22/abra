@@ -125,6 +125,44 @@ func TestListMCPToolsCallsUpstreamToolsList(t *testing.T) {
 	}
 }
 
+func TestMCPDocumentIngestInputPreservesACLMetadata(t *testing.T) {
+	doc := mcpDocument{
+		SourceType:      "confluence",
+		SourceURL:       "https://wiki.example/pages/123",
+		SourceID:        "123",
+		Title:           "Platform Decision",
+		Scope:           "team:platform",
+		Content:         "Use Abra for governed agent memory.",
+		SourceUpdatedAt: "2026-06-21T10:00:00Z",
+		Metadata: map[string]any{
+			"acl_groups":         []any{"platform", "sre"},
+			"allowed_principals": []any{"group:platform"},
+			"owner":              "team:platform",
+		},
+	}
+	input := doc.ingestInput(SourceConfig{
+		ID:             "mcp-confluence",
+		Name:           "Confluence MCP",
+		Authority:      "team-convention",
+		AuthorityScore: 0.7,
+		Metadata: map[string]any{
+			"connector_model": "user_owned_mcp",
+		},
+	}, "job-123")
+	if input.Metadata["source_config_id"] != "mcp-confluence" || input.Metadata["ingestion_job_id"] != "job-123" {
+		t.Fatalf("source metadata missing: %#v", input.Metadata)
+	}
+	if input.Metadata["authority"] != "team-convention" || input.Metadata["authority_score"] != 0.7 {
+		t.Fatalf("authority metadata missing: %#v", input.Metadata)
+	}
+	if _, ok := input.Metadata["acl_groups"].([]any); !ok {
+		t.Fatalf("acl_groups did not pass through: %#v", input.Metadata)
+	}
+	if input.Metadata["allowed_principals"] == nil || input.Metadata["owner"] != "team:platform" {
+		t.Fatalf("acl owner/principals did not pass through: %#v", input.Metadata)
+	}
+}
+
 func TestValidateMCPSourceReportReturnsWarnings(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any

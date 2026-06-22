@@ -2,6 +2,8 @@
 
 import { readFile } from "node:fs/promises";
 
+import { assertHybridRetrievalMode } from "./lib/eval-contracts.mjs";
+
 const baseUrl = (process.env.ABRA_BASE_URL || "http://127.0.0.1:18080").replace(/\/$/, "");
 const token = process.env.ABRA_API_TOKEN || "dev-token";
 const datasetPath = process.env.ABRA_PROVIDER_DATASET || process.env.ABRA_GOLDEN_DATASET || "examples/evals/golden.jsonl";
@@ -242,7 +244,7 @@ await runCheck("provider_quality_cases", async () => {
     const recallLatency = Date.now() - recallStarted;
     recallLatencies.push(recallLatency);
     const claims = Array.isArray(recall.claims) ? recall.claims : [];
-    assert(recall.retrieval_mode === "hybrid", `${item.id} recall mode = ${recall.retrieval_mode}, want hybrid`);
+    assertHybridRetrievalMode(recall.retrieval_mode, `${item.id} recall`);
     assert(
       claims.every((claim) => Number.isFinite(Number(claim.text_score)) && Number.isFinite(Number(claim.vector_score))),
       `${item.id} recall claims missing text/vector score components`

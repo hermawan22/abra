@@ -28,12 +28,16 @@ End-to-end connector onboarding:
 4. Validate the export without creating a source config:
    `abra connectors mcp validate --scope <scope> --mcp-url <url> --tool <tool>`,
    `POST /sources/configs/validate`, or MCP `validate_connector_source`.
-5. Register and enable the source with `abra connectors mcp register ... --schedule ... --wait --verify`,
+5. Use `abra connectors mcp template --scope <scope> --output connector.json`
+   to create a repeatable CLI-only onboarding manifest.
+6. Add the connector with `abra connectors mcp add --manifest connector.json --wait --verify`
+   when you want the guided headless flow: inspect, validate, then register.
+7. Register and enable the source directly with `abra connectors mcp register ... --schedule ... --wait --verify`,
    HTTP `POST /sources/configs`, or MCP `upsert_connector_source`.
-6. For repeatable onboarding, store the URL, tool, arguments, env refs,
+8. For repeatable onboarding, store the URL, tool, arguments, env refs,
    schedule, authority, and verification query in a manifest such as
-   `examples/connectors/mcp-confluence.connector.json`.
-7. Watch `abra sources status`, `abra sources logs`, `abra jobs`, or
+   `examples/connectors/mcp-knowledge-base.connector.json`.
+9. Watch `abra connectors status`, `abra connectors logs`, `abra jobs`, or
    `GET /ingestion/jobs` until jobs succeed, then verify recall or
    `working_memory_compose` returns source-backed context.
 
@@ -65,21 +69,29 @@ The `mcp` source type lets Abra call an existing HTTP MCP server as a source ada
 {
   "documents": [
     {
-      "source_type": "confluence",
-      "source_url": "https://confluence.example/wiki/pages/123",
+      "source_type": "markdown",
+      "source_url": "https://kb.example.com/pages/123",
       "source_id": "123",
-      "title": "Platform Architecture Decision",
-      "scope": "team:platform",
+      "title": "Architecture Decision",
+      "scope": "team:docs",
       "content": "Decision text in markdown or plain text",
       "source_updated_at": "2026-06-21T10:00:00Z",
       "metadata": {
-        "space": "ENG",
-        "acl_groups": ["platform"]
+        "collection": "docs",
+        "acl_groups": ["docs"],
+        "allowed_principals": ["group:docs"],
+        "owner": "team:docs"
       }
     }
   ]
 }
 ```
+
+Abra preserves document metadata from MCP exports, including ACL hints such as
+`acl_groups`, `allowed_principals`, `denied_groups`, and `owner`. Treat this as
+minimal passthrough: the source connector or deployment gateway still owns vendor
+group resolution and deny-by-default enforcement before showing recall output to a
+principal.
 
 Deployment overlays may still store other source configs, such as `jira`, `confluence`, or `drive`, through HTTP or MCP. The core worker does not schedule those vendor-specific source types directly; use `mcp` when an internal MCP server can export normalized documents, or let the overlay own polling, webhooks, OAuth, cursors, ACL normalization, and retry behavior before pushing into Abra. In enforced approval mode, active source config writes and resume use `connector_enable` unless the authority is trusted, in which case the gate is `source_authority_change`; explicit source backfills use `backfill`.
 

@@ -8,8 +8,9 @@ const sourceRoot = process.env.ABRA_DOGFOOD_SOURCE_ROOT || repoPath;
 const scope = process.env.ABRA_DOGFOOD_SCOPE || "repo:abra";
 const sourceName = process.env.ABRA_DOGFOOD_SOURCE_NAME || "abra-self";
 const keepSourceActive = process.env.ABRA_DOGFOOD_KEEP_SOURCE_ACTIVE === "1";
-const timeoutMs = Number(process.env.ABRA_DOGFOOD_TIMEOUT_MS || 180000);
+const timeoutMs = Number(process.env.ABRA_DOGFOOD_TIMEOUT_MS || 600000);
 const pollMs = Number(process.env.ABRA_DOGFOOD_POLL_MS || 2000);
+const requestTimeoutMs = Number(process.env.ABRA_DOGFOOD_REQUEST_TIMEOUT_MS || 30000);
 
 requireTokenForRemoteBaseURL(baseUrl);
 
@@ -38,7 +39,7 @@ async function request(route, { method = "GET", body } = {}) {
   const headers = {
     authorization: `Bearer ${token}`,
   };
-  const options = { method, headers };
+  const options = { method, headers, signal: AbortSignal.timeout(requestTimeoutMs) };
   if (body !== undefined) {
     headers["content-type"] = "application/json";
     options.body = JSON.stringify(body);
@@ -59,6 +60,20 @@ async function request(route, { method = "GET", body } = {}) {
     throw error;
   }
   return data;
+}
+
+async function pauseDogfoodSource(sourceConfigId) {
+  const pauseApprovalId = await approvedRequest({
+    action: "source_authority_change",
+    targetType: "source_config",
+    targetId: sourceConfigId,
+    reason: "Pause dogfood source after eval so workers in other filesystem layouts do not keep retrying it.",
+    payload: { source_config_id: sourceConfigId, status: "paused" },
+  });
+  await request("/sources/configs", {
+    method: "POST",
+    body: sourceConfigBody(pauseApprovalId, { id: sourceConfigId, status: "paused" }),
+  });
 }
 
 async function approvedRequest({ action, targetType, targetId, reason, payload }) {
@@ -138,18 +153,16 @@ function sourceConfigBody(approvalId, { id = undefined, status = "active" } = {}
       ],
       include_code: true,
       code_include: [
-        "cmd/abra/main.go",
         "cmd/abra-worker/main.go",
         "internal/brain/service.go",
         "internal/ingest/markdown.go",
         "internal/jobs/runner.go",
         "internal/memory/composer.go",
-        "internal/server/server.go",
-        "internal/store/store.go",
         "package.json",
         "go.mod",
       ],
       code_exclude: ["**/*_test.go"],
+      max_file_bytes: 100000,
       git_provider: "local",
       git_project_path: "abra",
     },
@@ -209,104 +222,134 @@ async function main() {
   const sourceConfigId = source.source_config_id;
   assert(sourceConfigId, "source config upsert did not return source_config_id", source);
 
-  const queued = await request("/ingestion/jobs", {
-    method: "POST",
-    body: {
-      source_config_id: sourceConfigId,
-      trigger_type: "backfill",
-      created_by: "dogfood-eval",
-      max_attempts: 1,
-      metadata: { eval: "dogfood" },
-    },
-  });
-  const jobId = queued?.ingestion_job?.id;
-  assert(jobId, "ingestion job enqueue did not return ingestion_job.id", queued);
-  const job = await waitForJob(jobId);
-  assert(job.documents_seen > 0, "dogfood ingestion saw no documents", job);
-  assert(job.chunks_written > 0 || job.documents_changed === 0, "dogfood ingestion wrote no chunks for changed documents", job);
-
-  const rebuildApprovalId = await approvedRequest({
-    action: "backfill",
-    targetType: "memory_summaries",
-    targetId: scope,
-    reason: "Dogfood summary rebuild after self-ingestion.",
-    payload: { scope, limit: 80 },
-  });
-  const rebuild = await request("/memory/summaries/rebuild", {
-    method: "POST",
-    body: { scope, limit: 80, approval_id: rebuildApprovalId },
-  });
-  assert(rebuild.documents > 0, "summary rebuild saw no documents", rebuild);
-  assert(rebuild.summaries > 0, "summary rebuild wrote no summaries", rebuild);
-
-  const memory = await request("/memory/compose", {
-    method: "POST",
-    body: {
-      task: "explain Abra architecture, ingestion, graph, policy planner, working-memory composer, and production readiness",
-      scope,
-      agent: "dogfood-eval",
-      hook: "before_task",
-      language: "go",
-      files: ["README.md", "PRODUCTION.md", "internal/memory/composer.go", "internal/brain/service.go"],
-      limit: 10,
-      max_queries: 8,
-      token_budget: 1200,
-    },
-  });
-  const memorySummary = summarizeMemory(memory);
-  assert(memorySummary.summaries > 0, "working-memory dogfood returned no summaries", memorySummary);
-  assert(memorySummary.documents > 0 || memorySummary.facts > 0, "working-memory dogfood returned no facts or source documents", memorySummary);
-  assert(memorySummary.graph_relations > 0, "working-memory dogfood returned no graph relations", memorySummary);
-  assert(memorySummary.impact_items > 0, "working-memory dogfood returned no impact map", memorySummary);
-  assert(memorySummary.validation_steps > 0, "working-memory dogfood returned no validation plan", memorySummary);
-  assert(memorySummary.context_blocks > 0, "working-memory dogfood returned no budgeted context window", memorySummary);
-  assert(memory.memory_health?.status === "healthy", "working-memory dogfood did not include healthy memory health", memory.memory_health);
-  assert(memory.stats?.health_signals >= 1, "working-memory dogfood did not report health signal stats", memory.stats);
-  assert(memory.context_window?.prompt?.includes("Memory health: healthy"), "working-memory dogfood context window did not include memory health gate", memory.context_window);
-  assert(memory.context_window?.prompt && memory.context_window.estimated_tokens <= memory.context_window.max_tokens, "working-memory dogfood context window was not prompt-ready or budgeted", memory.context_window);
-  const codeBackedFacts = (memory.facts || []).filter((fact) => isCodeSourceURL(fact.source_url));
-  assert(codeBackedFacts.length === 0, "working-memory dogfood returned trusted facts extracted from code documents", {
-    facts: codeBackedFacts.map((fact) => ({ id: fact.id, source_url: fact.source_url, claim_text: fact.claim_text })),
-  });
-  const health = await request(`/memory/health?scope=${encodeURIComponent(scope)}`);
-  assert(Array.isArray(health.signals) && health.signals.length >= 1, "memory health did not return structured signals", health);
-  for (const signal of health.signals) {
-    assert(signal.code && signal.category && signal.severity && signal.message && signal.action, "memory health returned an incomplete structured signal", signal);
-    assert(typeof signal.count === "number" && typeof signal.score_impact === "number", "memory health signal did not include numeric count and score impact", signal);
-  }
-  assert(
-    health.claims?.trusted_from_code_documents === 0,
-    "memory health detected trusted claims from code documents",
-    health.claims
-  );
-  assert(
-    health.learning?.duplicate_pending_groups === 0,
-    "memory health detected duplicate pending learning proposals",
-    health.learning
-  );
-  assert(health.ingestion?.stale_running_jobs === 0, "memory health detected stale running ingestion jobs", health.ingestion);
-  assert(health.ingestion?.retry_jobs === 0, "memory health detected retrying ingestion jobs", health.ingestion);
-
-  const graph = await request(`/graph/relations?scope=${encodeURIComponent(scope)}&limit=50`);
-  const hasGoRelation = (graph.relations || []).some((relation) => {
-    return relation.from_entity?.includes(".go") || relation.to_entity?.includes("go:") || relation.relation_type === "declares_package";
-  });
-  assert(hasGoRelation, "dogfood graph relation listing did not include Go code intelligence", graph);
-
   let finalSourceStatus = "active";
-  if (!keepSourceActive) {
-    const pauseApprovalId = await approvedRequest({
-      action: "source_authority_change",
-      targetType: "source_config",
-      targetId: sourceConfigId,
-      reason: "Pause dogfood source after eval so workers in other filesystem layouts do not keep retrying it.",
-      payload: { source_config_id: sourceConfigId, status: "paused" },
-    });
-    await request("/sources/configs", {
+  let job;
+  let jobId;
+  let rebuild;
+  let health;
+  let memorySummary;
+  let primaryError;
+  const cleanupErrors = [];
+  try {
+    const queued = await request("/ingestion/jobs", {
       method: "POST",
-      body: sourceConfigBody(pauseApprovalId, { id: sourceConfigId, status: "paused" }),
+      body: {
+        source_config_id: sourceConfigId,
+        trigger_type: "backfill",
+        created_by: "dogfood-eval",
+        max_attempts: 1,
+        metadata: { eval: "dogfood" },
+      },
     });
-    finalSourceStatus = "paused";
+    jobId = queued?.ingestion_job?.id;
+    assert(jobId, "ingestion job enqueue did not return ingestion_job.id", queued);
+    job = await waitForJob(jobId);
+    assert(job.documents_seen > 0, "dogfood ingestion saw no documents", job);
+    assert(job.chunks_written > 0 || job.documents_changed === 0, "dogfood ingestion wrote no chunks for changed documents", job);
+
+    const rebuildApprovalId = await approvedRequest({
+      action: "backfill",
+      targetType: "memory_summaries",
+      targetId: scope,
+      reason: "Dogfood summary rebuild after self-ingestion.",
+      payload: { scope, limit: 80 },
+    });
+    rebuild = await request("/memory/summaries/rebuild", {
+      method: "POST",
+      body: { scope, limit: 80, approval_id: rebuildApprovalId },
+    });
+    assert(rebuild.documents > 0, "summary rebuild saw no documents", rebuild);
+    assert(rebuild.summaries > 0, "summary rebuild wrote no summaries", rebuild);
+
+    const memory = await request("/memory/compose", {
+      method: "POST",
+      body: {
+        task: "explain Abra architecture, ingestion, graph, policy planner, working-memory composer, and production readiness",
+        scope,
+        agent: "dogfood-eval",
+        hook: "before_task",
+        language: "go",
+        files: ["README.md", "PRODUCTION.md", "internal/memory/composer.go", "internal/brain/service.go"],
+        limit: 10,
+        max_queries: 8,
+        token_budget: 1200,
+      },
+    });
+    memorySummary = summarizeMemory(memory);
+    assert(memorySummary.summaries > 0, "working-memory dogfood returned no summaries", memorySummary);
+    assert(memorySummary.documents > 0 || memorySummary.facts > 0, "working-memory dogfood returned no facts or source documents", memorySummary);
+    assert(memorySummary.graph_relations > 0, "working-memory dogfood returned no graph relations", memorySummary);
+    assert(memorySummary.impact_items > 0, "working-memory dogfood returned no impact map", memorySummary);
+    assert(memorySummary.validation_steps > 0, "working-memory dogfood returned no validation plan", memorySummary);
+    assert(memorySummary.context_blocks > 0, "working-memory dogfood returned no budgeted context window", memorySummary);
+    assert(memory.memory_health?.status === "healthy", "working-memory dogfood did not include healthy memory health", memory.memory_health);
+    assert(memory.stats?.health_signals >= 1, "working-memory dogfood did not report health signal stats", memory.stats);
+    assert(memory.context_window?.prompt?.includes("Memory health: healthy"), "working-memory dogfood context window did not include memory health gate", memory.context_window);
+    assert(memory.context_window?.prompt && memory.context_window.estimated_tokens <= memory.context_window.max_tokens, "working-memory dogfood context window was not prompt-ready or budgeted", memory.context_window);
+    const codeBackedFacts = (memory.facts || []).filter((fact) => isCodeSourceURL(fact.source_url));
+    assert(codeBackedFacts.length === 0, "working-memory dogfood returned trusted facts extracted from code documents", {
+      facts: codeBackedFacts.map((fact) => ({ id: fact.id, source_url: fact.source_url, claim_text: fact.claim_text })),
+    });
+    health = await request(`/memory/health?scope=${encodeURIComponent(scope)}`);
+    assert(Array.isArray(health.signals) && health.signals.length >= 1, "memory health did not return structured signals", health);
+    for (const signal of health.signals) {
+      assert(signal.code && signal.category && signal.severity && signal.message && signal.action, "memory health returned an incomplete structured signal", signal);
+      assert(typeof signal.count === "number" && typeof signal.score_impact === "number", "memory health signal did not include numeric count and score impact", signal);
+    }
+    assert(
+      health.claims?.trusted_from_code_documents === 0,
+      "memory health detected trusted claims from code documents",
+      health.claims
+    );
+    assert(
+      health.learning?.duplicate_pending_groups === 0,
+      "memory health detected duplicate pending learning proposals",
+      health.learning
+    );
+    assert(health.ingestion?.stale_running_jobs === 0, "memory health detected stale running ingestion jobs", health.ingestion);
+    assert(health.ingestion?.retry_jobs === 0, "memory health detected retrying ingestion jobs", health.ingestion);
+
+    const graph = await request(`/graph/relations?scope=${encodeURIComponent(scope)}&limit=50`);
+    const hasGoRelation = (graph.relations || []).some((relation) => {
+      return relation.from_entity?.includes(".go") || relation.to_entity?.includes("go:") || relation.relation_type === "declares_package";
+    });
+    assert(hasGoRelation, "dogfood graph relation listing did not include Go code intelligence", graph);
+  } catch (error) {
+    primaryError = error;
+  } finally {
+    if (!keepSourceActive) {
+      if (jobId && !job) {
+        try {
+          await request(`/ingestion/jobs/${encodeURIComponent(jobId)}/cancel`, {
+            method: "POST",
+            body: {
+              reason: "Dogfood eval failed before ingestion completed; canceling to avoid stale running jobs.",
+              created_by: "dogfood-eval",
+            },
+          });
+        } catch (error) {
+          cleanupErrors.push({ operation: "cancel_ingestion_job", error: error.message, details: error.details });
+        }
+      }
+      try {
+        await pauseDogfoodSource(sourceConfigId);
+        finalSourceStatus = "paused";
+      } catch (error) {
+        cleanupErrors.push({ operation: "pause_source", error: error.message, details: error.details });
+      }
+    }
+  }
+  if (primaryError) {
+    primaryError.details = {
+      ...(primaryError.details || {}),
+      ...(cleanupErrors.length > 0 ? { cleanup_errors: cleanupErrors } : {}),
+    };
+    throw primaryError;
+  }
+  if (cleanupErrors.length > 0) {
+    const error = new Error("dogfood cleanup failed");
+    error.details = { cleanup_errors: cleanupErrors };
+    throw error;
   }
 
   const output = {

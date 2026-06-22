@@ -419,6 +419,64 @@ func TestEmbedPreparedDocumentsBatchesClaimsAcrossDocuments(t *testing.T) {
 	}
 }
 
+func TestPrepareIngestDocumentDefaultsDirectIngestToUnverified(t *testing.T) {
+	service := Service{}
+	doc, err := service.prepareIngestDocument(IngestDocumentInput{
+		SourceType: "markdown",
+		SourceURL:  "file:///repo/direct.md",
+		Title:      "direct.md",
+		Scope:      "repo:test",
+		Content:    "- Direct ingest without explicit authority must remain unverified.",
+	})
+	if err != nil {
+		t.Fatalf("prepareIngestDocument error = %v", err)
+	}
+	if doc.authority != "manual-unverified" || doc.authorityScore != 0.35 || doc.claimStatus != "unverified" {
+		t.Fatalf("direct ingest authority = %q score %.2f status %q, want manual-unverified/0.35/unverified", doc.authority, doc.authorityScore, doc.claimStatus)
+	}
+}
+
+func TestPrepareIngestDocumentHonorsExplicitDirectIngestAuthority(t *testing.T) {
+	service := Service{}
+	doc, err := service.prepareIngestDocument(IngestDocumentInput{
+		SourceType:     "markdown",
+		SourceURL:      "file:///repo/direct.md",
+		Title:          "direct.md",
+		Scope:          "repo:test",
+		Content:        "- Explicit trusted direct ingest may create verified claims.",
+		Authority:      "official-doc",
+		AuthorityScore: 0.99,
+	})
+	if err != nil {
+		t.Fatalf("prepareIngestDocument error = %v", err)
+	}
+	if doc.authority != "official-doc" || doc.authorityScore != 0.99 || doc.claimStatus != "verified" {
+		t.Fatalf("explicit direct ingest authority = %q score %.2f status %q, want official-doc/0.99/verified", doc.authority, doc.authorityScore, doc.claimStatus)
+	}
+}
+
+func TestPrepareIngestDocumentTrustsSourceConfigAuthority(t *testing.T) {
+	service := Service{}
+	doc, err := service.prepareIngestDocument(IngestDocumentInput{
+		SourceType: "markdown",
+		SourceURL:  "file:///repo/source.md",
+		Title:      "source.md",
+		Scope:      "repo:test",
+		Content:    "- Source config ingest may create verified source-backed claims.",
+		Metadata: map[string]any{
+			"source_config_id": "source-1",
+			"authority":        "team-convention",
+			"authority_score":  0.7,
+		},
+	})
+	if err != nil {
+		t.Fatalf("prepareIngestDocument error = %v", err)
+	}
+	if doc.authority != "team-convention" || doc.authorityScore != 0.7 || doc.claimStatus != "verified" {
+		t.Fatalf("source config authority = %q score %.2f status %q, want team-convention/0.7/verified", doc.authority, doc.authorityScore, doc.claimStatus)
+	}
+}
+
 func TestIngestDocumentsValidatesBeforeEmbedding(t *testing.T) {
 	provider := &recordingEmbeddingProvider{}
 	service := Service{
@@ -555,6 +613,113 @@ func TestRecallQueryEmbeddingCacheReusesAndCopiesVectors(t *testing.T) {
 	}
 	if len(provider.callSizes) != 2 {
 		t.Fatalf("embedding provider calls after different query = %d, want 2", len(provider.callSizes))
+	}
+}
+
+func TestRecallCandidateLimitExpandsOnlyWithReranker(t *testing.T) {
+	if got := recallCandidateLimit(5, false); got != 5 {
+		t.Fatalf("candidate limit without reranker = %d, want 5", got)
+	}
+	if got := recallCandidateLimit(5, true); got != 15 {
+		t.Fatalf("candidate limit with reranker = %d, want 15", got)
+	}
+	if got := recallCandidateLimit(20, true); got != 20 {
+		t.Fatalf("candidate limit should cap at store max = %d, want 20", got)
+	}
+	if got := recallCandidateLimit(0, true); got != 15 {
+		t.Fatalf("invalid final limit should use default candidate pool = %d, want 15", got)
+	}
+}
+
+func TestFinalizeRecallResultReranksBeforeFinalTrim(t *testing.T) {
+	service := Service{
+		cfg: config.Config{Reranker: config.AIProviderConfig{Provider: "local", Model: "rerank-model"}},
+		reranker: &fakeRerankerProvider{
+			responses: []ai.RerankResponse{
+				{Results: []ai.RerankResult{{Index: 2, Score: 1}, {Index: 0, Score: 0}, {Index: 1, Score: 0}}},
+				{Results: []ai.RerankResult{{Index: 2, Score: 1}, {Index: 0, Score: 0}, {Index: 1, Score: 0}}},
+			},
+		},
+	}
+
+	result := service.finalizeRecallResult(context.Background(), "base query", store.RecallResult{
+		RetrievalMode: "hybrid",
+		Claims: []store.ClaimResult{
+			{ID: "claim-base-1", Claim: "base one", Rank: 0.70, TextScore: 0.3},
+			{ID: "claim-base-2", Claim: "base two", Rank: 0.69, TextScore: 0.2},
+			{ID: "claim-rerank", Claim: "rerank should rescue this", Rank: 0.68, TextScore: 0.1},
+		},
+		SupportingDocuments: []store.DocumentResult{
+			{ID: "doc-base-1", Title: "base one", Content: "doc one", Rank: 0.70, TextScore: 0.3},
+			{ID: "doc-base-2", Title: "base two", Content: "doc two", Rank: 0.69, TextScore: 0.2},
+			{ID: "doc-rerank", Title: "rerank", Content: "doc three", Rank: 0.68, TextScore: 0.1},
+		},
+		GraphContext: []store.RelationResult{
+			{ID: "relation-1", FromEntity: "A", ToEntity: "B", Type: "depends_on"},
+			{ID: "relation-2", FromEntity: "B", ToEntity: "C", Type: "depends_on"},
+			{ID: "relation-3", FromEntity: "C", ToEntity: "D", Type: "depends_on"},
+		},
+	}, 2)
+
+	if len(result.Claims) != 2 || result.Claims[0].ID != "claim-rerank" || result.Claims[1].ID != "claim-base-1" {
+		t.Fatalf("claims were not reranked before trim: %#v", result.Claims)
+	}
+	if len(result.SupportingDocuments) != 2 || result.SupportingDocuments[0].ID != "doc-rerank" || result.SupportingDocuments[1].ID != "doc-base-1" {
+		t.Fatalf("documents were not reranked before trim: %#v", result.SupportingDocuments)
+	}
+	if len(result.GraphContext) != 2 {
+		t.Fatalf("graph context length = %d, want final limit 2", len(result.GraphContext))
+	}
+	if result.RetrievalMode != "hybrid_reranked" {
+		t.Fatalf("retrieval mode = %q, want hybrid_reranked", result.RetrievalMode)
+	}
+	if !hasBrainRetrievalReason(result.RetrievalReasons, "rerank", "hybrid_reranked", 4) {
+		t.Fatalf("rerank reason should describe final result set: %#v", result.RetrievalReasons)
+	}
+}
+
+func TestFinalizeRecallResultFallsBackToBaseRankingWhenRerankerFails(t *testing.T) {
+	service := Service{
+		cfg:      config.Config{Reranker: config.AIProviderConfig{Provider: "local", Model: "rerank-model"}},
+		reranker: &fakeRerankerProvider{err: errors.New("rate limited")},
+	}
+
+	result := service.finalizeRecallResult(context.Background(), "base query", store.RecallResult{
+		RetrievalMode: "hybrid",
+		Claims: []store.ClaimResult{
+			{ID: "claim-base-1", Claim: "base one", Rank: 0.70, TextScore: 0.3},
+			{ID: "claim-base-2", Claim: "base two", Rank: 0.69, TextScore: 0.2},
+			{ID: "claim-extra", Claim: "extra", Rank: 0.68, TextScore: 0.1},
+		},
+		SupportingDocuments: []store.DocumentResult{
+			{ID: "doc-base-1", Title: "base one", Content: "doc one", Rank: 0.70, TextScore: 0.3},
+			{ID: "doc-base-2", Title: "base two", Content: "doc two", Rank: 0.69, TextScore: 0.2},
+			{ID: "doc-extra", Title: "extra", Content: "doc three", Rank: 0.68, TextScore: 0.1},
+		},
+		GraphContext: []store.RelationResult{
+			{ID: "relation-1", FromEntity: "A", ToEntity: "B", Type: "depends_on"},
+			{ID: "relation-2", FromEntity: "B", ToEntity: "C", Type: "depends_on"},
+			{ID: "relation-3", FromEntity: "C", ToEntity: "D", Type: "depends_on"},
+		},
+	}, 2)
+
+	if len(result.Claims) != 2 || result.Claims[0].ID != "claim-base-1" || result.Claims[1].ID != "claim-base-2" {
+		t.Fatalf("failed rerank should preserve base claim order before trim: %#v", result.Claims)
+	}
+	if len(result.SupportingDocuments) != 2 || result.SupportingDocuments[0].ID != "doc-base-1" || result.SupportingDocuments[1].ID != "doc-base-2" {
+		t.Fatalf("failed rerank should preserve base document order before trim: %#v", result.SupportingDocuments)
+	}
+	if result.RetrievalMode != "hybrid" {
+		t.Fatalf("failed rerank mode = %q, want hybrid", result.RetrievalMode)
+	}
+	if hasBrainRetrievalReason(result.RetrievalReasons, "rerank", "hybrid_reranked", 4) {
+		t.Fatalf("failed rerank should not add rerank reason: %#v", result.RetrievalReasons)
+	}
+	if len(result.RetrievalWarnings) != 2 {
+		t.Fatalf("rerank warnings = %#v, want claim and document warnings", result.RetrievalWarnings)
+	}
+	if result.Claims[0].RerankApplied || result.SupportingDocuments[0].RerankApplied {
+		t.Fatalf("failed rerank should not mark final results as reranked: claims=%#v docs=%#v", result.Claims, result.SupportingDocuments)
 	}
 }
 
@@ -701,6 +866,15 @@ func aiProviderMetricValue(metrics []observability.AIProviderMetric, operation, 
 		}
 	}
 	return total
+}
+
+func hasBrainRetrievalReason(reasons []store.RetrievalReason, signal, mode string, count int) bool {
+	for _, reason := range reasons {
+		if reason.Signal == signal && reason.Mode == mode && reason.Count == count {
+			return true
+		}
+	}
+	return false
 }
 
 type fakeRerankerProvider struct {

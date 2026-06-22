@@ -485,13 +485,17 @@ func validateLocalRunnerImagePolicy(args cliArgs, cfg embeddingRunnerConfig) err
 	if !strings.EqualFold(strings.TrimSpace(values["NODE_ENV"]), "production") {
 		return nil
 	}
-	if !yesish(values["ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION"]) {
-		return nil
+	if !localEmbeddingsAllowedInProduction(args, values) {
+		return fmt.Errorf("production local models require explicit operator approval. Set ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=true or pass --allow-production-local-embeddings after reviewing capacity and security, and use EMBEDDING_PROVIDER=compatible for managed/self-hosted production endpoints")
 	}
 	if localRunnerImagePinned(cfg.Image) {
 		return nil
 	}
 	return fmt.Errorf("production local models require a digest-pinned runner image. Set ABRA_LOCAL_EMBEDDING_IMAGE/ABRA_LOCAL_RERANKER_IMAGE to operator-verified image references with @sha256, or use EMBEDDING_PROVIDER=compatible with a managed/self-hosted endpoint")
+}
+
+func localEmbeddingsAllowedInProduction(args cliArgs, values map[string]string) bool {
+	return boolFlag(args, "allow-production-local-embeddings") || yesish(values["ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION"])
 }
 
 func localRunnerImagePinned(image string) bool {
@@ -646,6 +650,13 @@ func syncLocalRunnerEnv(args cliArgs) error {
 	model := firstNonEmpty(flag(args, "model", ""), values["EMBEDDING_MODEL"], defaultServedModelName)
 	dims := intFromString(firstNonEmpty(flag(args, "dimensions", ""), values["EMBEDDING_DIMENSIONS"]), 1024)
 	baseURL := firstNonEmpty(flag(args, "base-url", ""), values["EMBEDDING_BASE_URL"], defaultEmbeddingBaseURL)
+	allowLocalEmbeddingsInProduction := strings.TrimSpace(values["ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION"])
+	if boolFlag(args, "allow-production-local-embeddings") {
+		allowLocalEmbeddingsInProduction = "true"
+	}
+	if allowLocalEmbeddingsInProduction == "" {
+		allowLocalEmbeddingsInProduction = "false"
+	}
 	if flag(args, "port", "") != "" {
 		baseURL = replaceURLHostPort(baseURL, "host.docker.internal", cfg.Port)
 	} else {
@@ -657,7 +668,7 @@ func syncLocalRunnerEnv(args cliArgs) error {
 		"EMBEDDING_API_KEY":                    "",
 		"EMBEDDING_MODEL":                      model,
 		"EMBEDDING_DIMENSIONS":                 strconv.Itoa(dims),
-		"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION": "false",
+		"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION": allowLocalEmbeddingsInProduction,
 	}
 	rerankerProviderFlag := flag(args, "reranker-provider", "")
 	rerankerProvider := firstNonEmpty(rerankerProviderFlag, values["RERANKER_PROVIDER"], "none")
@@ -806,6 +817,13 @@ func friendlyProviderError(err error) error {
 	if err == nil {
 		return nil
 	}
+	values, _ := readEnvValues(defaultEnvPath())
+	provider := strings.TrimSpace(values["EMBEDDING_PROVIDER"])
+	localProvider := isLocalProviderName(provider)
+	defaultHint := compatibleProviderRecoveryHint()
+	if localProvider {
+		defaultHint = "Run `abra models status`; if it is not ready, run `abra models up`, then retry ingest."
+	}
 	var statusErr *httpStatusError
 	if errors.As(err, &statusErr) {
 		if detail, ok := statusErr.Payload["provider_error"].(map[string]any); ok {
@@ -815,27 +833,41 @@ func friendlyProviderError(err error) error {
 			retryable := boolValue(detail["retryable"], false)
 			hint := stringValue(detail["hint"], "")
 			if hint == "" {
-				hint = "Run `abra models status`; if it is not ready, run `abra models up`, then retry ingest."
+				hint = defaultHint
 			}
 			switch code {
 			case "auth_failed":
-				hint = "Check the embedding API key/model config, then retry ingest."
+				hint = "Check the embedding API key, base URL, model, and dimensions with `abra config show`, then retry ingest."
 			case "context_overflow":
 				hint = "Abra retries smaller embedding batches automatically. If it still fails, lower ABRA_EMBEDDING_BATCH_MAX_ITEMS/ABRA_EMBEDDING_BATCH_MAX_TOKENS or split very large files before ingest."
 			case "provider_timeout":
-				hint = "Run `abra models status`; if the model is healthy, retry with a longer ABRA_CLI_TIMEOUT or lower ABRA_EMBEDDING_BATCH_MAX_ITEMS/ABRA_EMBEDDING_BATCH_MAX_TOKENS."
+				if localProvider {
+					hint = "Run `abra models status`; if the model is healthy, retry with a longer ABRA_CLI_TIMEOUT or lower ABRA_EMBEDDING_BATCH_MAX_ITEMS/ABRA_EMBEDDING_BATCH_MAX_TOKENS."
+				} else {
+					hint = "Check your compatible embedding endpoint capacity, raise EMBEDDING_TIMEOUT/ABRA_CLI_TIMEOUT, or lower ABRA_EMBEDDING_BATCH_MAX_ITEMS/ABRA_EMBEDDING_BATCH_MAX_TOKENS."
+				}
 			}
 			return fmt.Errorf("embedding provider error (%s, status=%d, retryable=%v): %s %s Original error: %w", code, status, retryable, message, hint, err)
 		}
 	}
 	text := strings.ToLower(err.Error())
 	if strings.Contains(text, "context deadline exceeded") || strings.Contains(text, "client.timeout exceeded") {
-		return fmt.Errorf("embedding request timed out. Run `abra models status`; if the local model is healthy, retry with a longer ABRA_CLI_TIMEOUT or lower ABRA_EMBEDDING_BATCH_MAX_ITEMS/ABRA_EMBEDDING_BATCH_MAX_TOKENS. Original error: %w", err)
+		if localProvider {
+			return fmt.Errorf("embedding request timed out. Run `abra models status`; if the local model is healthy, retry with a longer ABRA_CLI_TIMEOUT or lower ABRA_EMBEDDING_BATCH_MAX_ITEMS/ABRA_EMBEDDING_BATCH_MAX_TOKENS. Original error: %w", err)
+		}
+		return fmt.Errorf("embedding request timed out. %s Original error: %w", compatibleProviderRecoveryHint(), err)
 	}
 	if strings.Contains(text, "/embeddings") || strings.Contains(text, "embedding") || strings.Contains(text, "host.docker.internal:8080") || strings.Contains(text, "connection refused") {
-		return fmt.Errorf("embedding provider is not ready. Run `abra models status`; if it is not ready, run `abra models up`, then retry ingest. If the stack is down, run `abra up`. Original error: %w", err)
+		if localProvider {
+			return fmt.Errorf("embedding provider is not ready. Run `abra models status`; if it is not ready, run `abra models up`, then retry ingest. If the stack is down, run `abra up`. Original error: %w", err)
+		}
+		return fmt.Errorf("embedding provider is not ready. %s Original error: %w", compatibleProviderRecoveryHint(), err)
 	}
 	return err
+}
+
+func compatibleProviderRecoveryHint() string {
+	return "Run `abra config show` and check EMBEDDING_PROVIDER, EMBEDDING_BASE_URL, EMBEDDING_MODEL, EMBEDDING_DIMENSIONS, API key, and EMBEDDING_TIMEOUT; verify the endpoint accepts /embeddings, then run `abra doctor`."
 }
 
 func hostReachableBaseURL(value string) string {

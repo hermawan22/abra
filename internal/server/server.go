@@ -347,6 +347,7 @@ func (h *handler) ingestDocument(w http.ResponseWriter, r *http.Request) {
 	if !h.requireIngestApproval(w, r, input.Scope, input.ApprovalID) {
 		return
 	}
+	input.Metadata = sanitizeUserIngestMetadata(input.Metadata)
 	result, err := h.brain.IngestDocument(r.Context(), input)
 	if err != nil {
 		if providerErr, ok := ai.ProviderErrorInfo(err); ok {
@@ -452,7 +453,7 @@ func providerErrorPayload(err error, providerErr *ai.ProviderError) map[string]a
 	if providerErr.BatchTokens > 0 {
 		details["batch_tokens"] = providerErr.BatchTokens
 	}
-	if hint := providerErrorHint(providerErr.Code); hint != "" {
+	if hint := providerErrorHint(providerErr.Code, providerErr.Provider); hint != "" {
 		details["hint"] = hint
 	}
 	return map[string]any{
@@ -462,16 +463,29 @@ func providerErrorPayload(err error, providerErr *ai.ProviderError) map[string]a
 	}
 }
 
-func providerErrorHint(code string) string {
+func providerErrorHint(code, provider string) string {
+	localProvider := isLocalEmbeddingProviderName(provider)
 	switch code {
 	case "context_overflow":
 		return "Abra retries smaller embedding batches automatically; if one input still exceeds the provider context, lower ABRA_EMBEDDING_BATCH_MAX_ITEMS/ABRA_EMBEDDING_BATCH_MAX_TOKENS or split very large files before ingest."
 	case "provider_timeout":
+		if !localProvider {
+			return "Check the compatible embedding endpoint capacity, raise EMBEDDING_TIMEOUT or lower ABRA_EMBEDDING_BATCH_MAX_ITEMS/ABRA_EMBEDDING_BATCH_MAX_TOKENS, then retry ingest."
+		}
 		return "Run `abra models status`; if the model is healthy, retry with a longer ABRA_CLI_TIMEOUT or lower ABRA_EMBEDDING_BATCH_MAX_ITEMS/ABRA_EMBEDDING_BATCH_MAX_TOKENS."
 	case "auth_failed":
 		return "Check the embedding provider API key, base URL, and model config, then retry ingest."
 	default:
 		return ""
+	}
+}
+
+func isLocalEmbeddingProviderName(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "local", "local-smart", "qwen3":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -3145,6 +3159,7 @@ func mcpDocumentInput(args map[string]any, defaults map[string]any) brain.Ingest
 	if authorityScore > 0 {
 		metadata["authority_score"] = authorityScore
 	}
+	metadata = sanitizeUserIngestMetadata(metadata)
 	return brain.IngestDocumentInput{
 		SourceType:      firstNonEmpty(stringArg(args, "source_type"), stringArg(defaults, "source_type")),
 		SourceURL:       stringArg(args, "source_url"),
@@ -3156,6 +3171,22 @@ func mcpDocumentInput(args map[string]any, defaults map[string]any) brain.Ingest
 		ApprovalID:      firstNonEmpty(stringArg(args, "approval_id"), stringArg(defaults, "approval_id")),
 		Metadata:        metadata,
 	}
+}
+
+func sanitizeUserIngestMetadata(metadata map[string]any) map[string]any {
+	if len(metadata) == 0 {
+		return metadata
+	}
+	out := make(map[string]any, len(metadata))
+	for key, value := range metadata {
+		switch strings.TrimSpace(strings.ToLower(key)) {
+		case "source_config_id", "source_config_name", "ingestion_job_id":
+			continue
+		default:
+			out[key] = value
+		}
+	}
+	return out
 }
 
 func mcpDocumentInputs(args map[string]any) ([]brain.IngestDocumentInput, error) {

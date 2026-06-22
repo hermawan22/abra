@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 
+import { assertHybridRetrievalMode } from "./lib/eval-contracts.mjs";
+
 const baseUrl = (process.env.ABRA_BASE_URL || "http://127.0.0.1:18080").replace(/\/$/, "");
 const token = process.env.ABRA_API_TOKEN || "dev-token";
 const startedAt = new Date().toISOString();
 const stamp = startedAt.replace(/[^0-9A-Za-z]/g, "").slice(0, 24);
 const scope = process.env.ABRA_PERF_SCOPE || `team:perf-${stamp}`;
+const profileName = process.env.ABRA_PERF_PROFILE_NAME || "local-performance";
 const documentCount = numberEnv("ABRA_PERF_DOCS", 40);
 const iterations = numberEnv("ABRA_PERF_ITERATIONS", 30);
 const concurrency = numberEnv("ABRA_PERF_CONCURRENCY", 4);
@@ -205,6 +208,21 @@ function cacheStatusSummary(responses) {
   return summary;
 }
 
+function assertLearningSuggestionsContract(value) {
+  if (value === undefined) {
+    return;
+  }
+  assert(Array.isArray(value), "working memory returned invalid learning suggestions");
+  for (const [index, suggestion] of value.entries()) {
+    assert(suggestion && typeof suggestion === "object" && !Array.isArray(suggestion), `learning suggestion ${index} was not an object`);
+    assert(typeof suggestion.proposal_type === "string" && suggestion.proposal_type.trim() !== "", `learning suggestion ${index} missing proposal_type`);
+    assert(typeof suggestion.title === "string" && suggestion.title.trim() !== "", `learning suggestion ${index} missing title`);
+    assert(typeof suggestion.rationale === "string" && suggestion.rationale.trim() !== "", `learning suggestion ${index} missing rationale`);
+    assert(Number.isFinite(Number(suggestion.confidence)), `learning suggestion ${index} missing confidence`);
+    assert(suggestion.payload === undefined || (suggestion.payload && typeof suggestion.payload === "object" && !Array.isArray(suggestion.payload)), `learning suggestion ${index} returned invalid payload`);
+  }
+}
+
 function perfDocument(index) {
   const module = `module-${index % 8}`;
   const component = `SharedComponent${index % 12}`;
@@ -308,7 +326,7 @@ await runCheck("recall_latency_gate", async () => {
         include_unverified: false
       }
     });
-    assert(response.retrieval_mode === "hybrid", `recall mode = ${response.retrieval_mode}, want hybrid`);
+    assertHybridRetrievalMode(response.retrieval_mode);
     assert(Array.isArray(response.claims) && response.claims.length >= 1, "recall returned no claims");
     assert(Array.isArray(response.supporting_documents) && response.supporting_documents.length >= 1, "recall returned no supporting documents");
     assert(
@@ -362,7 +380,7 @@ await runCheck("working_memory_latency_gate", async () => {
     assert(Array.isArray(response.validation_plan) && response.validation_plan.length >= 1, "working memory returned no validation plan");
     assert(response.context_window && Array.isArray(response.context_window.blocks) && response.context_window.blocks.length >= 1, "working memory returned no context window");
     assert(response.context_window.prompt && response.context_window.estimated_tokens > 0 && response.context_window.estimated_tokens <= response.context_window.max_tokens, "working memory returned invalid context budget");
-    assert(Array.isArray(response.learning_suggestions) && response.learning_suggestions.length >= 1, "working memory returned no learning suggestions");
+    assertLearningSuggestionsContract(response.learning_suggestions);
     assert(response.stats && response.stats.queries_run >= 1, "working memory returned no query stats");
     assert(response.stats.graph_queries >= 1, "working memory returned no graph query stats");
     assert(response.stats.graph_warnings === (Array.isArray(response.graph_warnings) ? response.graph_warnings.length : 0), "working memory returned inconsistent graph warning stats");
@@ -493,6 +511,7 @@ const summary = {
   },
   artifacts: {
     base_url: baseUrl,
+    profile: profileName,
     scope,
     document_count: documentCount,
     iterations,

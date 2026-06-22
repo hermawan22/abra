@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { assertHybridRetrievalMode } from "./lib/eval-contracts.mjs";
+
 const baseUrl = (process.env.ABRA_BASE_URL || "http://127.0.0.1:18080").replace(/\/$/, "");
 const token = process.env.ABRA_API_TOKEN || "dev-token";
 const stamp = new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14);
@@ -337,7 +339,7 @@ await runCheck("recall_returns_expected_claim_and_citation", async () => {
   });
   const claims = Array.isArray(recall.claims) ? recall.claims : [];
   const supportingDocuments = Array.isArray(recall.supporting_documents) ? recall.supporting_documents : [];
-  assert(recall.retrieval_mode === "hybrid", `recall mode = ${recall.retrieval_mode}, want hybrid`);
+  assertHybridRetrievalMode(recall.retrieval_mode);
   const playwrightClaim = claims.find((claim) => String(claim.claim_text || "").includes("Playwright"));
   assert(playwrightClaim, "recall did not return the expected Playwright claim");
   assert(Number.isFinite(Number(playwrightClaim.text_score)), "Playwright claim did not include text_score");

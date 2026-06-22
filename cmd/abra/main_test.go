@@ -615,30 +615,38 @@ func TestAgentsBootstrapIngestsAndVerifiesContext(t *testing.T) {
 	ingestRequests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/ingest/documents/batch":
-			ingestRequests++
+		case "/sources/configs":
 			var body map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				t.Fatalf("decode ingest: %v", err)
+				t.Fatalf("decode source config: %v", err)
 			}
-			docs, _ := body["documents"].([]any)
-			results := make([]map[string]any, 0, len(docs))
-			for index, raw := range docs {
-				doc, _ := raw.(map[string]any)
-				if doc["scope"] != wantScope {
-					t.Fatalf("ingest scope = %v, want %s", doc["scope"], wantScope)
-				}
-				results = append(results, map[string]any{
-					"index":       index,
-					"document_id": fmt.Sprintf("doc-%d", index),
-					"source_url":  doc["source_url"],
-					"chunks":      1,
-					"claims":      1,
-				})
+			if body["scope"] != wantScope {
+				t.Fatalf("source scope = %v, want %s", body["scope"], wantScope)
+			}
+			if body["authority"] != "source-code" {
+				t.Fatalf("source authority = %v, want source-code", body["authority"])
 			}
 			writeTestJSON(t, w, map[string]any{
-				"accepted":  len(results),
-				"documents": results,
+				"source_config_id": "source-bootstrap",
+				"source_config":    map[string]any{"id": "source-bootstrap", "scope": wantScope},
+			})
+		case "/ingestion/jobs":
+			ingestRequests++
+			if r.Method == http.MethodPost {
+				writeTestJSON(t, w, map[string]any{
+					"ingestion_job": map[string]any{"id": "job-bootstrap", "status": "queued"},
+				})
+				return
+			}
+			writeTestJSON(t, w, map[string]any{
+				"ingestion_jobs": []map[string]any{{
+					"id":                "job-bootstrap",
+					"status":            "succeeded",
+					"documents_seen":    1,
+					"documents_changed": 1,
+					"chunks_written":    1,
+					"claims_written":    1,
+				}},
 			})
 		case "/mcp":
 			var rpc map[string]any
@@ -743,27 +751,28 @@ func TestAgentsBootstrapInstallsCodexMCPBeforeFinalVerify(t *testing.T) {
 	ingestRequests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/ingest/documents/batch":
+		case "/sources/configs":
+			writeTestJSON(t, w, map[string]any{
+				"source_config_id": "source-bootstrap",
+				"source_config":    map[string]any{"id": "source-bootstrap", "scope": wantScope},
+			})
+		case "/ingestion/jobs":
 			ingestRequests++
-			var body map[string]any
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				t.Fatalf("decode ingest: %v", err)
-			}
-			docs, _ := body["documents"].([]any)
-			results := make([]map[string]any, 0, len(docs))
-			for index, raw := range docs {
-				doc, _ := raw.(map[string]any)
-				results = append(results, map[string]any{
-					"index":       index,
-					"document_id": fmt.Sprintf("doc-%d", index),
-					"source_url":  doc["source_url"],
-					"chunks":      1,
-					"claims":      1,
+			if r.Method == http.MethodPost {
+				writeTestJSON(t, w, map[string]any{
+					"ingestion_job": map[string]any{"id": "job-bootstrap", "status": "queued"},
 				})
+				return
 			}
 			writeTestJSON(t, w, map[string]any{
-				"accepted":  len(results),
-				"documents": results,
+				"ingestion_jobs": []map[string]any{{
+					"id":                "job-bootstrap",
+					"status":            "succeeded",
+					"documents_seen":    1,
+					"documents_changed": 1,
+					"chunks_written":    1,
+					"claims_written":    1,
+				}},
 			})
 		case "/mcp":
 			var rpc map[string]any
@@ -1292,26 +1301,27 @@ func TestAgentsBootstrapNonCodexSkipsCodexInstall(t *testing.T) {
 	wantScope := "repo:" + slug(filepath.Base(root))
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/ingest/documents/batch":
-			var body map[string]any
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				t.Fatalf("decode ingest: %v", err)
-			}
-			docs, _ := body["documents"].([]any)
-			results := make([]map[string]any, 0, len(docs))
-			for index, raw := range docs {
-				doc, _ := raw.(map[string]any)
-				results = append(results, map[string]any{
-					"index":       index,
-					"document_id": fmt.Sprintf("doc-%d", index),
-					"source_url":  doc["source_url"],
-					"chunks":      1,
-					"claims":      1,
+		case "/sources/configs":
+			writeTestJSON(t, w, map[string]any{
+				"source_config_id": "source-bootstrap",
+				"source_config":    map[string]any{"id": "source-bootstrap", "scope": wantScope},
+			})
+		case "/ingestion/jobs":
+			if r.Method == http.MethodPost {
+				writeTestJSON(t, w, map[string]any{
+					"ingestion_job": map[string]any{"id": "job-bootstrap", "status": "queued"},
 				})
+				return
 			}
 			writeTestJSON(t, w, map[string]any{
-				"accepted":  len(results),
-				"documents": results,
+				"ingestion_jobs": []map[string]any{{
+					"id":                "job-bootstrap",
+					"status":            "succeeded",
+					"documents_seen":    1,
+					"documents_changed": 1,
+					"chunks_written":    1,
+					"claims_written":    1,
+				}},
 			})
 		case "/mcp":
 			var rpc map[string]any
@@ -2652,14 +2662,17 @@ func TestSetupYesNoStartDefaultsLocalQwen(t *testing.T) {
 	if values["WORKER_INTERVAL"] != "30s" {
 		t.Fatalf("worker interval = %q", values["WORKER_INTERVAL"])
 	}
-	if values["RERANKER_PROVIDER"] != "local" {
+	if values["RERANKER_PROVIDER"] != "none" {
 		t.Fatalf("reranker provider = %q", values["RERANKER_PROVIDER"])
 	}
-	if values["RERANKER_BASE_URL"] != "http://host.docker.internal:8081/v1" {
+	if values["RERANKER_BASE_URL"] != "" {
 		t.Fatalf("reranker base url = %q", values["RERANKER_BASE_URL"])
 	}
-	if values["RERANKER_MODEL"] != defaultRerankerServedModelName {
+	if values["RERANKER_MODEL"] != "" {
 		t.Fatalf("reranker model = %q", values["RERANKER_MODEL"])
+	}
+	if !strings.Contains(output, "Reranker: disabled by default") {
+		t.Fatalf("setup output should report disabled default reranker:\n%s", output)
 	}
 	for _, want := range []string{
 		"abra up --env-file",
@@ -2756,6 +2769,47 @@ func TestConfigModelLocalPersistsRunnerControls(t *testing.T) {
 	}
 	if values["ABRA_EMBEDDING_BATCH_MAX_TOKENS"] != "3000" {
 		t.Fatalf("batch max tokens = %q", values["ABRA_EMBEDDING_BATCH_MAX_TOKENS"])
+	}
+}
+
+func TestConfigModelLocalInfersCompatibleReranker(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+
+	output := captureStdout(t, func() {
+		if err := run(context.Background(), []string{
+			"config", "model", "local",
+			"--reranker-base-url", "http://localhost:9998/v1",
+			"--reranker-model", "custom-reranker",
+			"--reranker-api-key", "reranker-key",
+			"--reranker-timeout", "45s",
+		}); err != nil {
+			t.Fatalf("config model local error = %v", err)
+		}
+	})
+	values, err := readEnvValues(filepath.Join(home, "quickstart.env"))
+	if err != nil {
+		t.Fatalf("read env: %v", err)
+	}
+	if values["RERANKER_PROVIDER"] != "compatible" {
+		t.Fatalf("reranker provider = %q", values["RERANKER_PROVIDER"])
+	}
+	if values["RERANKER_BASE_URL"] != "http://host.docker.internal:9998/v1" {
+		t.Fatalf("reranker base url = %q", values["RERANKER_BASE_URL"])
+	}
+	if values["RERANKER_MODEL"] != "custom-reranker" {
+		t.Fatalf("reranker model = %q", values["RERANKER_MODEL"])
+	}
+	if values["RERANKER_API_KEY"] != "reranker-key" {
+		t.Fatalf("reranker api key = %q", values["RERANKER_API_KEY"])
+	}
+	if values["RERANKER_TIMEOUT"] != "45s" {
+		t.Fatalf("reranker timeout = %q", values["RERANKER_TIMEOUT"])
+	}
+	if !strings.Contains(output, "Reranker config updated: compatible custom-reranker") {
+		t.Fatalf("config output missing reranker summary:\n%s", output)
 	}
 }
 
@@ -3333,6 +3387,51 @@ func TestSetupCompatibleNoStartDoesNotSuggestLocalModels(t *testing.T) {
 	}
 }
 
+func TestSetupCompatibleConfiguresCustomReranker(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+
+	output := captureStdout(t, func() {
+		if err := run(context.Background(), []string{
+			"setup",
+			"--compatible",
+			"--base-url", "https://models.example/v1",
+			"--embedding-model", "custom-embedding",
+			"--dimensions", "768",
+			"--api-key", "provider-key",
+			"--reranker-base-url", "http://localhost:9998/v1",
+			"--reranker-model", "custom-reranker",
+			"--no-start",
+		}); err != nil {
+			t.Fatalf("setup compatible error = %v", err)
+		}
+	})
+	values, err := readEnvValues(filepath.Join(home, "quickstart.env"))
+	if err != nil {
+		t.Fatalf("read env: %v", err)
+	}
+	if values["RERANKER_PROVIDER"] != "compatible" {
+		t.Fatalf("reranker provider = %q", values["RERANKER_PROVIDER"])
+	}
+	if values["RERANKER_BASE_URL"] != "http://host.docker.internal:9998/v1" {
+		t.Fatalf("reranker base url = %q", values["RERANKER_BASE_URL"])
+	}
+	if values["RERANKER_MODEL"] != "custom-reranker" {
+		t.Fatalf("reranker model = %q", values["RERANKER_MODEL"])
+	}
+	if values["RERANKER_API_KEY"] != "provider-key" {
+		t.Fatalf("reranker api key = %q", values["RERANKER_API_KEY"])
+	}
+	if values["RERANKER_TIMEOUT"] != "30s" {
+		t.Fatalf("reranker timeout = %q", values["RERANKER_TIMEOUT"])
+	}
+	if !strings.Contains(output, "Reranker: compatible custom-reranker") {
+		t.Fatalf("setup output missing reranker summary:\n%s", output)
+	}
+}
+
 func TestSetupCompatibleNonInteractiveRequiresExplicitEndpointAndModel(t *testing.T) {
 	root := t.TempDir()
 	home := t.TempDir()
@@ -3599,6 +3698,80 @@ func TestConfigModelCompatibleAllowsNoAPIKey(t *testing.T) {
 	}
 }
 
+func TestConfigModelCompatibleConfiguresCustomReranker(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+
+	output := captureStdout(t, func() {
+		err := run(context.Background(), []string{
+			"config",
+			"model",
+			"compatible",
+			"--base-url", "https://models.example/v1",
+			"--api-key", "embedding-key",
+			"--model", "custom-embed",
+			"--dimensions", "768",
+			"--reranker-base-url", "http://localhost:9998/v1",
+			"--reranker-model", "custom-reranker",
+			"--reranker-api-key", "reranker-key",
+			"--reranker-timeout", "45s",
+		})
+		if err != nil {
+			t.Fatalf("config model compatible error = %v", err)
+		}
+	})
+	values, err := readEnvValues(filepath.Join(home, "quickstart.env"))
+	if err != nil {
+		t.Fatalf("read env: %v", err)
+	}
+	if values["EMBEDDING_PROVIDER"] != "compatible" {
+		t.Fatalf("provider = %q", values["EMBEDDING_PROVIDER"])
+	}
+	if values["RERANKER_PROVIDER"] != "compatible" {
+		t.Fatalf("reranker provider = %q", values["RERANKER_PROVIDER"])
+	}
+	if values["RERANKER_BASE_URL"] != "http://host.docker.internal:9998/v1" {
+		t.Fatalf("reranker base url = %q", values["RERANKER_BASE_URL"])
+	}
+	if values["RERANKER_API_KEY"] != "reranker-key" {
+		t.Fatalf("reranker api key = %q", values["RERANKER_API_KEY"])
+	}
+	if values["RERANKER_MODEL"] != "custom-reranker" {
+		t.Fatalf("reranker model = %q", values["RERANKER_MODEL"])
+	}
+	if values["RERANKER_TIMEOUT"] != "45s" {
+		t.Fatalf("reranker timeout = %q", values["RERANKER_TIMEOUT"])
+	}
+	if !strings.Contains(output, "Reranker config updated: compatible custom-reranker") {
+		t.Fatalf("config output missing reranker summary:\n%s", output)
+	}
+}
+
+func TestConfigModelCompatibleRejectsIncompleteReranker(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+
+	err := run(context.Background(), []string{
+		"config",
+		"model",
+		"compatible",
+		"--base-url", "https://models.example/v1",
+		"--model", "custom-embed",
+		"--dimensions", "768",
+		"--reranker-provider", "compatible",
+	})
+	if err == nil {
+		t.Fatal("expected incomplete reranker error")
+	}
+	if !strings.Contains(err.Error(), "--reranker-base-url") || !strings.Contains(err.Error(), "--reranker-model") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestConfigModelOpenAIDefaults(t *testing.T) {
 	root := t.TempDir()
 	home := t.TempDir()
@@ -3737,10 +3910,10 @@ func TestConfigModelLocalRestoresQwenDefaults(t *testing.T) {
 	if values["ABRA_AI_PROVIDER_CONCURRENCY"] != "1" {
 		t.Fatalf("provider concurrency = %q", values["ABRA_AI_PROVIDER_CONCURRENCY"])
 	}
-	if values["RERANKER_PROVIDER"] != "local" || values["RERANKER_BASE_URL"] != "http://host.docker.internal:8081/v1" {
+	if values["RERANKER_PROVIDER"] != "none" || values["RERANKER_BASE_URL"] != "" {
 		t.Fatalf("reranker fields = provider %q base %q", values["RERANKER_PROVIDER"], values["RERANKER_BASE_URL"])
 	}
-	if values["RERANKER_MODEL"] != defaultRerankerServedModelName {
+	if values["RERANKER_MODEL"] != "" {
 		t.Fatalf("reranker model = %q", values["RERANKER_MODEL"])
 	}
 	if values["ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION"] != "false" {
@@ -3879,10 +4052,18 @@ func TestProductionLocalRunnerRequiresDigestPinnedImage(t *testing.T) {
 	args := parseArgs([]string{"models", "up"})
 	if err := updateEnvValues(args, map[string]string{
 		"EMBEDDING_PROVIDER":                   "local",
-		"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION": "true",
+		"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION": "false",
 		"ABRA_LOCAL_EMBEDDING_IMAGE":           "ghcr.io/ggml-org/llama.cpp:server",
 	}); err != nil {
 		t.Fatalf("update env error = %v", err)
+	}
+	if err := validateLocalRunnerImagePolicy(args, embeddingRunner(args)); err == nil || !strings.Contains(err.Error(), "explicit operator approval") {
+		t.Fatalf("allow policy error = %v", err)
+	}
+	if err := updateEnvValues(args, map[string]string{
+		"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION": "true",
+	}); err != nil {
+		t.Fatalf("update allow env error = %v", err)
 	}
 	if err := validateLocalRunnerImagePolicy(args, embeddingRunner(args)); err == nil || !strings.Contains(err.Error(), "digest-pinned") {
 		t.Fatalf("policy error = %v", err)
@@ -3894,6 +4075,15 @@ func TestProductionLocalRunnerRequiresDigestPinnedImage(t *testing.T) {
 	}
 	if err := validateLocalRunnerImagePolicy(args, embeddingRunner(args)); err != nil {
 		t.Fatalf("digest image policy error = %v", err)
+	}
+	if err := updateEnvValues(args, map[string]string{
+		"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION": "false",
+	}); err != nil {
+		t.Fatalf("update disallow env error = %v", err)
+	}
+	allowedArgs := parseArgs([]string{"models", "up", "--allow-production-local-embeddings"})
+	if err := validateLocalRunnerImagePolicy(allowedArgs, embeddingRunner(allowedArgs)); err != nil {
+		t.Fatalf("cli allow policy error = %v", err)
 	}
 }
 
@@ -3947,10 +4137,11 @@ func TestSyncLocalRunnerEnvNormalizesLocalAliases(t *testing.T) {
 	}
 	args := parseArgs([]string{"models", "up"})
 	if err := updateEnvValues(args, map[string]string{
-		"EMBEDDING_PROVIDER":   "local-smart",
-		"EMBEDDING_BASE_URL":   "http://host.docker.internal:9999/v1",
-		"EMBEDDING_MODEL":      "alias-model",
-		"EMBEDDING_DIMENSIONS": "1024",
+		"EMBEDDING_PROVIDER":                   "local-smart",
+		"EMBEDDING_BASE_URL":                   "http://host.docker.internal:9999/v1",
+		"EMBEDDING_MODEL":                      "alias-model",
+		"EMBEDDING_DIMENSIONS":                 "1024",
+		"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION": "true",
 	}); err != nil {
 		t.Fatalf("update env error = %v", err)
 	}
@@ -3966,6 +4157,31 @@ func TestSyncLocalRunnerEnvNormalizesLocalAliases(t *testing.T) {
 	}
 	if values["EMBEDDING_MODEL"] != "alias-model" {
 		t.Fatalf("model = %q", values["EMBEDDING_MODEL"])
+	}
+	if values["ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION"] != "true" {
+		t.Fatalf("local production guard = %q", values["ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION"])
+	}
+}
+
+func TestSyncLocalRunnerEnvCanExplicitlyAllowProductionLocalEmbeddings(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+
+	if err := run(context.Background(), []string{"init"}); err != nil {
+		t.Fatalf("init error = %v", err)
+	}
+	args := parseArgs([]string{"models", "up", "--allow-production-local-embeddings"})
+	if err := syncLocalRunnerEnv(args); err != nil {
+		t.Fatalf("sync local runner env error = %v", err)
+	}
+	values, err := readEnvValues(filepath.Join(home, "quickstart.env"))
+	if err != nil {
+		t.Fatalf("read env: %v", err)
+	}
+	if values["ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION"] != "true" {
+		t.Fatalf("local production guard = %q", values["ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION"])
 	}
 }
 
@@ -4084,7 +4300,7 @@ func TestFriendlyProviderErrorUsesStructuredPayload(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if !strings.Contains(err.Error(), "auth_failed") || !strings.Contains(err.Error(), "Check the embedding API key/model config") {
+	if !strings.Contains(err.Error(), "auth_failed") || !strings.Contains(err.Error(), "base URL, model, and dimensions") {
 		t.Fatalf("error = %v", err)
 	}
 }
@@ -4562,6 +4778,129 @@ func TestConnectorsMCPInspectListsUpstreamTools(t *testing.T) {
 	}
 }
 
+func TestConnectorsMCPTemplateIncludesACLPassthroughHints(t *testing.T) {
+	output := captureStdout(t, func() {
+		err := run(context.Background(), []string{
+			"connectors", "mcp", "template",
+			"--scope", "team:platform",
+			"--connector", "confluence",
+			"--owner", "platform",
+		})
+		if err != nil {
+			t.Fatalf("connectors mcp template error = %v", err)
+		}
+	})
+	var manifest map[string]any
+	if err := json.Unmarshal([]byte(output), &manifest); err != nil {
+		t.Fatalf("template output is not JSON: %v\n%s", err, output)
+	}
+	metadata, _ := manifest["metadata"].(map[string]any)
+	if manifest["scope"] != "team:platform" || manifest["connector_kind"] != "confluence" || metadata["acl_passthrough"] != true {
+		t.Fatalf("manifest = %#v", manifest)
+	}
+	if _, ok := metadata["acl_groups"].([]any); !ok {
+		t.Fatalf("acl_groups missing from metadata: %#v", metadata)
+	}
+}
+
+func TestConnectorsMCPAddInspectsValidatesAndRegisters(t *testing.T) {
+	var methods []string
+	var sourceRequest map[string]any
+	var jobRequest map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/mcp":
+			var rpc map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&rpc); err != nil {
+				t.Fatalf("decode rpc body: %v", err)
+			}
+			method := stringValue(rpc["method"], "")
+			methods = append(methods, method)
+			switch method {
+			case "tools/list":
+				writeTestJSON(t, w, map[string]any{
+					"jsonrpc": "2.0",
+					"id":      rpc["id"],
+					"result": map[string]any{
+						"tools": []map[string]any{{
+							"name":        "export_documents",
+							"description": "Export normalized documents",
+						}},
+					},
+				})
+			case "tools/call":
+				params, _ := rpc["params"].(map[string]any)
+				if params["name"] != "export_documents" {
+					t.Fatalf("rpc params = %#v", params)
+				}
+				writeTestJSON(t, w, map[string]any{
+					"jsonrpc": "2.0",
+					"id":      rpc["id"],
+					"result": map[string]any{
+						"structuredContent": map[string]any{
+							"documents": []map[string]any{{
+								"source_type": "confluence",
+								"source_url":  "https://wiki.example/pages/1",
+								"title":       "Runbook",
+								"content":     "Agents should cite this runbook.",
+								"metadata": map[string]any{
+									"acl_groups": []string{"platform"},
+								},
+							}},
+						},
+					},
+				})
+			default:
+				t.Fatalf("unexpected mcp method %s", method)
+			}
+		case "/sources/configs":
+			if err := json.NewDecoder(r.Body).Decode(&sourceRequest); err != nil {
+				t.Fatalf("decode source body: %v", err)
+			}
+			writeTestJSON(t, w, map[string]any{"source_config_id": "source-mcp"})
+		case "/ingestion/jobs":
+			if err := json.NewDecoder(r.Body).Decode(&jobRequest); err != nil {
+				t.Fatalf("decode job body: %v", err)
+			}
+			writeTestJSON(t, w, map[string]any{
+				"ingestion_job": map[string]any{"id": "job-mcp", "status": "queued"},
+			})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	output := captureStdout(t, func() {
+		err := run(context.Background(), []string{
+			"connectors", "mcp", "add", server.URL + "/mcp",
+			"--scope", "team:platform",
+			"--connector", "confluence",
+			"--document-source-type", "confluence",
+			"--base-url", server.URL,
+			"--token", "test-token",
+		})
+		if err != nil {
+			t.Fatalf("connectors mcp add error = %v", err)
+		}
+	})
+	if strings.Join(methods, ",") != "tools/list,tools/call" {
+		t.Fatalf("mcp methods = %#v", methods)
+	}
+	config, _ := sourceRequest["config"].(map[string]any)
+	if sourceRequest["connector_kind"] != "confluence" || config["tool"] != "export_documents" || config["document_source_type"] != "confluence" {
+		t.Fatalf("source request = %#v", sourceRequest)
+	}
+	if jobRequest["source_config_id"] != "source-mcp" {
+		t.Fatalf("job request = %#v", jobRequest)
+	}
+	for _, want := range []string{"Inspecting MCP connector", "Selected tool: export_documents", "MCP source valid: 1 document(s)", "Source configured: source-mcp"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q:\n%s", want, output)
+		}
+	}
+}
+
 func TestConnectorsMCPRegisterQueuesSourceConfig(t *testing.T) {
 	var sourceRequest map[string]any
 	var jobRequest map[string]any
@@ -4904,6 +5243,61 @@ func TestSourcesStatusShowsSourceAndLatestJob(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatalf("sources status error = %v", err)
+		}
+	})
+	for _, want := range []string{"Source: source-mcp", "status: active", "latest_job: - job-latest  succeeded"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestConnectorsStatusAliasesSourceStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/sources/configs/source-mcp":
+			writeTestJSON(t, w, map[string]any{
+				"source_config": map[string]any{
+					"id":              "source-mcp",
+					"scope":           "team:platform",
+					"status":          "active",
+					"source_type":     "mcp",
+					"connector_kind":  "confluence",
+					"name":            "Confluence",
+					"authority":       "official-doc",
+					"authority_score": 0.9,
+				},
+			})
+		case "/ingestion/jobs":
+			if r.URL.Query().Get("source_config_id") != "source-mcp" || r.URL.Query().Get("limit") != "1" {
+				t.Fatalf("jobs query = %s", r.URL.RawQuery)
+			}
+			writeTestJSON(t, w, map[string]any{
+				"ingestion_jobs": []map[string]any{{
+					"id":                "job-latest",
+					"status":            "succeeded",
+					"trigger_type":      "manual",
+					"source_config_id":  "source-mcp",
+					"attempts":          1,
+					"max_attempts":      3,
+					"documents_seen":    2,
+					"documents_changed": 1,
+				}},
+			})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	output := captureStdout(t, func() {
+		err := run(context.Background(), []string{
+			"connectors", "status", "source-mcp",
+			"--base-url", server.URL,
+			"--token", "test-token",
+		})
+		if err != nil {
+			t.Fatalf("connectors status error = %v", err)
 		}
 	})
 	for _, want := range []string{"Source: source-mcp", "status: active", "latest_job: - job-latest  succeeded"} {
@@ -5551,6 +5945,39 @@ func TestLocalPathIngestJSONSuppressesProgress(t *testing.T) {
 	}
 }
 
+func TestPlanDirectIngestBatchesHonorsPayloadAndChunkLimits(t *testing.T) {
+	payloadDocs := []map[string]any{
+		{"content": strings.Repeat("a", 20), "title": "small-a"},
+		{"content": strings.Repeat("b", 20), "title": "small-b"},
+		{"content": strings.Repeat("c", 20), "title": "small-c"},
+	}
+	payloadLimit := directIngestBatchBasePayloadBytes() +
+		estimateDirectIngestDocumentPayloadBytes(payloadDocs[0]) +
+		estimateDirectIngestDocumentPayloadBytes(payloadDocs[1])
+	payloadBatches := planDirectIngestBatches(payloadDocs, directIngestBatchLimits{
+		MaxDocuments:    50,
+		MaxPayloadBytes: payloadLimit,
+		MaxChunks:       50,
+	})
+	if !reflect.DeepEqual(payloadBatches, []directIngestBatch{{Start: 0, End: 2}, {Start: 2, End: 3}}) {
+		t.Fatalf("payload batches = %#v", payloadBatches)
+	}
+
+	chunkDocs := []map[string]any{
+		{"content": "small", "title": "small-a"},
+		{"content": strings.Repeat("b", directIngestChunkEstimateChars*2), "title": "large-b"},
+		{"content": "small", "title": "small-c"},
+	}
+	chunkBatches := planDirectIngestBatches(chunkDocs, directIngestBatchLimits{
+		MaxDocuments:    50,
+		MaxPayloadBytes: 1 << 20,
+		MaxChunks:       2,
+	})
+	if !reflect.DeepEqual(chunkBatches, []directIngestBatch{{Start: 0, End: 1}, {Start: 1, End: 2}, {Start: 2, End: 3}}) {
+		t.Fatalf("chunk batches = %#v", chunkBatches)
+	}
+}
+
 func TestLocalPathIngestChunksLargeBatch(t *testing.T) {
 	root := t.TempDir()
 	for i := 0; i < 51; i++ {
@@ -5595,6 +6022,57 @@ func TestLocalPathIngestChunksLargeBatch(t *testing.T) {
 	}
 	if !reflect.DeepEqual(batchSizes, []int{50, 1}) {
 		t.Fatalf("batch sizes = %#v, want [50 1]", batchSizes)
+	}
+}
+
+func TestLocalPathIngestSplitsMixedFileSizesByEstimatedChunks(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "a-small.md"), "# Small A\n\nAgents should use Abra.")
+	mustWrite(t, filepath.Join(root, "b-large.md"), "# Large\n\n"+strings.Repeat("x", directIngestChunkEstimateChars*directIngestBatchMaxChunks))
+	mustWrite(t, filepath.Join(root, "c-small.md"), "# Small C\n\nRelease checks should pass.")
+
+	var batchPaths [][]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ingest/documents/batch" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		rawDocs, _ := body["documents"].([]any)
+		paths := make([]string, 0, len(rawDocs))
+		results := make([]map[string]any, 0, len(rawDocs))
+		for index, raw := range rawDocs {
+			doc, _ := raw.(map[string]any)
+			metadata, _ := doc["metadata"].(map[string]any)
+			paths = append(paths, stringValue(metadata["ingest_path"], ""))
+			results = append(results, map[string]any{
+				"index":       index,
+				"document_id": fmt.Sprintf("doc-%d-%d", len(batchPaths), index),
+				"source_url":  doc["source_url"],
+				"chunks":      1,
+				"claims":      1,
+			})
+		}
+		batchPaths = append(batchPaths, paths)
+		_ = json.NewEncoder(w).Encode(map[string]any{"accepted": len(results), "documents": results})
+	}))
+	defer server.Close()
+
+	if err := run(context.Background(), []string{
+		"ingest",
+		root,
+		"--include", "**/*.md",
+		"--quiet",
+		"--base-url", server.URL,
+		"--token", "test-token",
+	}); err != nil {
+		t.Fatalf("ingest error = %v", err)
+	}
+	want := [][]string{{"a-small.md"}, {"b-large.md"}, {"c-small.md"}}
+	if !reflect.DeepEqual(batchPaths, want) {
+		t.Fatalf("batch paths = %#v, want %#v", batchPaths, want)
 	}
 }
 
@@ -5685,6 +6163,47 @@ func TestDefaultEnvPathUsesCheckoutOnlyForAbraSourceCheckout(t *testing.T) {
 	absRoot, _ := filepath.Abs(root)
 	if dir != absRoot {
 		t.Fatalf("projectDir = %q, want checkout dir %q", dir, absRoot)
+	}
+}
+
+func TestEnsureEnvBackfillsLegacyCheckoutQuickstartDefaults(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+	mustWrite(t, filepath.Join(root, "docker-compose.yml"), "services:\n  api:\n    build: .\n")
+	mustWrite(t, filepath.Join(root, "docker-compose.dev.yml"), "services:\n  api:\n    build: .\n")
+	mustWrite(t, filepath.Join(root, "go.mod"), "module github.com/hermawan22/abra\n")
+	mustWrite(t, filepath.Join(root, "cmd", "abra", "main.go"), "package main\n")
+	mustWrite(t, filepath.Join(root, "migrations", "001_init.sql"), "-- init\n")
+	mustWrite(t, filepath.Join(root, checkoutEnvPath), strings.Join([]string{
+		"ABRA_API_KEYS=dev-token",
+		"ABRA_API_TOKEN=dev-token",
+		"NODE_ENV=development",
+		"ABRA_PORT=18080",
+		"EMBEDDING_PROVIDER=local",
+		"EMBEDDING_BASE_URL=http://host.docker.internal:8080/v1",
+		"EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0",
+		"EMBEDDING_DIMENSIONS=1024",
+		"",
+	}, "\n"))
+
+	if err := ensureEnv(cliArgs{Flags: map[string]string{}, Bools: map[string]bool{}}); err != nil {
+		t.Fatalf("ensureEnv error = %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(root, checkoutEnvPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"POSTGRES_PASSWORD=abra\n",
+		"ABRA_DATABASE_URL=postgres://abra:abra@postgres:5432/abra\n",
+		"RERANKER_PROVIDER=\n",
+		"ABRA_MAX_REQUEST_BODY_BYTES=26214400\n",
+	} {
+		if !strings.Contains(string(content), want) {
+			t.Fatalf("backfilled env missing %q:\n%s", want, content)
+		}
 	}
 }
 

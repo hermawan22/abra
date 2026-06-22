@@ -1,0 +1,32 @@
+{
+  "id": "knowledge-base-example",
+  "name": "Example Knowledge Base",
+  "scope": "team:docs",
+  "mcp_url": "https://mcp.example.com/mcp",
+  "tool": "export_documents",
+  "arguments": {
+    "collection": "docs",
+    "limit": 50
+  },
+  "connector_kind": "knowledge-base",
+  "document_source_type": "markdown",
+  "bearer_token_env": "MCP_EXPORT_TOKEN",
+  "header_env": {
+    "X-Workspace-ID": "MCP_WORKSPACE_ID"
+  },
+  "status": "active",
+  "authority": "team-convention",
+  "authority_score": 0.7,
+  "freshness_seconds": 600,
+  "schedule": "@every 10m",
+  "verify_query": "service runbook",
+  "metadata": {
+    "owner": "docs",
+    "connector_model": "user_owned_mcp",
+    "acl_groups": [
+      "docs"
+    ],
+    "acl_passthrough": true,
+    "acl_source_field": "metadata.acl_groups"
+  }
+}

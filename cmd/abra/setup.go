@@ -63,7 +63,7 @@ func setup(ctx context.Context, args cliArgs) error {
 		startModels := "yes"
 		if interactive && !boolFlag(args, "yes") {
 			var err error
-			startModels, err = promptDefault(reader, "Start local Qwen embedding and reranker runners now?", "yes")
+			startModels, err = promptDefault(reader, "Start local Qwen embedding runner now?", "yes")
 			if err != nil {
 				return err
 			}
@@ -194,7 +194,7 @@ func setupEmbeddingConfig(args cliArgs, reader *bufio.Reader, interactive bool) 
 	if mode == "" {
 		if interactive && !boolFlag(args, "yes") {
 			fmt.Println("Embedding provider (used for retrieval, not chat/LLM answers):")
-			fmt.Println("  1. local - built-in Qwen3 embedding and reranker runners")
+			fmt.Println("  1. local - built-in Qwen3 embedding runner")
 			fmt.Println("  2. compatible - custom OpenAI-compatible embedding endpoint")
 			fmt.Println("  3. openai - OpenAI text-embedding-3-small convenience alias")
 			choice, err := promptDefault(reader, "Choose embedding provider [1/2/3]", "1")
@@ -277,7 +277,12 @@ func setupLocalNeuralEmbeddings(args cliArgs, reader *bufio.Reader, interactive 
 	baseURL := containerReachableBaseURL(setupEmbeddingBaseURL(args, defaultEmbeddingBaseURL))
 	model := setupEmbeddingModel(args, defaultServedModelName)
 	dimensions := firstNonEmpty(flag(args, "dimensions", ""), "1024")
-	rerankerProvider := firstNonEmpty(flag(args, "reranker-provider", ""), "local")
+	rerankerConfiguredByFlag := rerankerFlagProvided(args)
+	rerankerProvider := strings.ToLower(strings.TrimSpace(flag(args, "reranker-provider", "")))
+	if rerankerProvider == "" && rerankerConfiguredByFlag {
+		rerankerProvider = "compatible"
+	}
+	rerankerProvider = firstNonEmpty(rerankerProvider, "none")
 	rerankerBaseURL := firstNonEmpty(flag(args, "reranker-base-url", ""), defaultRerankerBaseURLForProvider(rerankerProvider))
 	rerankerModel := firstNonEmpty(flag(args, "reranker-model", ""), defaultRerankerModelForProvider(rerankerProvider))
 	apiKey := flag(args, "api-key", "")
@@ -302,24 +307,39 @@ func setupLocalNeuralEmbeddings(args cliArgs, reader *bufio.Reader, interactive 
 		if err != nil {
 			return err
 		}
-		rerankerProvider, err = promptDefault(reader, "Reranker provider", rerankerProvider)
-		if err != nil {
-			return err
+		if !rerankerConfiguredByFlag {
+			configureReranker, err := promptDefault(reader, "Configure optional reranker?", "no")
+			if err != nil {
+				return err
+			}
+			if strings.EqualFold(strings.TrimSpace(configureReranker), "yes") || strings.EqualFold(strings.TrimSpace(configureReranker), "y") {
+				rerankerProvider = "compatible"
+			} else {
+				rerankerProvider = "none"
+			}
 		}
-		rerankerBaseURL, err = promptDefault(reader, "Reranker base URL", rerankerBaseURL)
-		if err != nil {
-			return err
-		}
-		rerankerModel, err = promptDefault(reader, "Reranker request model", rerankerModel)
-		if err != nil {
-			return err
+		if !isDisabledProviderName(rerankerProvider) {
+			rerankerProvider, err = promptDefault(reader, "Reranker provider", rerankerProvider)
+			if err != nil {
+				return err
+			}
+			rerankerBaseURL, err = promptDefault(reader, "Reranker base URL", rerankerBaseURL)
+			if err != nil {
+				return err
+			}
+			rerankerModel, err = promptDefault(reader, "Reranker request model", rerankerModel)
+			if err != nil {
+				return err
+			}
 		}
 	}
 	baseURL = containerReachableBaseURL(strings.TrimSpace(baseURL))
 	rerankerBaseURL = containerReachableBaseURL(strings.TrimSpace(rerankerBaseURL))
+	rerankerAPIKey := apiKey
 	if isDisabledProviderName(rerankerProvider) {
 		rerankerBaseURL = ""
 		rerankerModel = ""
+		rerankerAPIKey = ""
 	}
 	if err := updateEnvValues(args, map[string]string{
 		"EMBEDDING_PROVIDER":                   "local",
@@ -333,17 +353,24 @@ func setupLocalNeuralEmbeddings(args cliArgs, reader *bufio.Reader, interactive 
 		"ABRA_AI_PROVIDER_CONCURRENCY":         firstNonEmpty(flag(args, "provider-concurrency", ""), "1"),
 		"RERANKER_PROVIDER":                    strings.TrimSpace(rerankerProvider),
 		"RERANKER_BASE_URL":                    strings.TrimSpace(rerankerBaseURL),
-		"RERANKER_API_KEY":                     strings.TrimSpace(apiKey),
+		"RERANKER_API_KEY":                     strings.TrimSpace(rerankerAPIKey),
 		"RERANKER_MODEL":                       strings.TrimSpace(rerankerModel),
+		"RERANKER_TIMEOUT":                     firstNonEmpty(flag(args, "reranker-timeout", ""), "10m"),
 		"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION": "false",
 	}); err != nil {
 		return err
 	}
 	fmt.Println("Embedding: local neural default (Qwen3-compatible)")
-	fmt.Println("Reranker: local neural default (Qwen3-compatible)")
-	fmt.Println("Local model runners: started automatically by abra up; inspect with abra models status")
+	if isDisabledProviderName(rerankerProvider) {
+		fmt.Println("Reranker: disabled by default; configure a compatible reranker only when you need reranked retrieval")
+	} else {
+		fmt.Println("Reranker: " + rerankerProvider + " " + strings.TrimSpace(rerankerModel))
+	}
+	fmt.Println("Local model runner: started automatically by abra up; inspect with abra models status")
 	fmt.Println("Host endpoint: embedding http://127.0.0.1:8080/v1")
-	fmt.Println("Host endpoint: reranker  http://127.0.0.1:8081/v1")
+	if !isDisabledProviderName(rerankerProvider) && isLocalProviderName(rerankerProvider) {
+		fmt.Println("Host endpoint: reranker  http://127.0.0.1:8081/v1")
+	}
 	fmt.Println("Compose endpoints are written as host.docker.internal so Abra containers can reach those host services.")
 	fmt.Println("After changing embedding providers, re-ingest important sources so vector recall uses the new embedding space.")
 	return nil
@@ -408,27 +435,38 @@ func setupCompatibleEmbeddings(args cliArgs, reader *bufio.Reader, interactive b
 		return fmt.Errorf("embedding dimensions are required for compatible model %q; pass --dimensions <size> so Abra can validate vector storage correctly", strings.TrimSpace(model))
 	}
 	baseURL = containerReachableBaseURL(strings.TrimSpace(baseURL))
+	reranker, err := compatibleRerankerConfig(args, apiKey, "")
+	if err != nil {
+		return err
+	}
 	if err := updateEnvValues(args, map[string]string{
-		"EMBEDDING_PROVIDER":                   "compatible",
-		"EMBEDDING_BASE_URL":                   baseURL,
-		"EMBEDDING_API_KEY":                    strings.TrimSpace(apiKey),
-		"EMBEDDING_MODEL":                      strings.TrimSpace(model),
-		"EMBEDDING_DIMENSIONS":                 strings.TrimSpace(dimensions),
-		"EMBEDDING_TIMEOUT":                    firstNonEmpty(flag(args, "embedding-timeout", ""), "30s"),
-		"ABRA_EMBEDDING_BATCH_MAX_ITEMS":       firstNonEmpty(flag(args, "embedding-batch-max-items", ""), "16"),
-		"ABRA_EMBEDDING_BATCH_MAX_TOKENS":      firstNonEmpty(flag(args, "embedding-batch-max-tokens", ""), "6000"),
-		"ABRA_AI_PROVIDER_CONCURRENCY":         firstNonEmpty(flag(args, "provider-concurrency", ""), "4"),
-		"RERANKER_PROVIDER":                    "",
-		"RERANKER_BASE_URL":                    "",
-		"RERANKER_API_KEY":                     "",
-		"RERANKER_MODEL":                       "",
-		"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION": "false",
+		"EMBEDDING_PROVIDER":                     "compatible",
+		"EMBEDDING_BASE_URL":                     baseURL,
+		"EMBEDDING_API_KEY":                      strings.TrimSpace(apiKey),
+		"EMBEDDING_MODEL":                        strings.TrimSpace(model),
+		"EMBEDDING_DIMENSIONS":                   strings.TrimSpace(dimensions),
+		"EMBEDDING_TIMEOUT":                      firstNonEmpty(flag(args, "embedding-timeout", ""), "30s"),
+		"ABRA_EMBEDDING_BATCH_MAX_ITEMS":         firstNonEmpty(flag(args, "embedding-batch-max-items", ""), "16"),
+		"ABRA_EMBEDDING_BATCH_MAX_TOKENS":        firstNonEmpty(flag(args, "embedding-batch-max-tokens", ""), "6000"),
+		"ABRA_AI_PROVIDER_CONCURRENCY":           firstNonEmpty(flag(args, "provider-concurrency", ""), "4"),
+		"RERANKER_PROVIDER":                      reranker.Provider,
+		"RERANKER_BASE_URL":                      reranker.BaseURL,
+		"RERANKER_API_KEY":                       reranker.APIKey,
+		"RERANKER_MODEL":                         reranker.Model,
+		"RERANKER_TIMEOUT":                       reranker.Timeout,
+		"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION":   "false",
+		"ABRA_LOCAL_EMBEDDING_IMAGE":             "",
+		"ABRA_LOCAL_EMBEDDING_PULL_POLICY":       "missing",
+		"ABRA_LOCAL_EMBEDDING_READINESS_TIMEOUT": "10s",
 	}); err != nil {
 		return err
 	}
 	fmt.Println("Embedding: compatible " + strings.TrimSpace(model))
 	if isLoopbackProviderURL(baseURL) {
 		fmt.Println("Endpoint: " + baseURL + " (rewritten so Abra containers can reach the host service)")
+	}
+	if reranker.Provider != "" && !isDisabledProviderName(reranker.Provider) {
+		fmt.Println("Reranker: " + reranker.Provider + " " + reranker.Model)
 	}
 	fmt.Println("After changing embedding providers, re-ingest important sources so vector recall uses the new embedding space.")
 	return nil

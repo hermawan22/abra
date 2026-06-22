@@ -37,6 +37,11 @@ const (
 	defaultWorkerInterval = 30 * time.Second
 	maxCLIResponseBody    = 8 << 20
 	installScript         = "https://github.com/hermawan22/abra/releases/latest/download/install.sh"
+
+	directIngestBatchMaxDocuments    = 50
+	directIngestBatchMaxPayloadBytes = 4 << 20
+	directIngestBatchMaxChunks       = 100
+	directIngestChunkEstimateChars   = 1080
 )
 
 var (
@@ -72,6 +77,23 @@ type connectorManifest struct {
 	Schedule           string            `json:"schedule"`
 	VerifyQuery        string            `json:"verify_query"`
 	Metadata           map[string]any    `json:"metadata"`
+}
+
+type directIngestBatchLimits struct {
+	MaxDocuments    int
+	MaxPayloadBytes int
+	MaxChunks       int
+}
+
+type directIngestBatch struct {
+	Start int
+	End   int
+}
+
+var defaultDirectIngestBatchLimits = directIngestBatchLimits{
+	MaxDocuments:    directIngestBatchMaxDocuments,
+	MaxPayloadBytes: directIngestBatchMaxPayloadBytes,
+	MaxChunks:       directIngestBatchMaxChunks,
 }
 
 type contextConfig struct {
@@ -407,15 +429,16 @@ func configCommand(args cliArgs) error {
 }
 
 func configShow(args cliArgs) error {
-	if err := ensureEnv(args); err != nil {
-		return err
+	path := envPath(args)
+	if !fileExists(path) {
+		return fmt.Errorf("config file not found: %s; run `abra setup` to create one", path)
 	}
-	values, err := readEnvValues(envPath(args))
+	values, err := readEnvValues(path)
 	if err != nil {
 		return err
 	}
 	view := map[string]any{
-		"env_file":             envPath(args),
+		"env_file":             path,
 		"api_token":            maskSecret(firstNonEmpty(values["ABRA_API_TOKEN"], firstCSV(values["ABRA_API_KEYS"], ""))),
 		"approval_mode":        values["ABRA_APPROVAL_MODE"],
 		"port":                 firstNonEmpty(values["ABRA_PORT"], "18080"),
@@ -434,6 +457,7 @@ func configShow(args cliArgs) error {
 		"reranker_base_url":    values["RERANKER_BASE_URL"],
 		"reranker_api_key":     maskSecret(values["RERANKER_API_KEY"]),
 		"reranker_model":       values["RERANKER_MODEL"],
+		"reranker_timeout":     values["RERANKER_TIMEOUT"],
 		"local_runner_image":   values["ABRA_LOCAL_EMBEDDING_IMAGE"],
 		"local_runner_pull":    firstNonEmpty(values["ABRA_LOCAL_EMBEDDING_PULL_POLICY"], "missing"),
 		"local_runner_timeout": firstNonEmpty(values["ABRA_LOCAL_EMBEDDING_READINESS_TIMEOUT"], "10s"),
@@ -465,6 +489,9 @@ func configShow(args cliArgs) error {
 		fmt.Println("reranker:  " + rerankerProvider)
 		fmt.Println("rerank_url: " + stringValue(view["reranker_base_url"], ""))
 		fmt.Println("rerank_model: " + stringValue(view["reranker_model"], ""))
+		if timeout := stringValue(view["reranker_timeout"], ""); timeout != "" {
+			fmt.Println("rerank_timeout: " + timeout)
+		}
 		fmt.Println("rerank_key:   " + stringValue(view["reranker_api_key"], ""))
 	}
 	if isLocalProviderName(stringValue(view["embedding_provider"], "")) {
@@ -487,9 +514,9 @@ func configModel(args cliArgs) error {
 	case "", "show":
 		return configShow(args)
 	case "local":
-		return configModelLocalNeural(args, "local neural embeddings + reranker")
+		return configModelLocalNeural(args, "local neural embeddings")
 	case "qwen3", "local-smart":
-		return configModelLocalNeural(args, "local neural embeddings + reranker")
+		return configModelLocalNeural(args, "local neural embeddings")
 	case "openai":
 		if flag(args, "base-url", "") == "" {
 			args.Flags["base-url"] = "https://api.openai.com/v1"
@@ -514,7 +541,10 @@ func configModelLocalNeural(args cliArgs, label string) error {
 		}
 		apiKey = strings.TrimSpace(string(bytes))
 	}
-	rerankerProvider := flag(args, "reranker-provider", "local")
+	reranker, err := compatibleRerankerConfig(args, apiKey, "none")
+	if err != nil {
+		return err
+	}
 	if err := updateEnvValues(args, map[string]string{
 		"EMBEDDING_PROVIDER":                   "local",
 		"EMBEDDING_BASE_URL":                   containerReachableBaseURL(flag(args, "base-url", defaultEmbeddingBaseURL)),
@@ -525,10 +555,11 @@ func configModelLocalNeural(args cliArgs, label string) error {
 		"ABRA_EMBEDDING_BATCH_MAX_ITEMS":       flag(args, "embedding-batch-max-items", "6"),
 		"ABRA_EMBEDDING_BATCH_MAX_TOKENS":      flag(args, "embedding-batch-max-tokens", "3000"),
 		"ABRA_AI_PROVIDER_CONCURRENCY":         flag(args, "provider-concurrency", "1"),
-		"RERANKER_PROVIDER":                    rerankerProvider,
-		"RERANKER_BASE_URL":                    containerReachableBaseURL(flag(args, "reranker-base-url", defaultRerankerBaseURLForProvider(rerankerProvider))),
-		"RERANKER_API_KEY":                     apiKey,
-		"RERANKER_MODEL":                       flag(args, "reranker-model", defaultRerankerModelForProvider(rerankerProvider)),
+		"RERANKER_PROVIDER":                    reranker.Provider,
+		"RERANKER_BASE_URL":                    reranker.BaseURL,
+		"RERANKER_API_KEY":                     reranker.APIKey,
+		"RERANKER_MODEL":                       reranker.Model,
+		"RERANKER_TIMEOUT":                     reranker.Timeout,
 		"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION": "false",
 		"ABRA_LOCAL_EMBEDDING_IMAGE":           flag(args, "runner-image", ""),
 		"ABRA_LOCAL_EMBEDDING_PULL_POLICY":     localRunnerPullPolicy(flag(args, "pull-policy", "missing")),
@@ -540,7 +571,10 @@ func configModelLocalNeural(args cliArgs, label string) error {
 		return err
 	}
 	fmt.Println("Model config updated: " + label)
-	fmt.Println("Run `abra up` to start the default local Qwen model runners and stack, or use `abra models up` only to manage the runners directly.")
+	if reranker.Provider != "" && !isDisabledProviderName(reranker.Provider) {
+		fmt.Println("Reranker config updated: " + reranker.Provider + " " + reranker.Model)
+	}
+	fmt.Println("Run `abra up` to start the default local Qwen embedding runner and stack, or use `abra models up` only to manage the runner directly.")
 	printRestartHint(args)
 	return nil
 }
@@ -564,6 +598,10 @@ func configModelCompatible(args cliArgs, label string) error {
 		return err
 	}
 	baseURL = containerReachableBaseURL(strings.TrimSpace(baseURL))
+	reranker, err := compatibleRerankerConfig(args, apiKey, "")
+	if err != nil {
+		return err
+	}
 	if err := updateEnvValues(args, map[string]string{
 		"EMBEDDING_PROVIDER":                     "compatible",
 		"EMBEDDING_BASE_URL":                     baseURL,
@@ -574,10 +612,11 @@ func configModelCompatible(args cliArgs, label string) error {
 		"ABRA_EMBEDDING_BATCH_MAX_ITEMS":         flag(args, "embedding-batch-max-items", "16"),
 		"ABRA_EMBEDDING_BATCH_MAX_TOKENS":        flag(args, "embedding-batch-max-tokens", "6000"),
 		"ABRA_AI_PROVIDER_CONCURRENCY":           flag(args, "provider-concurrency", "4"),
-		"RERANKER_PROVIDER":                      "",
-		"RERANKER_BASE_URL":                      "",
-		"RERANKER_API_KEY":                       "",
-		"RERANKER_MODEL":                         "",
+		"RERANKER_PROVIDER":                      reranker.Provider,
+		"RERANKER_BASE_URL":                      reranker.BaseURL,
+		"RERANKER_API_KEY":                       reranker.APIKey,
+		"RERANKER_MODEL":                         reranker.Model,
+		"RERANKER_TIMEOUT":                       reranker.Timeout,
 		"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION":   "false",
 		"ABRA_LOCAL_EMBEDDING_IMAGE":             "",
 		"ABRA_LOCAL_EMBEDDING_PULL_POLICY":       "missing",
@@ -586,8 +625,78 @@ func configModelCompatible(args cliArgs, label string) error {
 		return err
 	}
 	fmt.Println("Model config updated: " + label)
+	if reranker.Provider != "" && !isDisabledProviderName(reranker.Provider) {
+		fmt.Println("Reranker config updated: " + reranker.Provider + " " + reranker.Model)
+	}
 	printRestartHint(args)
 	return nil
+}
+
+type rerankerCLIConfig struct {
+	Provider string
+	BaseURL  string
+	APIKey   string
+	Model    string
+	Timeout  string
+}
+
+func compatibleRerankerConfig(args cliArgs, embeddingAPIKey, defaultProvider string) (rerankerCLIConfig, error) {
+	provider := strings.ToLower(strings.TrimSpace(flag(args, "reranker-provider", "")))
+	if boolFlag(args, "no-reranker") || boolFlag(args, "disable-reranker") {
+		provider = "none"
+	}
+	rerankerFlagUsed := provider != "" || rerankerFlagProvided(args)
+	if provider == "" && rerankerFlagUsed {
+		provider = "compatible"
+	}
+	if provider == "" {
+		provider = strings.ToLower(strings.TrimSpace(defaultProvider))
+	}
+	if provider == "" {
+		return rerankerCLIConfig{}, nil
+	}
+	if isDisabledProviderName(provider) {
+		return rerankerCLIConfig{Provider: provider}, nil
+	}
+
+	baseURL := firstNonEmpty(flag(args, "reranker-base-url", ""), defaultRerankerBaseURLForProvider(provider))
+	model := firstNonEmpty(flag(args, "reranker-model", ""), defaultRerankerModelForProvider(provider))
+	if !isLocalProviderName(provider) && (strings.TrimSpace(baseURL) == "" || strings.TrimSpace(model) == "") {
+		return rerankerCLIConfig{}, errors.New("compatible reranker config requires --reranker-base-url and --reranker-model; use --no-reranker to disable reranking")
+	}
+	apiKey := flag(args, "reranker-api-key", "")
+	if apiKey == "" && boolFlag(args, "reranker-api-key-stdin") {
+		bytes, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return rerankerCLIConfig{}, err
+		}
+		apiKey = strings.TrimSpace(string(bytes))
+	}
+	if apiKey == "" && !isLocalProviderName(provider) {
+		apiKey = embeddingAPIKey
+	}
+	timeout := flag(args, "reranker-timeout", "")
+	if timeout == "" {
+		if isLocalProviderName(provider) {
+			timeout = "10m"
+		} else {
+			timeout = "30s"
+		}
+	}
+	return rerankerCLIConfig{
+		Provider: provider,
+		BaseURL:  strings.TrimRight(containerReachableBaseURL(strings.TrimSpace(baseURL)), "/"),
+		APIKey:   strings.TrimSpace(apiKey),
+		Model:    strings.TrimSpace(model),
+		Timeout:  timeout,
+	}, nil
+}
+
+func rerankerFlagProvided(args cliArgs) bool {
+	return flag(args, "reranker-base-url", "") != "" ||
+		flag(args, "reranker-model", "") != "" ||
+		flag(args, "reranker-api-key", "") != "" ||
+		boolFlag(args, "reranker-api-key-stdin")
 }
 
 func resolveCompatibleEmbeddingDimensions(args cliArgs, model string) (string, error) {
@@ -661,6 +770,7 @@ func updateEnvValues(args cliArgs, updates map[string]string) error {
 		"RERANKER_BASE_URL",
 		"RERANKER_API_KEY",
 		"RERANKER_MODEL",
+		"RERANKER_TIMEOUT",
 		"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION",
 		"ABRA_LOCAL_EMBEDDING_IMAGE",
 		"ABRA_LOCAL_EMBEDDING_PULL_POLICY",
@@ -1137,7 +1247,7 @@ func modelConfigCheck(args cliArgs) map[string]any {
 			"name":   "model_config",
 			"ok":     false,
 			"detail": "embedding provider=" + provider + " base_url=" + valueOr(baseURL, "<empty>") + " model=" + valueOr(model, "<empty>"),
-			"hint":   "run: abra config model local, or abra config model compatible --base-url <url> --model <model>",
+			"hint":   "run: abra config model local, or abra config model compatible --base-url <url> --model <model> --dimensions <n>",
 		}
 	}
 	detail := "provider=" + provider + " model=" + model + " base_url=" + baseURL
@@ -1533,7 +1643,12 @@ func seed(ctx context.Context, args cliArgs) error {
 		"title":       flag(args, "title", "Abra CLI Seed"),
 		"scope":       scope,
 		"content":     content,
-		"authority":   flag(args, "authority", "official-doc"),
+		"metadata": map[string]any{
+			"authority":           flag(args, "authority", "official-doc"),
+			"authority_score":     floatFlag(args, "authority-score", 0.75),
+			"direct_ingest_trust": "cli-seed",
+			"ingest_channel":      "cli-seed",
+		},
 	}); err != nil {
 		return err
 	}
@@ -1605,7 +1720,11 @@ func ingestCommand(ctx context.Context, args cliArgs) error {
 		"title":       title,
 		"scope":       scope,
 		"content":     content,
-		"authority":   flag(args, "authority", "official-doc"),
+		"metadata": map[string]any{
+			"authority":       flag(args, "authority", "manual-unverified"),
+			"authority_score": floatFlag(args, "authority-score", 0.35),
+			"ingest_channel":  "cli-direct",
+		},
 	}
 	if approvalID := flag(args, "approval-id", ""); approvalID != "" {
 		body["approval_id"] = approvalID
@@ -1718,11 +1837,8 @@ func localPathIngest(ctx context.Context, args cliArgs) error {
 		batchPaths = append(batchPaths, doc.Path)
 		batchSourceURLs = append(batchSourceURLs, sourceURL)
 	}
-	for start := 0; start < len(batchDocs); start += 50 {
-		end := start + 50
-		if end > len(batchDocs) {
-			end = len(batchDocs)
-		}
+	for _, batch := range planDirectIngestBatches(batchDocs, defaultDirectIngestBatchLimits) {
+		start, end := batch.Start, batch.End
 		if progress {
 			fmt.Printf("[%d-%d/%d] ingest batch\n", start+1, end, len(batchDocs))
 		}
@@ -1878,6 +1994,70 @@ func validateBatchResponse(result map[string]any, expected int, continueOnError 
 		return nil, fmt.Errorf("batch ingest response failed=%d, expected %d failed document result(s)", failed, failures)
 	}
 	return docs, nil
+}
+
+func planDirectIngestBatches(documents []map[string]any, limits directIngestBatchLimits) []directIngestBatch {
+	limits = normalizeDirectIngestBatchLimits(limits)
+	batches := make([]directIngestBatch, 0, (len(documents)+limits.MaxDocuments-1)/limits.MaxDocuments)
+	start := 0
+	batchBytes := directIngestBatchBasePayloadBytes()
+	batchChunks := 0
+	batchDocuments := 0
+	for index, doc := range documents {
+		docBytes := estimateDirectIngestDocumentPayloadBytes(doc)
+		docChunks := estimateDirectIngestDocumentChunks(doc)
+		if batchDocuments > 0 && (batchDocuments >= limits.MaxDocuments || batchBytes+docBytes > limits.MaxPayloadBytes || batchChunks+docChunks > limits.MaxChunks) {
+			batches = append(batches, directIngestBatch{Start: start, End: index})
+			start = index
+			batchBytes = directIngestBatchBasePayloadBytes()
+			batchChunks = 0
+			batchDocuments = 0
+		}
+		batchBytes += docBytes
+		batchChunks += docChunks
+		batchDocuments++
+	}
+	if batchDocuments > 0 {
+		batches = append(batches, directIngestBatch{Start: start, End: len(documents)})
+	}
+	return batches
+}
+
+func normalizeDirectIngestBatchLimits(limits directIngestBatchLimits) directIngestBatchLimits {
+	if limits.MaxDocuments < 1 {
+		limits.MaxDocuments = directIngestBatchMaxDocuments
+	}
+	if limits.MaxPayloadBytes < 1 {
+		limits.MaxPayloadBytes = directIngestBatchMaxPayloadBytes
+	}
+	if limits.MaxChunks < 1 {
+		limits.MaxChunks = directIngestBatchMaxChunks
+	}
+	return limits
+}
+
+func directIngestBatchBasePayloadBytes() int {
+	return len(`{"documents":[]}`) + 256
+}
+
+func estimateDirectIngestDocumentPayloadBytes(doc map[string]any) int {
+	raw, err := json.Marshal(doc)
+	if err == nil {
+		return len(raw) + 1
+	}
+	return len(stringValue(doc["content"], "")) + 1024
+}
+
+func estimateDirectIngestDocumentChunks(doc map[string]any) int {
+	content := strings.TrimSpace(stringValue(doc["content"], ""))
+	if content == "" {
+		return 0
+	}
+	chunkChars := directIngestChunkEstimateChars
+	if chunkChars < 1 {
+		chunkChars = 1
+	}
+	return (len(content) + chunkChars - 1) / chunkChars
 }
 
 func skippedFilesForJSON(skipped []ingestpkg.SkippedFile) []map[string]any {
@@ -2137,6 +2317,12 @@ func connectorsCommand(ctx context.Context, args cliArgs) error {
 	switch action {
 	case "list", "ls":
 		return listConnectors(ctx, args)
+	case "status":
+		return sourceStatus(ctx, args)
+	case "logs", "log":
+		return sourceLogs(ctx, args)
+	case "sync", "enqueue", "run":
+		return syncSource(ctx, args)
 	case "mcp":
 		return connectorMCP(ctx, args)
 	case "webhook":
@@ -2158,13 +2344,22 @@ func connectorMCP(ctx context.Context, args cliArgs) error {
 		case "inspect", "tools", "discover":
 			action = "inspect"
 			args.Rest = args.Rest[1:]
+		case "template", "manifest", "sample":
+			action = "template"
+			args.Rest = args.Rest[1:]
 		case "validate", "dry-run":
 			action = "validate"
 			args.Rest = args.Rest[1:]
-		case "register", "create", "add":
+		case "add", "wizard", "onboard":
+			action = "add"
+			args.Rest = args.Rest[1:]
+		case "register", "create":
 			action = "register"
 			args.Rest = args.Rest[1:]
 		}
+	}
+	if action == "template" {
+		return connectorMCPTemplate(args)
 	}
 	args.Flags["type"] = "mcp"
 	if flag(args, "mcp-url", "") == "" && flag(args, "url", "") == "" {
@@ -2177,10 +2372,115 @@ func connectorMCP(ctx context.Context, args cliArgs) error {
 	if action == "inspect" {
 		return inspectMCPConnector(ctx, args)
 	}
+	if action == "add" {
+		return addMCPConnector(ctx, args)
+	}
 	if action == "validate" {
 		args.Bools["validate"] = true
 	}
 	return sourceIngest(ctx, args)
+}
+
+func addMCPConnector(ctx context.Context, args cliArgs) error {
+	if boolFlag(args, "json") {
+		return errors.New("connectors mcp add is a guided human flow; use inspect, validate, and register separately for --json automation")
+	}
+	if flag(args, "tool", "") == "" && !boolFlag(args, "skip-inspect") {
+		fmt.Println("Inspecting MCP connector...")
+		tools, err := listMCPConnectorTools(ctx, args)
+		if err != nil {
+			return err
+		}
+		switch len(tools) {
+		case 0:
+			return errors.New("MCP connector returned no tools; pass --tool after fixing the upstream MCP server")
+		case 1:
+			args.Flags["tool"] = tools[0].Name
+			fmt.Println("Selected tool: " + tools[0].Name)
+		default:
+			names := make([]string, 0, len(tools))
+			for _, tool := range tools {
+				names = append(names, tool.Name)
+			}
+			sort.Strings(names)
+			return fmt.Errorf("MCP connector has multiple tools (%s); rerun with --tool <name>", strings.Join(names, ", "))
+		}
+	}
+	fmt.Println("Validating MCP connector...")
+	validateArgs := copyCLIArgs(args)
+	validateArgs.Bools["validate"] = true
+	if err := sourceIngest(ctx, validateArgs); err != nil {
+		return err
+	}
+	if boolFlag(args, "dry-run") || boolFlag(args, "validate-only") {
+		return nil
+	}
+	fmt.Println("Registering MCP connector...")
+	return sourceIngest(ctx, args)
+}
+
+func connectorMCPTemplate(args cliArgs) error {
+	template := connectorManifest{
+		ID:                 firstNonEmpty(flag(args, "id", ""), "knowledge-base-example"),
+		Name:               firstNonEmpty(flag(args, "name", ""), "Example Knowledge Base"),
+		Scope:              scopeOrDefault(args, "."),
+		MCPURL:             firstNonEmpty(flag(args, "mcp-url", ""), flag(args, "url", ""), "https://mcp.example.com/mcp"),
+		Tool:               firstNonEmpty(flag(args, "tool", ""), "export_documents"),
+		Arguments:          map[string]any{"collection": "docs", "limit": 50},
+		ConnectorKind:      firstNonEmpty(flag(args, "connector", ""), "knowledge-base"),
+		DocumentSourceType: firstNonEmpty(flag(args, "document-source-type", ""), firstNonEmpty(flag(args, "connector", ""), "markdown")),
+		BearerTokenEnv:     firstNonEmpty(flag(args, "bearer-token-env", ""), "MCP_EXPORT_TOKEN"),
+		HeaderEnv:          map[string]string{"X-Workspace-ID": "MCP_WORKSPACE_ID"},
+		Status:             firstNonEmpty(flag(args, "status", ""), "active"),
+		Authority:          firstNonEmpty(flag(args, "authority", ""), "team-convention"),
+		FreshnessSeconds:   intFlag(args, "freshness-seconds", 600),
+		Schedule:           firstNonEmpty(flag(args, "schedule", ""), "@every 10m"),
+		VerifyQuery:        firstNonEmpty(flag(args, "verify-query", ""), "service runbook"),
+		Metadata: map[string]any{
+			"owner":            firstNonEmpty(flag(args, "owner", ""), "docs"),
+			"connector_model":  "user_owned_mcp",
+			"acl_groups":       []string{"docs"},
+			"acl_passthrough":  true,
+			"acl_source_field": "metadata.acl_groups",
+		},
+	}
+	score := floatFlag(args, "authority-score", 0.7)
+	template.AuthorityScore = &score
+	if raw := flag(args, "arguments-json", flag(args, "args-json", "")); raw != "" {
+		arguments, err := parseJSONObjectFlag(raw, "arguments-json")
+		if err != nil {
+			return err
+		}
+		template.Arguments = arguments
+	}
+	if headerEnv, err := parseHeaderEnvFlag(flag(args, "header-env", "")); err != nil {
+		return err
+	} else if len(headerEnv) > 0 {
+		template.HeaderEnv = headerEnv
+	}
+	if metadataJSON := flag(args, "metadata-json", ""); metadataJSON != "" {
+		metadata, err := parseJSONObjectFlag(metadataJSON, "metadata-json")
+		if err != nil {
+			return err
+		}
+		template.Metadata = mergeAnyMaps(template.Metadata, metadata)
+	}
+	encoded, err := json.MarshalIndent(template, "", "  ")
+	if err != nil {
+		return err
+	}
+	encoded = append(encoded, '\n')
+	if output := flag(args, "output", flag(args, "out", "")); output != "" {
+		if err := os.WriteFile(output, encoded, 0o644); err != nil {
+			return err
+		}
+		if !boolFlag(args, "json") {
+			fmt.Println("Wrote connector manifest: " + output)
+		}
+		return nil
+	}
+	fmt.Print(string(encoded))
+	return nil
 }
 
 func applyConnectorManifest(args cliArgs) (cliArgs, error) {
@@ -2244,26 +2544,7 @@ func applyConnectorManifest(args cliArgs) (cliArgs, error) {
 }
 
 func inspectMCPConnector(ctx context.Context, args cliArgs) error {
-	sourceURL := firstNonEmpty(flag(args, "mcp-url", ""), flag(args, "url", ""))
-	scope := scopeOrDefault(args, sourceURL)
-	config := map[string]any{"server_url": sourceURL}
-	if envName := flag(args, "bearer-token-env", ""); envName != "" {
-		config["bearer_token_env"] = envName
-	}
-	if headerEnv, err := parseHeaderEnvFlag(flag(args, "header-env", "")); err != nil {
-		return err
-	} else if len(headerEnv) > 0 {
-		config["header_env"] = headerEnv
-	}
-	tools, err := jobspkg.ListMCPTools(ctx, jobspkg.SourceConfig{
-		ID:            firstNonEmpty(flag(args, "id", ""), "cli-inspect"),
-		Scope:         scope,
-		SourceType:    ingestpkg.SourceTypeMCP,
-		Name:          firstNonEmpty(flag(args, "name", ""), "mcp-inspect"),
-		BaseURL:       sourceURL,
-		ConnectorKind: flag(args, "connector", "mcp"),
-		Config:        config,
-	})
+	tools, err := listMCPConnectorTools(ctx, args)
 	if err != nil {
 		return err
 	}
@@ -2279,6 +2560,30 @@ func inspectMCPConnector(ctx context.Context, args cliArgs) error {
 		fmt.Println()
 	}
 	return nil
+}
+
+func listMCPConnectorTools(ctx context.Context, args cliArgs) ([]jobspkg.MCPToolInfo, error) {
+	sourceURL := firstNonEmpty(flag(args, "mcp-url", ""), flag(args, "url", ""))
+	scope := scopeOrDefault(args, sourceURL)
+	config := map[string]any{"server_url": sourceURL}
+	if envName := flag(args, "bearer-token-env", ""); envName != "" {
+		config["bearer_token_env"] = envName
+	}
+	if headerEnv, err := parseHeaderEnvFlag(flag(args, "header-env", "")); err != nil {
+		return nil, err
+	} else if len(headerEnv) > 0 {
+		config["header_env"] = headerEnv
+	}
+	tools, err := jobspkg.ListMCPTools(ctx, jobspkg.SourceConfig{
+		ID:            firstNonEmpty(flag(args, "id", ""), "cli-inspect"),
+		Scope:         scope,
+		SourceType:    ingestpkg.SourceTypeMCP,
+		Name:          firstNonEmpty(flag(args, "name", ""), "mcp-inspect"),
+		BaseURL:       sourceURL,
+		ConnectorKind: flag(args, "connector", "mcp"),
+		Config:        config,
+	})
+	return tools, err
 }
 
 func connectorWebhook(ctx context.Context, args cliArgs) error {
@@ -4051,11 +4356,14 @@ func bootstrapAgentContext(ctx context.Context, args cliArgs, path, scope string
 	ingestArgs := copyCLIArgs(args)
 	ingestArgs.Flags["path"] = path
 	ingestArgs.Flags["scope"] = scope
+	ingestArgs.Flags["authority"] = "source-code"
+	ingestArgs.Flags["authority-score"] = "0.82"
 	ingestArgs.Bools["code"] = true
+	ingestArgs.Bools["wait"] = true
 	delete(ingestArgs.Bools, "json")
 	ingestArgs.Rest = nil
 	fmt.Println("Ingesting repo with exact scope...")
-	if err := localPathIngest(ctx, ingestArgs); err != nil {
+	if err := sourceIngest(ctx, ingestArgs); err != nil {
 		return err
 	}
 
@@ -5019,9 +5327,110 @@ func commandOutput(name string, args ...string) (string, error) {
 
 func ensureEnv(args cliArgs) error {
 	if fileExists(envPath(args)) {
-		return nil
+		return ensureEnvHasQuickstartDefaults(args)
 	}
 	return initEnv(args)
+}
+
+func ensureEnvHasQuickstartDefaults(args cliArgs) error {
+	path := envPath(args)
+	lines, err := readEnvLines(path)
+	if err != nil {
+		return err
+	}
+	values := map[string]string{}
+	for _, line := range lines {
+		key, value, ok := parseEnvLine(line)
+		if ok {
+			values[key] = value
+		}
+	}
+	if strings.EqualFold(strings.TrimSpace(values["NODE_ENV"]), "production") {
+		return nil
+	}
+	normalized := []string{}
+	for i, line := range lines {
+		key, value, ok := parseEnvLine(line)
+		if !ok {
+			continue
+		}
+		if key == "RATE_LIMIT_WINDOW" && strings.TrimSpace(value) == "1 minute" {
+			lines[i] = "RATE_LIMIT_WINDOW=1m"
+			normalized = append(normalized, key)
+		}
+	}
+	if !shouldBackfillQuickstartEnv(args, values) {
+		if len(normalized) == 0 {
+			return nil
+		}
+		content := strings.Join(lines, "\n")
+		if !strings.HasSuffix(content, "\n") {
+			content += "\n"
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			return err
+		}
+		fmt.Fprintln(os.Stderr, "Updated env with shell-safe quickstart values: "+strings.Join(normalized, ", "))
+		return nil
+	}
+	defaults := orderedEnvDefaults(demoEnv())
+	missing := []string{}
+	for _, item := range defaults {
+		if _, exists := values[item.key]; exists {
+			continue
+		}
+		lines = append(lines, item.key+"="+item.value)
+		missing = append(missing, item.key)
+	}
+	if len(missing) == 0 && len(normalized) == 0 {
+		return nil
+	}
+	content := strings.Join(lines, "\n")
+	if !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		return err
+	}
+	if len(missing) > 0 {
+		fmt.Fprintln(os.Stderr, "Updated env with missing quickstart defaults: "+strings.Join(missing, ", "))
+	}
+	if len(normalized) > 0 {
+		fmt.Fprintln(os.Stderr, "Updated env with shell-safe quickstart values: "+strings.Join(normalized, ", "))
+	}
+	return nil
+}
+
+func shouldBackfillQuickstartEnv(args cliArgs, values map[string]string) bool {
+	if boolFlag(args, "demo") {
+		return true
+	}
+	if envPath(args) == defaultEnvPath() {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(values["NODE_ENV"]), "development") {
+		return true
+	}
+	return false
+}
+
+type envDefault struct {
+	key   string
+	value string
+}
+
+func orderedEnvDefaults(content string) []envDefault {
+	defaults := []envDefault{}
+	seen := map[string]bool{}
+	for _, line := range strings.Split(content, "\n") {
+		key, value, ok := parseEnvLine(line)
+		if !ok || seen[key] {
+			continue
+		}
+		defaults = append(defaults, envDefault{key: key, value: value})
+		seen[key] = true
+	}
+	return defaults
 }
 
 func envPath(args cliArgs) string {
@@ -5930,7 +6339,7 @@ Usage:
   abra models logs
   abra config model local
   abra config model openai --api-key-stdin
-  abra config model compatible --base-url <url> --model <model> [--api-key-stdin]
+  abra config model compatible --base-url <url> --model <model> --dimensions <n> [--api-key-stdin] [--reranker-base-url <url> --reranker-model <model>]
   abra agents bootstrap
   abra agents init
   abra agents verify
@@ -5945,14 +6354,17 @@ Usage:
   abra ingest --git https://github.com/owner/repo.git [--ref main] [--scope repo:demo]
   abra watch local --scope repo:demo --path . [--freshness-seconds 3600] [--schedule "@every 1h"] [--wait]
   abra watch git --scope repo:demo --git https://github.com/owner/repo.git [--ref main] [--freshness-seconds 3600] [--wait]
-  abra source mcp --scope team:platform --mcp-url https://mcp.example/mcp --tool export_documents --dry-run
-  abra source mcp --scope team:platform --mcp-url https://mcp.example/mcp --tool export_documents [--header-env Header=ENV] [--schedule "@every 10m"] [--wait]
+  abra source mcp --scope team:docs --mcp-url https://mcp.example.com/mcp --tool export_documents --dry-run
+  abra source mcp --scope team:docs --mcp-url https://mcp.example.com/mcp --tool export_documents [--header-env Header=ENV] [--schedule "@every 10m"] [--wait]
   abra connectors [--scope repo:demo]
-  abra connectors mcp inspect --scope team:platform --mcp-url https://mcp.example/mcp
-  abra connectors mcp validate --scope team:platform --mcp-url https://mcp.example/mcp --tool export_documents
-  abra connectors mcp register --scope team:platform --mcp-url https://mcp.example/mcp --tool export_documents [--wait] [--verify]
-  abra connectors webhook sample --scope team:platform --connector confluence
-  abra connectors webhook test --scope team:platform --connector confluence [--secret-env ABRA_WEBHOOK_SECRET]
+  abra connectors mcp inspect --scope team:docs --mcp-url https://mcp.example.com/mcp
+  abra connectors mcp template --scope team:docs --output knowledge-base.connector.json
+  abra connectors mcp add --scope team:docs --mcp-url https://mcp.example.com/mcp [--tool export_documents]
+  abra connectors mcp validate --scope team:docs --mcp-url https://mcp.example.com/mcp --tool export_documents
+  abra connectors mcp register --scope team:docs --mcp-url https://mcp.example.com/mcp --tool export_documents [--wait] [--verify]
+  abra connectors status <source-config-id>
+  abra connectors webhook sample --scope team:docs --connector knowledge-base
+  abra connectors webhook test --scope team:docs --connector knowledge-base [--secret-env ABRA_WEBHOOK_SECRET]
   abra approvals [--scope repo:demo] [--status pending]
   abra approvals request --scope repo:demo --action agent_write [--target-type document] [--target-id doc...] [--reason "..."]
   abra approvals approve <approval-id> [--reason "..."]
@@ -5972,7 +6384,7 @@ Usage:
 Common flags:
   --base-url http://127.0.0.1:18080
   --env-file <path>
-  --token demo-only-dev-token
+  --token <token>
   --json
 
 First run:
@@ -6036,10 +6448,10 @@ Source ingestion flags:
 		return `Usage:
   abra config show [--json]
   abra config path
-  abra config model local [--base-url http://host.docker.internal:8080/v1] [--runner-image image@sha256:...] [--pull-policy missing] [--readiness-timeout 10s]
+  abra config model local [--base-url http://host.docker.internal:8080/v1] [--runner-image image@sha256:...] [--pull-policy missing] [--readiness-timeout 10s] [--reranker-base-url <url> --reranker-model <model>]
   abra config model qwen3
   abra config model openai --api-key-stdin
-  abra config model compatible --base-url <url> --model <model> --dimensions <size> [--api-key-stdin]
+  abra config model compatible --base-url <url> --model <model> --dimensions <size> [--api-key-stdin] [--reranker-base-url <url> --reranker-model <model>]
 
 Config edits the Abra runtime env file used by abra up. It intentionally only
 exposes core runtime settings needed for local operation and embedding/reranker connection.
@@ -6049,19 +6461,26 @@ require manual env file editing.
 Use --embedding-batch-max-items and --embedding-batch-max-tokens to tune provider
 request size when a local model times out or a scaled compatible provider can
 handle larger batches.
+Use --api-key or --api-key-stdin when your embedding endpoint requires auth,
+--embedding-timeout to tune provider calls, and --provider-concurrency to limit
+parallel provider requests.
+For custom reranking, add --reranker-base-url and --reranker-model; the provider
+is inferred as compatible. Use --reranker-api-key when the reranker has a
+separate key, or --no-reranker to leave reranking disabled.
 After changing model config, restart with: abra down && abra up
 Check readiness with: abra doctor
 After changing embedding providers, re-ingest important sources for reliable vector recall.
 `
 	case "models", "model":
 		return `Usage:
-  abra models up [--recreate] [--port 8080] [--pull-policy missing] [--startup-timeout 10m] [--model-id Qwen/Qwen3-Embedding-0.6B-GGUF] [--model Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0]
-  abra models status [--json]
-  abra models logs
-  abra models down
+  abra models up [--recreate] [--port 8080] [--pull-policy missing] [--startup-timeout 10m] [--allow-production-local-embeddings] [--model-id Qwen/Qwen3-Embedding-0.6B-GGUF] [--model Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0]
+  abra models status [--json] [--force]
+  abra models logs [--force]
+  abra models down [--force]
 
-Starts and manages the built-in local embedding and reranker runners for the default local
-Qwen3 setup. Abra keeps the binary lightweight: model weights stay in Docker's
+Starts and manages the built-in local embedding runner for the default local
+Qwen3 setup. Optional rerankers are configured separately through compatible
+reranker provider settings. Abra keeps the binary lightweight: model weights stay in Docker's
 model cache, while the CLI owns startup, health checks, and lifecycle.
 
 Operational flags:
@@ -6072,12 +6491,15 @@ Operational flags:
   --pull-policy    Docker image pull policy: missing, always, or never
   --readiness-timeout timeout for one readiness request, default 10s
   --startup-timeout total wait per model runner, default 10m
+  --allow-production-local-embeddings
+                  explicitly allow the local runner in production; production also requires digest-pinned images
   --cache-dir      host model cache directory
   --container      Docker container name
   --base-url       local OpenAI-compatible base URL
   --port           host port for the embedding server, default 8080
   --publish-addr   host address to publish on, default 127.0.0.1
   --reranker-port  host port for the reranker server, default 8081
+  --force          inspect or manage the local runner even when current config uses a non-local provider
 `
 	case "ui", "dashboard":
 		return `Usage:
@@ -6090,8 +6512,8 @@ onboarding, or abra up for non-interactive stack startup.
 		return `Usage:
   abra watch local --scope repo:demo --path . [--include "**/*.md"] [--code] [--freshness-seconds 3600] [--schedule "@every 1h"] [--wait]
   abra watch git --scope repo:demo --git https://github.com/owner/repo.git [--ref main] [--freshness-seconds 3600] [--wait]
-  abra source mcp --scope team:platform --mcp-url https://mcp.example/mcp --tool export_documents --dry-run
-  abra source mcp --scope team:platform --mcp-url https://mcp.example/mcp --tool export_documents [--arguments-json '{"space":"ENG"}'] [--document-source-type confluence] [--bearer-token-env TOKEN_ENV] [--header-env Header=ENV] [--schedule "@every 10m"] [--wait]
+  abra source mcp --scope team:docs --mcp-url https://mcp.example.com/mcp --tool export_documents --dry-run
+  abra source mcp --scope team:docs --mcp-url https://mcp.example.com/mcp --tool export_documents [--arguments-json '{"collection":"docs"}'] [--document-source-type markdown] [--bearer-token-env TOKEN_ENV] [--header-env Header=ENV] [--schedule "@every 10m"] [--wait]
 
 This creates or updates a source config, then enqueues an ingestion job.
 The OSS worker supports markdown, local_repo, git_repo, and MCP HTTP sources
@@ -6110,19 +6532,29 @@ Use --wait-timeout or ABRA_CLI_WAIT_TIMEOUT for slow local model or large repo r
 		return `Usage:
   abra connectors [--scope repo:demo] [--limit 50] [--json]
   abra connectors list [--scope repo:demo] [--limit 50] [--json]
-  abra connectors mcp inspect --scope team:platform --mcp-url https://mcp.example/mcp [--bearer-token-env TOKEN_ENV] [--header-env Header=ENV]
-  abra connectors mcp validate --scope team:platform --mcp-url https://mcp.example/mcp --tool export_documents [--manifest connector.json] [--arguments-json '{"space":"ENG"}'] [--document-source-type confluence] [--bearer-token-env TOKEN_ENV] [--header-env Header=ENV]
-  abra connectors mcp register --scope team:platform --mcp-url https://mcp.example/mcp --tool export_documents [--manifest connector.json] [--arguments-json '{"space":"ENG"}'] [--document-source-type confluence] [--bearer-token-env TOKEN_ENV] [--header-env Header=ENV] [--schedule "@every 10m"] [--wait] [--verify] [--verify-query "runbook"]
-  abra connectors webhook sample --scope team:platform --connector confluence [--secret-env ABRA_WEBHOOK_SECRET]
-  abra connectors webhook sign --payload-json '{"scope":"team:platform",...}' --secret-env ABRA_WEBHOOK_SECRET
-  abra connectors webhook test --scope team:platform --connector confluence [--secret-env ABRA_WEBHOOK_SECRET] [--json]
+  abra connectors mcp inspect --scope team:docs --mcp-url https://mcp.example.com/mcp [--bearer-token-env TOKEN_ENV] [--header-env Header=ENV]
+  abra connectors mcp template --scope team:docs [--output knowledge-base.connector.json]
+  abra connectors mcp add --scope team:docs --mcp-url https://mcp.example.com/mcp [--tool export_documents] [--manifest connector.json] [--wait] [--verify]
+  abra connectors mcp validate --scope team:docs --mcp-url https://mcp.example.com/mcp --tool export_documents [--manifest connector.json] [--arguments-json '{"collection":"docs"}'] [--document-source-type markdown] [--bearer-token-env TOKEN_ENV] [--header-env Header=ENV]
+  abra connectors mcp register --scope team:docs --mcp-url https://mcp.example.com/mcp --tool export_documents [--manifest connector.json] [--arguments-json '{"collection":"docs"}'] [--document-source-type markdown] [--bearer-token-env TOKEN_ENV] [--header-env Header=ENV] [--schedule "@every 10m"] [--wait] [--verify] [--verify-query "runbook"]
+  abra connectors status <source-config-id> [--json]
+  abra connectors logs <source-config-id> [--limit 20] [--json]
+  abra connectors sync <source-config-id> [--wait] [--json]
+  abra connectors webhook sample --scope team:docs --connector knowledge-base [--secret-env ABRA_WEBHOOK_SECRET]
+  abra connectors webhook sign --payload-json '{"scope":"team:docs",...}' --secret-env ABRA_WEBHOOK_SECRET
+  abra connectors webhook test --scope team:docs --connector knowledge-base [--secret-env ABRA_WEBHOOK_SECRET] [--json]
 
 Lightweight connector onboarding commands backed by existing source configs.
 MCP inspect calls upstream tools/list so operators can find export tool names.
+MCP template prints or writes a repeatable manifest with ACL metadata passthrough hints.
+MCP add is the CLI-only guided flow: inspect when --tool is omitted, validate,
+then register and optionally --wait or --verify.
 MCP validate calls the upstream MCP tool and exits without registering.
 MCP register creates the MCP source config and queues the initial ingestion job.
 Use --manifest connector.json to keep URL, tool, env refs, schedule, authority,
 and verification query in one declarative file that maps to source_configs.
+Connector status/logs/sync are aliases for source status/logs/sync, kept here so
+connector operators do not need a separate UI.
 Webhook sample/sign/test help overlay connectors verify signed push ingestion.
 Existing abra source mcp commands continue to work unchanged.
 `
@@ -6186,6 +6618,15 @@ through POST /learning/proposals/:proposalId/apply or MCP apply_learning_proposa
 
 Asks the governed brain layer. Returns a cited answer, verification, gaps,
 memory health, and an agent decision gate.
+
+If the answer has no context, run:
+  abra scope
+  abra ingest . --code --scope <scope-from-abra-scope>
+  abra think "question" --scope <scope-from-abra-scope>
+
+For AI-client readiness, run:
+  abra agents verify . --scope <scope-from-abra-scope> --agent codex
+  abra doctor
 `
 	case "recall":
 		return `Usage:
@@ -6295,7 +6736,7 @@ preflight checks that should exit non-zero when any check is not ok.
   abra setup --yes --no-models
   abra setup --local
   abra setup --openai --api-key-stdin
-  abra setup --compatible --embedding-base-url <url> --embedding-model <model> --dimensions <size> [--api-key-stdin]
+  abra setup --compatible --embedding-base-url <url> --embedding-model <model> --dimensions <size> [--api-key-stdin] [--reranker-base-url <url> --reranker-model <model>]
   abra setup --provider compatible --embedding-base-url <url> --embedding-model <model> --dimensions <size>
   abra setup --yes --no-start
 
@@ -6324,6 +6765,12 @@ Common setup flags:
   --provider-concurrency provider call concurrency, default 1 for local and 4 for compatible
   --api-key             embedding provider API key
   --api-key-stdin       read embedding provider API key from stdin
+  --reranker-base-url   compatible reranker provider base URL
+  --reranker-model      compatible reranker request model name
+  --reranker-api-key    reranker provider API key; defaults to embedding key for compatible providers
+  --reranker-api-key-stdin read reranker provider API key from stdin
+  --reranker-timeout    reranker timeout, default 10m for local and 30s for compatible
+  --no-reranker         leave reranking disabled for a custom provider
   --no-models           do not start the local model runners
   --skip-models         alias for --no-models
   --no-start            write config but do not start the Abra stack
@@ -6337,7 +6784,7 @@ Common setup flags:
   abra install
 
 abra setup is the guided first-run path. abra up starts the default local Qwen
-embedding and reranker runners when the env uses EMBEDDING_PROVIDER=local, then starts the
+embedding runner when the env uses EMBEDDING_PROVIDER=local, then starts the
 local Docker Compose stack non-interactively: Postgres, migrations, API, and
 worker. Use --no-models when you intentionally manage the model endpoints
 yourself. abra install is kept as a compatibility alias for abra setup; the curl
@@ -6435,10 +6882,10 @@ ABRA_PORT=18080
 ABRA_IMAGE={{ABRA_IMAGE}}
 POSTGRES_IMAGE=pgvector/pgvector:pg16
 POSTGRES_USER=abra
-POSTGRES_PASSWORD=dev-only-postgres-password
+POSTGRES_PASSWORD=abra
 POSTGRES_DB=abra
 POSTGRES_PORT=5433
-ABRA_DATABASE_URL=postgres://abra:dev-only-postgres-password@postgres:5432/abra
+ABRA_DATABASE_URL=postgres://abra:abra@postgres:5432/abra
 EMBEDDING_PROVIDER=local
 EMBEDDING_BASE_URL=http://host.docker.internal:8080/v1
 EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0
@@ -6447,16 +6894,16 @@ EMBEDDING_TIMEOUT=10m
 ABRA_AI_PROVIDER_CONCURRENCY=1
 ABRA_EMBEDDING_BATCH_MAX_ITEMS=6
 ABRA_EMBEDDING_BATCH_MAX_TOKENS=3000
-RERANKER_PROVIDER=local
-RERANKER_BASE_URL=http://host.docker.internal:8081/v1
-RERANKER_MODEL=Qwen/Qwen3-Reranker-0.6B-GGUF:Q8_0
+RERANKER_PROVIDER=
+RERANKER_BASE_URL=
+RERANKER_MODEL=
 ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=false
 ABRA_LOCAL_EMBEDDING_IMAGE=
 ABRA_LOCAL_EMBEDDING_PULL_POLICY=missing
 ABRA_LOCAL_EMBEDDING_READINESS_TIMEOUT=10s
 REDACT_PII=true
 RATE_LIMIT_MAX=1000
-RATE_LIMIT_WINDOW=1 minute
+RATE_LIMIT_WINDOW=1m
 ABRA_API_READ_TIMEOUT=10m
 ABRA_MAX_REQUEST_BODY_BYTES=26214400
 WORKER_INTERVAL=30s
@@ -6495,7 +6942,7 @@ ABRA_LOCAL_EMBEDDING_PULL_POLICY=missing
 ABRA_LOCAL_EMBEDDING_READINESS_TIMEOUT=10s
 REDACT_PII=true
 RATE_LIMIT_MAX=120
-RATE_LIMIT_WINDOW=1 minute
+RATE_LIMIT_WINDOW=1m
 ABRA_API_READ_TIMEOUT=2m
 ABRA_MAX_REQUEST_BODY_BYTES=26214400
 WORKER_INTERVAL=30s

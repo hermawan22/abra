@@ -97,9 +97,6 @@ func Load() (Config, error) {
 	if isLocalNeuralProvider(embeddingProvider) {
 		defaultEmbeddingBaseURL = "http://host.docker.internal:8080/v1"
 		defaultEmbeddingTimeout = 10 * time.Minute
-		defaultRerankerProvider = "local"
-		defaultRerankerBaseURL = "http://host.docker.internal:8081/v1"
-		defaultRerankerModel = "Qwen/Qwen3-Reranker-0.6B-GGUF:Q8_0"
 		defaultRerankerTimeout = 10 * time.Minute
 		defaultWorkerSourceTimeout = 30 * time.Minute
 		defaultWorkerLeaseTimeout = 35 * time.Minute

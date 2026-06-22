@@ -120,7 +120,7 @@ config:
   auditSinkScope: ""
   auditSinkBatchSize: "100"
   rateLimitMax: "120"
-  rateLimitWindow: 1 minute
+  rateLimitWindow: 1m
   aiProviderConcurrency: "4"
   composeHealthCacheTtl: 2s
   composeRecallConcurrency: "1"

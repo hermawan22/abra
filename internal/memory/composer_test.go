@@ -237,8 +237,11 @@ func TestComposeReturnsDegradedPacketWhenRetrievalBranchFails(t *testing.T) {
 	if result.AgentDecision.Decision != "caution" || !result.AgentDecision.ReviewRequired || result.AgentDecision.AutonomousAllowed {
 		t.Fatalf("agent decision should be cautious for degraded retrieval: %#v", result.AgentDecision)
 	}
-	if !contains(result.AgentDecision.RequiredActions, "rerun_degraded_retrieval") {
-		t.Fatalf("agent decision missing degraded retrieval action: %#v", result.AgentDecision)
+	if contains(result.AgentDecision.RequiredActions, "rerun_degraded_retrieval") {
+		t.Fatalf("complete coverage should not require rerunning advisory retrieval warnings: %#v", result.AgentDecision)
+	}
+	if !containsReason(result.AgentDecision.Reasons, "Review degraded retrieval branch warnings") {
+		t.Fatalf("agent decision missing degraded retrieval warning reason: %#v", result.AgentDecision)
 	}
 	if !containsRisk(result.Risks, "Some retrieval branches failed") {
 		t.Fatalf("degraded retrieval risk missing: %#v", result.Risks)
@@ -267,8 +270,11 @@ func TestComposeSurfacesStoreRecallWarnings(t *testing.T) {
 	if result.Verification.Verdict != "partial" || !result.Verification.ActionRequired {
 		t.Fatalf("recall warning should degrade verification: %#v", result.Verification)
 	}
-	if !contains(result.AgentDecision.RequiredActions, "rerun_degraded_retrieval") {
-		t.Fatalf("agent decision missing rerun action for recall warning: %#v", result.AgentDecision)
+	if contains(result.AgentDecision.RequiredActions, "rerun_degraded_retrieval") {
+		t.Fatalf("complete coverage should not require rerunning advisory recall warnings: %#v", result.AgentDecision)
+	}
+	if !containsReason(result.AgentDecision.Reasons, "Review degraded retrieval branch warnings") {
+		t.Fatalf("agent decision missing recall warning reason: %#v", result.AgentDecision)
 	}
 }
 
@@ -990,6 +996,15 @@ func contains(values []string, want string) bool {
 }
 
 func containsRisk(values []string, prefix string) bool {
+	for _, value := range values {
+		if strings.HasPrefix(value, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsReason(values []string, prefix string) bool {
 	for _, value := range values {
 		if strings.HasPrefix(value, prefix) {
 			return true

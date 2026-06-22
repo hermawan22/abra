@@ -797,10 +797,12 @@ func (s *Store) UpsertDocument(ctx context.Context, record DocumentRecord) (stri
 		  source_updated_at = EXCLUDED.source_updated_at,
 		  source_config_id = EXCLUDED.source_config_id,
 		  ingestion_job_id = EXCLUDED.ingestion_job_id,
+		  status = 'active',
 		  authority = EXCLUDED.authority,
 		  authority_score = EXCLUDED.authority_score,
 		  freshness_status = EXCLUDED.freshness_status,
 		  ingested_at = now(),
+		  updated_at = now(),
 		  metadata = EXCLUDED.metadata
 	`, id, record.SourceType, record.SourceURL, record.SourceID, record.Title, record.Scope, record.ContentChecksum, record.SourceUpdatedAt, record.SourceConfigID, record.IngestionJobID, record.Authority, record.AuthorityScore, record.FreshnessStatus, metadata)
 	if err != nil {
@@ -912,20 +914,20 @@ func (s *Store) InsertClaim(ctx context.Context, claim ClaimRecord) (string, err
 		    END,
 		    authority_score = GREATEST(authority_score, $10),
 		    status = CASE
-		      WHEN status = 'deprecated' AND metadata->>'source_refresh_deprecated' = 'true' THEN $12
+		      WHEN status = 'deprecated' AND (metadata->>'source_refresh_deprecated' = 'true' OR metadata->>'source_sync_deleted' = 'true') THEN $12
 		      ELSE status
 		    END,
 		    confidence = CASE
-		      WHEN status = 'deprecated' AND metadata->>'source_refresh_deprecated' = 'true' THEN GREATEST(confidence, $13)
+		      WHEN status = 'deprecated' AND (metadata->>'source_refresh_deprecated' = 'true' OR metadata->>'source_sync_deleted' = 'true') THEN GREATEST(confidence, $13)
 		      ELSE confidence
 		    END,
 		    last_verified_at = CASE
-		      WHEN status = 'deprecated' AND metadata->>'source_refresh_deprecated' = 'true' THEN now()
+		      WHEN status = 'deprecated' AND (metadata->>'source_refresh_deprecated' = 'true' OR metadata->>'source_sync_deleted' = 'true') THEN now()
 		      ELSE last_verified_at
 		    END,
 		    metadata = CASE
-		      WHEN status = 'deprecated' AND metadata->>'source_refresh_deprecated' = 'true'
-		        THEN (metadata - 'source_refresh_deprecated' - 'source_refresh_deprecated_at' - 'source_refresh_job_id') || $11::jsonb || jsonb_build_object('source_refresh_reactivated_at', now()::text)
+		      WHEN status = 'deprecated' AND (metadata->>'source_refresh_deprecated' = 'true' OR metadata->>'source_sync_deleted' = 'true')
+		        THEN (metadata - 'source_refresh_deprecated' - 'source_refresh_deprecated_at' - 'source_refresh_job_id' - 'source_sync_deleted' - 'source_sync_deleted_at') || $11::jsonb || jsonb_build_object('source_refresh_reactivated_at', now()::text)
 		      ELSE metadata || $11::jsonb
 		    END
 		WHERE scope = $1
@@ -2009,14 +2011,14 @@ func (s *Store) UpsertRelation(ctx context.Context, relation RelationRecord) (st
 	err := s.queryRunner().QueryRow(ctx, `
 		UPDATE relations
 		SET claim_id = COALESCE(NULLIF($2, ''), claim_id),
-		    status = CASE
-		      WHEN status = 'deprecated' AND metadata->>'source_refresh_deprecated' = 'true' THEN 'active'
-		      ELSE status
-		    END,
+			    status = CASE
+			      WHEN status = 'deprecated' AND (metadata->>'source_refresh_deprecated' = 'true' OR metadata->>'source_sync_deleted' = 'true') THEN 'active'
+			      ELSE status
+			    END,
 		    confidence = CASE
-		      WHEN status = 'deprecated' AND metadata->>'source_refresh_deprecated' = 'true' THEN GREATEST(confidence, $3)
-		      ELSE GREATEST(confidence, $3)
-		    END,
+			      WHEN status = 'deprecated' AND (metadata->>'source_refresh_deprecated' = 'true' OR metadata->>'source_sync_deleted' = 'true') THEN GREATEST(confidence, $3)
+			      ELSE GREATEST(confidence, $3)
+			    END,
 		    source_url = COALESCE(NULLIF($4, ''), source_url),
 		    source_type = COALESCE(NULLIF($5, ''), source_type),
 		    source_config_id = COALESCE(NULLIF($6, ''), source_config_id),
@@ -2024,13 +2026,13 @@ func (s *Store) UpsertRelation(ctx context.Context, relation RelationRecord) (st
 		    last_verified_at = now(),
 		    updated_at = now(),
 		    metadata = CASE
-		      WHEN status = 'deprecated' AND metadata->>'source_refresh_deprecated' = 'true'
-		        THEN (metadata - 'source_refresh_deprecated' - 'source_refresh_deprecated_at' - 'source_refresh_job_id') || $8::jsonb || jsonb_build_object('source_refresh_reactivated_at', now()::text)
-		      ELSE metadata || $8::jsonb
-		    END
-		WHERE id = $1
-		  AND status != 'expired'
-		  AND (status != 'deprecated' OR metadata->>'source_refresh_deprecated' = 'true')
+			      WHEN status = 'deprecated' AND (metadata->>'source_refresh_deprecated' = 'true' OR metadata->>'source_sync_deleted' = 'true')
+			        THEN (metadata - 'source_refresh_deprecated' - 'source_refresh_deprecated_at' - 'source_refresh_job_id' - 'source_sync_deleted' - 'source_sync_deleted_at') || $8::jsonb || jsonb_build_object('source_refresh_reactivated_at', now()::text)
+			      ELSE metadata || $8::jsonb
+			    END
+			WHERE id = $1
+			  AND status != 'expired'
+			  AND (status != 'deprecated' OR metadata->>'source_refresh_deprecated' = 'true' OR metadata->>'source_sync_deleted' = 'true')
 		RETURNING id
 	`, id, relation.ClaimID, relation.Confidence, relation.SourceURL, relation.SourceType, relation.SourceConfigID, relation.IngestionJobID, jsonb(relation.Metadata)).Scan(&id)
 	if err == nil {
@@ -2225,9 +2227,14 @@ func (s *Store) MemoryHealth(ctx context.Context, scope string) (MemoryHealthRes
 		  COUNT(*) FILTER (WHERE COALESCE(status, '') = 'deprecated')::int,
 		  COUNT(*) FILTER (WHERE COALESCE(status, '') = 'deleted')::int,
 		  COALESCE(MAX(ingested_at)::text, '')
-		FROM documents
-		WHERE ($1 = '' OR scope = $1)
-	`, scope).Scan(
+			FROM documents
+			WHERE ($1 = '' OR scope = $1)
+			  AND NOT EXISTS (
+			    SELECT 1 FROM source_configs sc
+			    WHERE sc.id = documents.source_config_id
+			      AND sc.status = 'deleted'
+			  )
+		`, scope).Scan(
 		&result.Documents.Total,
 		&result.Documents.Active,
 		&result.Documents.Stale,
@@ -2249,10 +2256,15 @@ func (s *Store) MemoryHealth(ctx context.Context, scope string) (MemoryHealthRes
 		  COUNT(DISTINCT claims.id) FILTER (WHERE freshness_status = 'stale' OR expires_at < now())::int,
 		  COUNT(DISTINCT claims.id) FILTER (WHERE evidence.id IS NOT NULL)::int,
 		  COALESCE(MAX(claims.updated_at)::text, '')
-		FROM claims
-		LEFT JOIN evidence ON evidence.claim_id = claims.id
-		WHERE ($1 = '' OR claims.scope = $1)
-	`, scope).Scan(
+			FROM claims
+			LEFT JOIN evidence ON evidence.claim_id = claims.id
+			WHERE ($1 = '' OR claims.scope = $1)
+			  AND NOT EXISTS (
+			    SELECT 1 FROM source_configs sc
+			    WHERE sc.id = claims.source_config_id
+			      AND sc.status = 'deleted'
+			  )
+		`, scope).Scan(
 		&result.Claims.Total,
 		&result.Claims.Verified,
 		&result.Claims.Inferred,
@@ -2272,22 +2284,32 @@ func (s *Store) MemoryHealth(ctx context.Context, scope string) (MemoryHealthRes
 		JOIN documents
 		  ON documents.scope = claims.scope
 		 AND COALESCE(documents.source_url, '') = COALESCE(claims.source_url, '')
-		WHERE ($1 = '' OR claims.scope = $1)
-		  AND documents.metadata->>'content_kind' = 'code'
-		  AND claims.status NOT IN ('deprecated', 'expired')
-	`, scope).Scan(&result.Claims.TrustedFromCodeDocuments); err != nil {
+			WHERE ($1 = '' OR claims.scope = $1)
+			  AND documents.metadata->>'content_kind' = 'code'
+			  AND claims.status NOT IN ('deprecated', 'expired')
+			  AND NOT EXISTS (
+			    SELECT 1 FROM source_configs sc
+			    WHERE sc.id = claims.source_config_id
+			      AND sc.status = 'deleted'
+			  )
+			  AND NOT EXISTS (
+			    SELECT 1 FROM source_configs sc
+			    WHERE sc.id = documents.source_config_id
+			      AND sc.status = 'deleted'
+			  )
+		`, scope).Scan(&result.Claims.TrustedFromCodeDocuments); err != nil {
 		return MemoryHealthResult{}, err
 	}
 	if err := s.pool.QueryRow(ctx, `
 		SELECT
-		  (SELECT COUNT(*)::int FROM entities WHERE ($1 = '' OR scope = $1)),
-		  (SELECT COUNT(*)::int FROM entities WHERE ($1 = '' OR scope = $1) AND status = 'active'),
-		  (SELECT COUNT(*)::int FROM relations WHERE ($1 = '' OR scope = $1)),
-		  (SELECT COUNT(*)::int FROM relations WHERE ($1 = '' OR scope = $1) AND status = 'active'),
-		  (SELECT COUNT(*)::int FROM relations WHERE ($1 = '' OR scope = $1) AND status = 'challenged'),
-		  (SELECT COUNT(*)::int FROM relations WHERE ($1 = '' OR scope = $1) AND (freshness_status = 'stale' OR expires_at < now())),
-		  COALESCE((SELECT MAX(updated_at)::text FROM relations WHERE ($1 = '' OR scope = $1)), '')
-	`, scope).Scan(
+			  (SELECT COUNT(*)::int FROM entities WHERE ($1 = '' OR scope = $1) AND NOT EXISTS (SELECT 1 FROM source_configs sc WHERE sc.id = entities.source_config_id AND sc.status = 'deleted')),
+			  (SELECT COUNT(*)::int FROM entities WHERE ($1 = '' OR scope = $1) AND status = 'active' AND NOT EXISTS (SELECT 1 FROM source_configs sc WHERE sc.id = entities.source_config_id AND sc.status = 'deleted')),
+			  (SELECT COUNT(*)::int FROM relations WHERE ($1 = '' OR scope = $1) AND NOT EXISTS (SELECT 1 FROM source_configs sc WHERE sc.id = relations.source_config_id AND sc.status = 'deleted')),
+			  (SELECT COUNT(*)::int FROM relations WHERE ($1 = '' OR scope = $1) AND status = 'active' AND NOT EXISTS (SELECT 1 FROM source_configs sc WHERE sc.id = relations.source_config_id AND sc.status = 'deleted')),
+			  (SELECT COUNT(*)::int FROM relations WHERE ($1 = '' OR scope = $1) AND status = 'challenged' AND NOT EXISTS (SELECT 1 FROM source_configs sc WHERE sc.id = relations.source_config_id AND sc.status = 'deleted')),
+			  (SELECT COUNT(*)::int FROM relations WHERE ($1 = '' OR scope = $1) AND (freshness_status = 'stale' OR expires_at < now()) AND NOT EXISTS (SELECT 1 FROM source_configs sc WHERE sc.id = relations.source_config_id AND sc.status = 'deleted')),
+			  COALESCE((SELECT MAX(updated_at)::text FROM relations WHERE ($1 = '' OR scope = $1) AND NOT EXISTS (SELECT 1 FROM source_configs sc WHERE sc.id = relations.source_config_id AND sc.status = 'deleted')), '')
+		`, scope).Scan(
 		&result.Graph.Entities,
 		&result.Graph.ActiveEntities,
 		&result.Graph.Relations,
@@ -2899,6 +2921,14 @@ func memorySummarySelectSQL() string {
 		  updated_at::text
 		FROM memory_summaries
 		WHERE scope = $2
+		  AND NOT EXISTS (
+		    SELECT 1
+		    FROM documents d
+		    JOIN source_configs sc ON sc.id = d.source_config_id
+		    WHERE d.scope = memory_summaries.scope
+		      AND sc.status = 'deleted'
+		      AND memory_summaries.source_urls @> jsonb_build_array(d.source_url)
+		  )
 		  AND (
 		    search_vector @@ plainto_tsquery('simple', $1)
 		    OR search_vector @@ to_tsquery('simple', $4)
@@ -2927,6 +2957,7 @@ func (s *Store) ListDocumentsForSummary(ctx context.Context, scope string, limit
 		  COALESCE(ch.chunk_count, 0),
 		  d.ingested_at::text
 		FROM documents d
+		LEFT JOIN source_configs sc ON sc.id = d.source_config_id
 		LEFT JOIN LATERAL (
 		  SELECT
 		    string_agg(content, E'\n\n' ORDER BY chunk_index) AS content,
@@ -2944,6 +2975,7 @@ func (s *Store) ListDocumentsForSummary(ctx context.Context, scope string, limit
 		) rel ON TRUE
 		WHERE d.scope = $1
 		  AND d.status NOT IN ('deprecated', 'deleted')
+		  AND COALESCE(sc.status, 'active') <> 'deleted'
 		ORDER BY d.ingested_at DESC, d.id ASC
 		LIMIT $2
 	`, strings.TrimSpace(scope), limit)
@@ -3370,6 +3402,7 @@ func (s *Store) Recall(ctx context.Context, query, scope string, limit int, incl
 		 AND COALESCE(d.source_type, '') = COALESCE(c.source_type, '')
 		 AND COALESCE(d.source_url, '') = COALESCE(c.source_url, '')
 		LEFT JOIN source_configs sc ON sc.id = c.source_config_id
+		LEFT JOIN source_configs d_sc ON d_sc.id = d.source_config_id
 		LEFT JOIN LATERAL (
 		  SELECT
 		    sc.status = 'active'
@@ -3413,6 +3446,8 @@ func (s *Store) Recall(ctx context.Context, query, scope string, limit int, incl
 		WHERE c.scope = $2
 		  AND %s
 		  AND %s
+		  AND COALESCE(sc.status, 'active') <> 'deleted'
+		  AND COALESCE(d_sc.status, 'active') <> 'deleted'
 		  AND (
 		    c.search_vector @@ plainto_tsquery('simple', $1)
 		    OR c.search_vector @@ to_tsquery('simple', $4)
@@ -3473,9 +3508,11 @@ func (s *Store) Recall(ctx context.Context, query, scope string, limit int, incl
 		       ) AS rank_score
 		FROM chunks ch
 		JOIN documents d ON d.id = ch.document_id
+		LEFT JOIN source_configs sc ON sc.id = d.source_config_id
 		WHERE ch.scope = $2
 		  AND d.scope = $2
 		  AND d.status NOT IN ('deprecated', 'deleted')
+		  AND COALESCE(sc.status, 'active') <> 'deleted'
 		  AND (
 		    ch.search_vector @@ plainto_tsquery('simple', $1)
 		    OR ch.search_vector @@ to_tsquery('simple', $4)
@@ -3581,6 +3618,10 @@ func applyBaseRankScores(result *RecallResult) {
 			result.SupportingDocuments[i].BaseRank = result.SupportingDocuments[i].Rank
 		}
 	}
+}
+
+func RecallRetrievalReasons(result RecallResult) []RetrievalReason {
+	return recallRetrievalReasons(result)
 }
 
 func recallRetrievalReasons(result RecallResult) []RetrievalReason {
@@ -3716,6 +3757,7 @@ func hybridRecallClaimsSQL(statusFilter string, dimensions int, includeUnverifie
 		   AND COALESCE(d.source_type, '') = COALESCE(c.source_type, '')
 		   AND COALESCE(d.source_url, '') = COALESCE(c.source_url, '')
 		  LEFT JOIN source_configs sc ON sc.id = c.source_config_id
+		  LEFT JOIN source_configs d_sc ON d_sc.id = d.source_config_id
 		  LEFT JOIN LATERAL (
 		    SELECT
 		      sc.status = 'active'
@@ -3756,6 +3798,8 @@ func hybridRecallClaimsSQL(statusFilter string, dimensions int, includeUnverifie
 		        END AS schedule_interval
 		    ) freshness
 		  ) source_freshness ON true
+		  WHERE COALESCE(sc.status, 'active') <> 'deleted'
+		    AND COALESCE(d_sc.status, 'active') <> 'deleted'
 		)
 		SELECT id, claim_text, scope, status, source_url, text_score, vector_score, rank_score, freshness
 		FROM ranked_claims
@@ -3788,9 +3832,11 @@ func hybridRecallDocumentsSQL(dimensions int) string {
 		    ) AS text_score
 		  FROM chunks ch
 		  JOIN documents d ON d.id = ch.document_id
+		  LEFT JOIN source_configs sc ON sc.id = d.source_config_id
 		  WHERE ch.scope = $2
 		    AND d.scope = $2
 		    AND d.status NOT IN ('deprecated', 'deleted')
+		    AND COALESCE(sc.status, 'active') <> 'deleted'
 		    AND (
 		      ch.search_vector @@ plainto_tsquery('simple', $1)
 		      OR ch.search_vector @@ to_tsquery('simple', $4)
@@ -3804,9 +3850,11 @@ func hybridRecallDocumentsSQL(dimensions int) string {
 		    GREATEST(0, 1 - (%s <=> %s)) AS vector_score
 		  FROM chunks ch
 		  JOIN documents d ON d.id = ch.document_id
+		  LEFT JOIN source_configs sc ON sc.id = d.source_config_id
 		  WHERE ch.scope = $2
 		    AND d.scope = $2
 		    AND d.status NOT IN ('deprecated', 'deleted')
+		    AND COALESCE(sc.status, 'active') <> 'deleted'
 		    AND ch.embedding_dimensions = $6
 		  ORDER BY %s <=> %s
 		  LIMIT GREATEST($3 * 3, 12)
@@ -3824,8 +3872,10 @@ func hybridRecallDocumentsSQL(dimensions int) string {
 		FROM candidates candidate
 		JOIN chunks ch ON ch.id = candidate.id
 		JOIN documents d ON d.id = ch.document_id
+		LEFT JOIN source_configs sc ON sc.id = d.source_config_id
 		LEFT JOIN text_matches tm ON tm.id = ch.id
 		LEFT JOIN vector_matches vm ON vm.id = ch.id
+		WHERE COALESCE(sc.status, 'active') <> 'deleted'
 		ORDER BY rank_score DESC, d.ingested_at DESC, ch.chunk_index ASC
 		LIMIT $3
 	`, embeddingExpr, queryExpr, embeddingExpr, queryExpr)
@@ -3857,9 +3907,11 @@ func (s *Store) Sources(ctx context.Context, query, scope string, limit int) ([]
 		       ) AS rank_score
 		FROM chunks ch
 		JOIN documents d ON d.id = ch.document_id
+		LEFT JOIN source_configs sc ON sc.id = d.source_config_id
 		WHERE ch.scope = $2
 		  AND d.scope = $2
 		  AND d.status NOT IN ('deprecated', 'deleted')
+		  AND COALESCE(sc.status, 'active') <> 'deleted'
 		  AND (
 		    ch.search_vector @@ plainto_tsquery('simple', $1)
 		    OR ch.search_vector @@ to_tsquery('simple', $4)
@@ -4279,8 +4331,10 @@ func relatedGraphSQL() string {
 		    ON ea.entity_id = e.id
 		   AND ea.scope = e.scope
 		   AND ea.status NOT IN ('deprecated', 'deleted')
+		  LEFT JOIN source_configs e_sc ON e_sc.id = e.source_config_id
 		  WHERE e.scope = $2
 		    AND e.status NOT IN ('deprecated', 'deleted')
+		    AND COALESCE(e_sc.status, 'active') <> 'deleted'
 		    AND %s
 		    AND (
 		      e.search_vector @@ plainto_tsquery('simple', $1)
@@ -4297,10 +4351,16 @@ func relatedGraphSQL() string {
 		  FROM relations r
 		  JOIN entities src ON src.id = r.source_entity_id
 		  JOIN entities dst ON dst.id = r.target_entity_id
+		  LEFT JOIN source_configs r_sc ON r_sc.id = r.source_config_id
+		  LEFT JOIN source_configs src_sc ON src_sc.id = src.source_config_id
+		  LEFT JOIN source_configs dst_sc ON dst_sc.id = dst.source_config_id
 		  WHERE r.scope = $2
 		    AND r.status NOT IN ('deprecated', 'expired')
 		    AND src.status NOT IN ('deprecated', 'deleted')
 		    AND dst.status NOT IN ('deprecated', 'deleted')
+		    AND COALESCE(r_sc.status, 'active') <> 'deleted'
+		    AND COALESCE(src_sc.status, 'active') <> 'deleted'
+		    AND COALESCE(dst_sc.status, 'active') <> 'deleted'
 		    AND %s
 		    AND %s
 		    AND %s
@@ -4332,10 +4392,16 @@ func relatedGraphSQL() string {
 		  FROM relations r
 		  JOIN entities src ON src.id = r.source_entity_id
 		  JOIN entities dst ON dst.id = r.target_entity_id
+		  LEFT JOIN source_configs r_sc ON r_sc.id = r.source_config_id
+		  LEFT JOIN source_configs src_sc ON src_sc.id = src.source_config_id
+		  LEFT JOIN source_configs dst_sc ON dst_sc.id = dst.source_config_id
 		  WHERE r.scope = $2
 		    AND r.status NOT IN ('deprecated', 'expired')
 		    AND src.status NOT IN ('deprecated', 'deleted')
 		    AND dst.status NOT IN ('deprecated', 'deleted')
+		    AND COALESCE(r_sc.status, 'active') <> 'deleted'
+		    AND COALESCE(src_sc.status, 'active') <> 'deleted'
+		    AND COALESCE(dst_sc.status, 'active') <> 'deleted'
 		    AND %s
 		    AND %s
 		    AND %s
@@ -4360,9 +4426,15 @@ func relatedGraphSQL() string {
 		JOIN relations r ON r.id = ranked.id
 		JOIN entities src ON src.id = r.source_entity_id
 		JOIN entities dst ON dst.id = r.target_entity_id
+		LEFT JOIN source_configs r_sc ON r_sc.id = r.source_config_id
+		LEFT JOIN source_configs src_sc ON src_sc.id = src.source_config_id
+		LEFT JOIN source_configs dst_sc ON dst_sc.id = dst.source_config_id
 		WHERE %s
 		  AND %s
 		  AND %s
+		  AND COALESCE(r_sc.status, 'active') <> 'deleted'
+		  AND COALESCE(src_sc.status, 'active') <> 'deleted'
+		  AND COALESCE(dst_sc.status, 'active') <> 'deleted'
 		ORDER BY
 		  ranked.distance ASC,
 		  (r.confidence * ranked.seed_score) DESC,

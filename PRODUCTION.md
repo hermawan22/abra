@@ -12,7 +12,7 @@ Prerequisites:
 
 - Docker Engine with Compose.
 - A generated `ABRA_API_KEYS` value.
-- A local Qwen-compatible embedding endpoint, or a custom compatible embedding provider. The built-in CLI lifecycle manages the Qwen/Qwen3-Embedding-0.6B runner only; Qwen/Qwen3-Reranker-0.6B is optional and must be configured separately when you provide a compatible rerank endpoint.
+- A local Qwen-compatible embedding endpoint, or a custom compatible embedding provider. The built-in CLI lifecycle manages Qwen/Qwen3-Embedding-0.6B for local development; production local mode requires explicit allowance and digest-pinned runner images. Reranking is optional and configured separately through compatible reranker provider settings.
 - Enough disk for Postgres source snippets, claims, audit events, and vectors.
 
 Create `.env.production`:
@@ -40,7 +40,7 @@ RERANKER_MODEL=
 ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=false
 REDACT_PII=true
 RATE_LIMIT_MAX=120
-RATE_LIMIT_WINDOW=1 minute
+RATE_LIMIT_WINDOW=1m
 ABRA_BIND_ADDR=0.0.0.0
 ABRA_API_READ_TIMEOUT=2m
 ABRA_MAX_REQUEST_BODY_BYTES=26214400
@@ -159,7 +159,7 @@ RERANKER_MODEL=
 ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=false
 REDACT_PII=true
 RATE_LIMIT_MAX=120
-RATE_LIMIT_WINDOW=1 minute
+RATE_LIMIT_WINDOW=1m
 ABRA_COMPOSE_HEALTH_CACHE_TTL=2s
 ABRA_COMPOSE_RECALL_CONCURRENCY=1
 ABRA_COMPOSE_GRAPH_CONCURRENCY=4
@@ -324,10 +324,10 @@ it from the operator CLI with `--dry-run` or `--validate`:
 
 ```sh
 abra source mcp \
-  --scope team:platform \
-  --mcp-url https://mcp.example/mcp \
+  --scope team:docs \
+  --mcp-url https://mcp.example.com/mcp \
   --tool export_documents \
-  --header-env X-API-Key=CONFLUENCE_API_KEY \
+  --header-env X-Workspace-ID=MCP_WORKSPACE_ID \
   --dry-run
 ```
 
@@ -347,8 +347,8 @@ Operate registered sources through the source lifecycle commands:
 ```sh
 abra sources status <source-config-id>
 abra sources logs <source-config-id> --limit 20
-abra sources sync <source-config-id> --scope team:platform --wait --wait-timeout 10m
-abra sources backfill <source-config-id> --scope team:platform --approval-id <approval-id> --wait --wait-timeout 10m
+abra sources sync <source-config-id> --scope team:docs --wait --wait-timeout 10m
+abra sources backfill <source-config-id> --scope team:docs --approval-id <approval-id> --wait --wait-timeout 10m
 abra sources pause <source-config-id>
 abra sources resume <source-config-id> --approval-id <approval-id>
 ```

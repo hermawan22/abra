@@ -76,7 +76,7 @@ func decideAgentAction(input ComposeInput, result ComposeResult) AgentDecision {
 		decision.RequiredActions = appendUnique(decision.RequiredActions, result.Verification.RequiredActions...)
 		decision.AllowedNextActions = []string{"inspect_relevant_files", "cite_evidence", "propose_learning", "run_validation"}
 	case "strong":
-		decision.Reasons = []string{"Verification is strong and the packet has source evidence."}
+		decision.Reasons = append([]string{"Verification is strong and the packet has source evidence."}, result.Verification.Recommendations...)
 	}
 
 	if graphMatters(result.Intent) && len(result.GraphContext) == 0 {

@@ -32,7 +32,14 @@ type Service struct {
 }
 
 const defaultQueryEmbeddingCacheEntries = 1024
-const rerankRankBoostWeight = 0.2
+const (
+	rerankRankBoostWeight         = 0.2
+	defaultRecallLimit            = 5
+	maxRecallLimit                = 20
+	maxRecallDocumentLimit        = 5
+	maxRecallGraphLimit           = 8
+	rerankCandidatePoolMultiplier = 3
+)
 
 type embeddingCache struct {
 	mu      sync.Mutex
@@ -49,6 +56,8 @@ type IngestDocumentInput struct {
 	Scope           string         `json:"scope"`
 	Content         string         `json:"content"`
 	SourceUpdatedAt string         `json:"source_updated_at,omitempty"`
+	Authority       string         `json:"authority,omitempty"`
+	AuthorityScore  float64        `json:"authority_score,omitempty"`
 	ApprovalID      string         `json:"approval_id,omitempty"`
 	Metadata        map[string]any `json:"metadata,omitempty"`
 }
@@ -368,6 +377,7 @@ func (s *Service) Recall(ctx context.Context, query, scope string, limit int, in
 	if query == "" || scope == "" {
 		return store.RecallResult{Claims: []store.ClaimResult{}, SupportingDocuments: []store.DocumentResult{}, GraphContext: []store.RelationResult{}, RetrievalMode: "empty"}, nil
 	}
+	finalLimit := normalizedRecallLimit(limit)
 	queryEmbedding, ok, err := s.recallQueryEmbedding(ctx, query)
 	if err != nil {
 		result, fallbackErr := s.db.Recall(ctx, query, scope, limit, includeUnverified)
@@ -385,11 +395,75 @@ func (s *Service) Recall(ctx context.Context, query, scope string, limit int, in
 		result.RetrievalMode = "full_text_empty_embedding"
 		return result, nil
 	}
-	result, err := s.db.RecallHybrid(ctx, query, scope, limit, includeUnverified, queryEmbedding)
+	result, err := s.db.RecallHybrid(ctx, query, scope, recallCandidateLimit(finalLimit, s.reranker != nil), includeUnverified, queryEmbedding)
 	if err != nil {
 		return store.RecallResult{}, err
 	}
-	return s.rerankRecall(ctx, query, result), nil
+	return s.finalizeRecallResult(ctx, query, result, finalLimit), nil
+}
+
+func normalizedRecallLimit(limit int) int {
+	if limit < 1 || limit > maxRecallLimit {
+		return defaultRecallLimit
+	}
+	return limit
+}
+
+func recallCandidateLimit(limit int, rerankerConfigured bool) int {
+	limit = normalizedRecallLimit(limit)
+	if !rerankerConfigured {
+		return limit
+	}
+	candidateLimit := limit * rerankCandidatePoolMultiplier
+	if candidateLimit > maxRecallLimit {
+		return maxRecallLimit
+	}
+	return candidateLimit
+}
+
+func (s *Service) finalizeRecallResult(ctx context.Context, query string, result store.RecallResult, limit int) store.RecallResult {
+	result = s.rerankRecall(ctx, query, result)
+	result = trimRecallResult(result, limit)
+	result.RetrievalReasons = store.RecallRetrievalReasons(result)
+	if recallResultHasRerank(result) {
+		result.RetrievalReasons = append(result.RetrievalReasons, store.RetrievalReason{
+			Mode:    result.RetrievalMode,
+			Signal:  "rerank",
+			Message: "Configured reranker adjusted candidate ordering after hybrid retrieval.",
+			Count:   len(result.Claims) + len(result.SupportingDocuments),
+		})
+	}
+	return result
+}
+
+func trimRecallResult(result store.RecallResult, limit int) store.RecallResult {
+	limit = normalizedRecallLimit(limit)
+	if len(result.Claims) > limit {
+		result.Claims = result.Claims[:limit]
+	}
+	documentLimit := min(limit, maxRecallDocumentLimit)
+	if len(result.SupportingDocuments) > documentLimit {
+		result.SupportingDocuments = result.SupportingDocuments[:documentLimit]
+	}
+	graphLimit := min(limit, maxRecallGraphLimit)
+	if len(result.GraphContext) > graphLimit {
+		result.GraphContext = result.GraphContext[:graphLimit]
+	}
+	return result
+}
+
+func recallResultHasRerank(result store.RecallResult) bool {
+	for _, claim := range result.Claims {
+		if claim.RerankApplied {
+			return true
+		}
+	}
+	for _, doc := range result.SupportingDocuments {
+		if doc.RerankApplied {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) recallQueryEmbedding(ctx context.Context, query string) ([]float64, bool, error) {
@@ -567,6 +641,7 @@ type preparedIngestDocument struct {
 	ingestionJobID      string
 	authority           string
 	authorityScore      float64
+	claimStatus         string
 	chunks              []string
 	chunkEmbeddings     []ai.Embedding
 	chunkEmbeddingModel string
@@ -653,17 +728,17 @@ func (s *Service) prepareIngestDocument(input IngestDocumentInput) (preparedInge
 	if s.cfg.RedactPII {
 		content = redact(content)
 	}
-	metadata := mergeMetadata(input.Metadata, map[string]any{"ingest_complete": false})
+	explicitMetadata := map[string]any{"ingest_complete": false}
+	if strings.TrimSpace(input.Authority) != "" {
+		explicitMetadata["authority"] = strings.TrimSpace(input.Authority)
+	}
+	if input.AuthorityScore > 0 {
+		explicitMetadata["authority_score"] = input.AuthorityScore
+	}
+	metadata := mergeMetadata(input.Metadata, explicitMetadata)
 	sourceConfigID := metadataString(input.Metadata, "source_config_id")
 	ingestionJobID := metadataString(input.Metadata, "ingestion_job_id")
-	authority := metadataString(input.Metadata, "authority")
-	if authority == "" {
-		authority = "official-doc"
-	}
-	authorityScore := metadataFloat(input.Metadata, "authority_score")
-	if authorityScore == 0 {
-		authorityScore = 0.75
-	}
+	authority, authorityScore, claimStatus := ingestAuthorityDefaults(metadata, sourceConfigID)
 	input.Content = content
 	return preparedIngestDocument{
 		input:          input,
@@ -673,10 +748,44 @@ func (s *Service) prepareIngestDocument(input IngestDocumentInput) (preparedInge
 		ingestionJobID: ingestionJobID,
 		authority:      authority,
 		authorityScore: authorityScore,
+		claimStatus:    claimStatus,
 		chunks:         chunkText(content, 1200),
 		claims:         extractClaimsForDocument(input, content),
 		codePath:       codeGraphPath(input),
 	}, nil
+}
+
+func ingestAuthorityDefaults(metadata map[string]any, sourceConfigID string) (string, float64, string) {
+	if strings.TrimSpace(sourceConfigID) == "" {
+		if metadataString(metadata, "direct_ingest_trust") == "cli-seed" {
+			authority := metadataString(metadata, "authority")
+			if authority == "" {
+				authority = "official-doc"
+			}
+			authorityScore := metadataFloat(metadata, "authority_score")
+			if authorityScore == 0 {
+				authorityScore = 0.75
+			}
+			return authority, authorityScore, "verified"
+		}
+		if authority := metadataString(metadata, "authority"); authority != "" && authority != "manual-unverified" {
+			authorityScore := metadataFloat(metadata, "authority_score")
+			if authorityScore == 0 {
+				authorityScore = 0.75
+			}
+			return authority, authorityScore, "verified"
+		}
+		return "manual-unverified", 0.35, "unverified"
+	}
+	authority := metadataString(metadata, "authority")
+	if authority == "" {
+		authority = "official-doc"
+	}
+	authorityScore := metadataFloat(metadata, "authority_score")
+	if authorityScore == 0 {
+		authorityScore = 0.75
+	}
+	return authority, authorityScore, "verified"
 }
 
 func (s *Service) embedPreparedDocuments(ctx context.Context, docs []preparedIngestDocument) ([]preparedIngestDocument, error) {
@@ -768,6 +877,7 @@ func (s *Service) persistPreparedIngestDocument(ctx context.Context, doc prepare
 	ingestionJobID := doc.ingestionJobID
 	authority := doc.authority
 	authorityScore := doc.authorityScore
+	claimStatus := doc.claimStatus
 	chunks := doc.chunks
 	claims := doc.claims
 	codePath := doc.codePath
@@ -857,7 +967,7 @@ func (s *Service) persistPreparedIngestDocument(ctx context.Context, doc prepare
 			SourceURL:           input.SourceURL,
 			SourceType:          input.SourceType,
 			Authority:           authority,
-			Status:              "verified",
+			Status:              claimStatus,
 			Confidence:          authorityScore,
 			Embedding:           doc.claimEmbeddings[i].Vector,
 			EmbeddingProvider:   s.cfg.Embedding.Provider,

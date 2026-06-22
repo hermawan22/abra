@@ -3,6 +3,8 @@
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 
+import { assertHybridRetrievalMode } from "./lib/eval-contracts.mjs";
+
 const baseUrl = (process.env.ABRA_BASE_URL || "http://127.0.0.1:18080").replace(/\/$/, "");
 const token = process.env.ABRA_API_TOKEN || "dev-token";
 const datasetPath = process.env.ABRA_GOLDEN_DATASET || "examples/evals/golden.jsonl";
@@ -124,13 +126,30 @@ function textOf(value) {
   return JSON.stringify(value).toLowerCase();
 }
 
-function findRank(items, contains, sourceUrl) {
+function findExpectedClaim(items, contains, sourceUrl) {
   const needle = String(contains || "").toLowerCase();
   const index = items.findIndex((item) => {
     const haystack = String(item.claim_text || item.content || item.title || "").toLowerCase();
     return haystack.includes(needle) && (!sourceUrl || item.source_url === sourceUrl);
   });
-  return index === -1 ? null : index + 1;
+  if (index === -1) {
+    return { rank: null, item: null };
+  }
+  return { rank: index + 1, item: items[index] };
+}
+
+function recallRankSummary(claims) {
+  return claims.map((claim, index) => ({
+    rank: index + 1,
+    claim_text: claim.claim_text,
+    source_url: claim.source_url,
+    freshness: claim.freshness,
+    rank_score: claim.rank_score,
+    text_score: claim.text_score,
+    vector_score: claim.vector_score,
+    rerank_score: claim.rerank_score,
+    rerank_applied: claim.rerank_applied
+  }));
 }
 
 function hitRate(ranks, cutoff) {
@@ -408,17 +427,30 @@ await runCheck("golden_cases", async () => {
       }
     });
     const claims = Array.isArray(recall.claims) ? recall.claims : [];
-    assert(recall.retrieval_mode === "hybrid", `${item.id} recall mode = ${recall.retrieval_mode}, want hybrid`);
+    assertHybridRetrievalMode(recall.retrieval_mode, `${item.id} recall`);
     assert(
       claims.every((claim) => Number.isFinite(Number(claim.text_score)) && Number.isFinite(Number(claim.vector_score))),
       `${item.id} recall claims missing text/vector score components`
     );
     verifiedWithoutCitation += claims.filter((claim) => claim.status === "verified" && !claim.source_url).length;
+    let expectedClaimRank = null;
+    let expectedClaimFreshness = undefined;
     if (item.expected_claim_contains) {
-      const rank = findRank(claims, item.expected_claim_contains, item.expected_source_url);
+      const { rank, item: matchedClaim } = findExpectedClaim(claims, item.expected_claim_contains, item.expected_source_url);
+      expectedClaimRank = rank;
+      expectedClaimFreshness = matchedClaim ? matchedClaim.freshness : undefined;
       recallRanks.push(rank);
       assert(rank !== null, `${item.id} did not retrieve expected claim ${JSON.stringify(item.expected_claim_contains)}`);
-      assert(rank <= Number(item.min_rank || limit), `${item.id} expected rank <= ${item.min_rank || limit}, got ${rank}`);
+      assert(
+        rank <= Number(item.min_rank || limit),
+        `${item.id} expected rank <= ${item.min_rank || limit}, got ${rank}; claims=${JSON.stringify(recallRankSummary(claims))}`
+      );
+      if (item.expected_claim_freshness) {
+        assert(
+          matchedClaim && matchedClaim.freshness === item.expected_claim_freshness,
+          `${item.id} expected matched claim freshness ${item.expected_claim_freshness}, got ${matchedClaim?.freshness || "<missing>"}`
+        );
+      }
     }
     if (item.expected_source_url) {
       assert(
@@ -582,6 +614,8 @@ await runCheck("golden_cases", async () => {
     results.push({
       id: item.id,
       claims: claims.length,
+      expected_claim_rank: expectedClaimRank,
+      expected_claim_freshness: expectedClaimFreshness,
       retrieval_mode: recall.retrieval_mode,
       supporting_documents: Array.isArray(recall.supporting_documents) ? recall.supporting_documents.length : 0,
       graph_relations: Array.isArray(recall.graph_context) ? recall.graph_context.length : 0,

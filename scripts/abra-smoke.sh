@@ -1243,8 +1243,8 @@ if (webhookDuplicate.accepted !== 1 || !Array.isArray(webhookDuplicate.documents
 if (!Array.isArray(recall.supporting_documents) || recall.supporting_documents.length < 1) {
   throw new Error("recall did not return supporting documents");
 }
-if (recall.retrieval_mode !== "hybrid") {
-  throw new Error("recall did not use hybrid retrieval");
+if (!["hybrid", "hybrid_reranked"].includes(recall.retrieval_mode)) {
+  throw new Error(`recall did not use hybrid-compatible retrieval: ${recall.retrieval_mode}`);
 }
 if (!recall.claims.every((claim) => Number.isFinite(Number(claim.text_score)) && Number.isFinite(Number(claim.vector_score)))) {
   throw new Error("recall claims did not include text/vector score components");

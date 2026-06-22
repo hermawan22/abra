@@ -14,6 +14,7 @@ import (
 
 type fakeStoreRunner struct {
 	execSQL     []string
+	querySQL    []string
 	queryRowSQL []string
 }
 
@@ -22,7 +23,8 @@ func (r *fakeStoreRunner) Exec(_ context.Context, sql string, _ ...any) (pgconn.
 	return pgconn.CommandTag{}, nil
 }
 
-func (r *fakeStoreRunner) Query(_ context.Context, _ string, _ ...any) (pgx.Rows, error) {
+func (r *fakeStoreRunner) Query(_ context.Context, sql string, _ ...any) (pgx.Rows, error) {
+	r.querySQL = append(r.querySQL, compactSQL(sql))
 	return &fakeRows{}, nil
 }
 
@@ -512,6 +514,7 @@ func TestHybridRecallQueriesUseVectorAndTextCandidates(t *testing.T) {
 		"ranked_claims AS",
 		"LEFT JOIN documents d",
 		"LEFT JOIN source_configs sc",
+		"COALESCE(sc.status, 'active') <> 'deleted'",
 		"source_freshness.refresh_due",
 		"COALESCE(tm.text_score, 0) AS text_score",
 		"COALESCE(vm.vector_score, 0) AS vector_score",
@@ -534,12 +537,85 @@ func TestHybridRecallQueriesUseVectorAndTextCandidates(t *testing.T) {
 		"UNION",
 		"COALESCE(tm.text_score, 0) AS text_score",
 		"COALESCE(vm.vector_score, 0) AS vector_score",
+		"COALESCE(sc.status, 'active') <> 'deleted'",
 		"COALESCE(tm.text_score, 0)",
 		"COALESCE(vm.vector_score, 0) * 0.45",
 		"ORDER BY rank_score DESC",
 	} {
 		if !strings.Contains(docs, fragment) {
 			t.Fatalf("hybrid documents query missing %q:\n%s", fragment, docs)
+		}
+	}
+}
+
+func TestRecallSupportSQLFiltersDeletedSourceConfigs(t *testing.T) {
+	for name, query := range map[string]string{
+		"hybrid_claims":    hybridRecallClaimsSQL("c.status IN ('verified', 'inferred')", 1024, false),
+		"hybrid_documents": hybridRecallDocumentsSQL(1024),
+		"memory_summaries": memorySummarySelectSQL(),
+		"related_graph":    relatedGraphSQL(),
+	} {
+		if !strings.Contains(query, "source_configs") {
+			t.Fatalf("%s SQL does not inspect source_configs:\n%s", name, query)
+		}
+		if !strings.Contains(query, "deleted") {
+			t.Fatalf("%s SQL does not filter deleted source config state:\n%s", name, query)
+		}
+	}
+
+	runner := &fakeStoreRunner{}
+	store := &Store{runner: runner}
+	if _, err := store.ListDocumentsForSummary(context.Background(), "repo:test", 10); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.querySQL) == 0 || !strings.Contains(runner.querySQL[0], "source_configs") || !strings.Contains(runner.querySQL[0], "deleted") {
+		t.Fatalf("summary document SQL does not filter deleted source configs: %#v", runner.querySQL)
+	}
+}
+
+func TestUpsertDocumentReactivatesReappearingSourceDocument(t *testing.T) {
+	runner := &fakeStoreRunner{}
+	store := &Store{runner: runner}
+	if _, err := store.UpsertDocument(context.Background(), DocumentRecord{
+		SourceType:      "markdown",
+		SourceURL:       "file://docs/current.md",
+		Title:           "Current",
+		Scope:           "repo:test",
+		ContentChecksum: "checksum",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.execSQL) == 0 || !strings.Contains(runner.execSQL[0], "status = 'active'") {
+		t.Fatalf("upsert document SQL did not reactivate existing documents: %#v", runner.execSQL)
+	}
+}
+
+func TestInsertClaimReactivatesSourceSyncDeletedClaims(t *testing.T) {
+	runner := &fakeStoreRunner{}
+	store := &Store{runner: runner}
+	if _, err := store.InsertClaim(context.Background(), ClaimRecord{
+		ClaimText:      "Current docs use React Query.",
+		Scope:          "repo:test",
+		SourceURL:      "file://docs/current.md",
+		SourceType:     "markdown",
+		Status:         "verified",
+		Confidence:     0.8,
+		Authority:      "manual-unverified",
+		AuthorityScore: 0.35,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.execSQL) < 2 {
+		t.Fatalf("upsert claim did not run insert/update SQL: %#v", runner.execSQL)
+	}
+	updateSQL := runner.execSQL[1]
+	for _, fragment := range []string{
+		"metadata->>'source_sync_deleted' = 'true'",
+		"source_sync_deleted_at",
+		"source_refresh_reactivated_at",
+	} {
+		if !strings.Contains(updateSQL, fragment) {
+			t.Fatalf("upsert claim SQL missing %q:\n%s", fragment, updateSQL)
 		}
 	}
 }

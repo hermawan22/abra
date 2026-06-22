@@ -2,7 +2,7 @@
 
 Abra is terminal-first: install the `abra` command, start the service from the terminal, and operate it through the CLI, HTTP, or MCP.
 
-The quickstart path defaults to local neural embeddings: Qwen/Qwen3-Embedding-0.6B-GGUF served by a local llama.cpp OpenAI-compatible endpoint started automatically by `abra up` and managed directly with `abra models up/status` when troubleshooting. Qwen/Qwen3-Reranker-0.6B can be configured when a compatible rerank endpoint is available. Custom providers are supported and replace the local defaults when configured.
+The quickstart path defaults to built-in local neural embeddings: Qwen/Qwen3-Embedding-0.6B-GGUF served by a local llama.cpp OpenAI-compatible endpoint. `abra up` starts the embedding runner automatically for the local provider, and `abra models up/status` manages it when troubleshooting. Custom compatible embedding providers are supported and replace the local Qwen embedding path when configured; custom rerankers can be added with compatible reranker flags.
 
 Local embedding calls default to a 10-minute provider timeout because CPU-backed model requests can be slower than normal API calls on large files. Custom providers default to 30 seconds and can be changed with `EMBEDDING_TIMEOUT`. Local neural setup writes `ABRA_AI_PROVIDER_CONCURRENCY=1`, `ABRA_EMBEDDING_BATCH_MAX_ITEMS=6`, and `ABRA_EMBEDDING_BATCH_MAX_TOKENS=3000` so the default Qwen runner stays under its context window on large files. Compatible providers write `ABRA_AI_PROVIDER_CONCURRENCY=4`, `ABRA_EMBEDDING_BATCH_MAX_ITEMS=16`, and `ABRA_EMBEDDING_BATCH_MAX_TOKENS=6000`; raise those only after measuring provider capacity. `abra doctor` warns when these values are invalid or likely too aggressive for a single local model runner.
 
@@ -56,9 +56,10 @@ abra config model local
 abra config model qwen3
 abra config model openai --api-key-stdin
 abra config model compatible --base-url https://api.example.com/v1 --model embedding-model --dimensions 1024
+abra config model compatible --base-url https://api.example.com/v1 --model embedding-model --dimensions 1024 --reranker-base-url https://api.example.com/v1 --reranker-model rerank-model
 ```
 
-For non-interactive local setup, use `abra setup --yes`. `qwen3` and `local-smart` are local neural aliases; they use the same built-in Qwen runner lifecycle as `local`, and `abra models up` normalizes the stored provider back to `local` after syncing the env. For authenticated compatible providers during onboarding, use `printf '%s' "$PROVIDER_API_KEY" | abra setup --compatible --embedding-base-url https://api.example.com/v1 --embedding-model embedding-model --dimensions 1024 --api-key-stdin`. The CLI infers dimensions for known OpenAI, Qwen, BGE, Nomic, and Gemini embedding model names; pass `--dimensions` for unknown compatible models. If a local ingest still reports an embedding context-window error, reduce `--embedding-batch-max-items` or `--embedding-batch-max-tokens`; if a scaled compatible provider is underused, raise them deliberately. For OpenAI, non-interactive setup requires `--api-key-stdin` or `OPENAI_API_KEY`.
+For non-interactive local setup, use `abra setup --yes`. `qwen3` and `local-smart` are local neural aliases; they use the same built-in Qwen runner lifecycle as `local`, and `abra models up` normalizes the stored provider back to `local` after syncing the env. For authenticated compatible providers during onboarding, use `printf '%s' "$PROVIDER_API_KEY" | abra setup --compatible --embedding-base-url https://api.example.com/v1 --embedding-model embedding-model --dimensions 1024 --api-key-stdin`. Custom compatible embedding providers replace the local Qwen embedding path; reranking stays disabled unless you add `--reranker-base-url` and `--reranker-model` or explicitly set `--reranker-provider local`. DeepSeek-style OpenAI chat-compatible endpoints can be valid for chat consumers, but they are not Abra's embedding default; only configure Abra with a real embeddings-compatible endpoint, and pass `--dimensions` when the model is not recognized. When the reranker uses the same provider key, the CLI reuses the embedding key; pass `--reranker-api-key` or `--reranker-api-key-stdin` for a separate key, and use `--no-reranker` to keep reranking off deliberately. The CLI infers dimensions for known OpenAI, Qwen, BGE, Nomic, and Gemini embedding model names; pass `--dimensions` for unknown compatible models. If a local ingest still reports an embedding context-window error, reduce `--embedding-batch-max-items` or `--embedding-batch-max-tokens`; if a scaled compatible provider is underused, raise them deliberately. For OpenAI, non-interactive setup requires `--api-key-stdin` or `OPENAI_API_KEY`.
 Use `abra setup --yes --no-models` only when you intentionally manage the embedding endpoint yourself; otherwise the default local provider is started for you by setup or `abra up`.
 
 Make the current repo Codex-ready after setup:
@@ -99,14 +100,16 @@ abra up
 abra status
 ```
 
-For local-runner troubleshooting, use `abra models status` and `abra models up` directly. These commands manage only the built-in local Qwen runner, publish it on `127.0.0.1` by default, use Docker pull policy `missing`, and recreate the container when runner-relevant model, dimension, port, cache, publish, image, pull, pooling, or context settings change. Production local embeddings require `ABRA_LOCAL_EMBEDDING_IMAGE` to be an operator-verified `@sha256` image reference; otherwise use `EMBEDDING_PROVIDER=compatible`. When `EMBEDDING_PROVIDER` is not `local`, `qwen3`, or `local-smart`, model commands report the local runner as inactive unless `--force` is passed.
+For local-runner troubleshooting, use `abra models status` and `abra models up` directly. These commands manage only the built-in local Qwen runner, publish it on `127.0.0.1` by default, use Docker pull policy `missing`, and recreate the container when runner-relevant model, dimension, port, cache, publish, image, pull, pooling, or context settings change. Production local embeddings require explicit approval via `ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=true` or `abra models up --allow-production-local-embeddings`, plus an operator-verified `ABRA_LOCAL_EMBEDDING_IMAGE` `@sha256` image reference; otherwise use `EMBEDDING_PROVIDER=compatible`. When `EMBEDDING_PROVIDER` is not `local`, `qwen3`, or `local-smart`, model commands report the local runner as inactive unless `--force` is passed.
 
 Use these defaults for the remaining commands:
 
 ```sh
 export ABRA_BASE_URL=http://localhost:18080
-export ABRA_API_TOKEN=demo-only-dev-token
+export ABRA_API_TOKEN=replace-with-token
 ```
+
+`demo-only-dev-token` is acceptable only for loopback demos. Never expose a server using that token on a network.
 
 Ingest a demo document:
 
@@ -332,8 +335,8 @@ From a source checkout, run the CLI as `go run ./cmd/abra <command>`. In a relea
 | inspect one source job history | `abra sources logs <source-config-id> --limit 20` |
 | pause a source config | `abra sources pause <source-config-id>` |
 | resume a source config | `abra sources resume <source-config-id> --approval-id <approval-id>` |
-| validate an MCP source before registering it | `abra source mcp --scope team:platform --mcp-url https://mcp.example/mcp --tool export_documents --dry-run` |
-| register an auto-refreshing MCP source | `abra source mcp --scope team:platform --mcp-url https://mcp.example/mcp --tool export_documents --schedule "@every 10m" --freshness-seconds 600` |
+| validate an MCP source before registering it | `abra source mcp --scope team:docs --mcp-url https://mcp.example.com/mcp --tool export_documents --dry-run` |
+| register an auto-refreshing MCP source | `abra source mcp --scope team:docs --mcp-url https://mcp.example.com/mcp --tool export_documents --schedule "@every 10m" --freshness-seconds 600` |
 | list jobs | `abra jobs` |
 | capture raw observation | `abra observe "Agents should rerun release checks" --scope repo:demo` |
 | capture and propose observation | `abra observe "Agents should rerun release checks" --scope repo:demo --propose --source-url file://release-runbook.md` |
@@ -453,40 +456,60 @@ For worker-based source refreshes, use `abra ingest . --code --tracked`, `abra w
 A typical MCP connector onboarding flow is:
 
 1. Expose a user-owned MCP tool that reads the source system and returns normalized Abra documents.
-2. Inspect the upstream MCP server when the export tool name is not known yet:
+2. Generate a repeatable manifest when you want a headless CLI-only add flow:
+
+```sh
+abra connectors mcp template \
+  --scope team:docs \
+  --connector knowledge-base \
+  --output knowledge-base.connector.json
+```
+
+3. Inspect the upstream MCP server when the export tool name is not known yet:
 
 ```sh
 abra connectors mcp inspect \
-  --scope team:platform \
-  --mcp-url https://mcp.example.internal/mcp \
-  --bearer-token-env CONFLUENCE_MCP_TOKEN
+  --scope team:docs \
+  --mcp-url https://mcp.example.com/mcp \
+  --bearer-token-env MCP_EXPORT_TOKEN
 ```
 
-3. Dry-run the tool through Abra before saving anything:
+4. For the small guided CLI flow, let Abra inspect, validate, then register:
+
+```sh
+abra connectors mcp add \
+  --manifest knowledge-base.connector.json \
+  --wait \
+  --verify
+```
+
+If the upstream MCP server exposes more than one tool, pass `--tool`.
+
+5. Dry-run the tool through Abra before saving anything:
 
 ```sh
 abra connectors mcp validate \
-  --scope team:platform \
-  --mcp-url https://mcp.example.internal/mcp \
+  --scope team:docs \
+  --mcp-url https://mcp.example.com/mcp \
   --tool export_documents \
-  --arguments-json '{"space":"ENG"}' \
-  --document-source-type confluence \
-  --bearer-token-env CONFLUENCE_MCP_TOKEN \
-  --header-env X-API-Key=CONFLUENCE_API_KEY \
+  --arguments-json '{"collection":"docs"}' \
+  --document-source-type markdown \
+  --bearer-token-env MCP_EXPORT_TOKEN \
+  --header-env X-Workspace-ID=MCP_WORKSPACE_ID \
   --dry-run
 ```
 
-4. Register the source config and queue the first ingestion job:
+6. Register the source config and queue the first ingestion job:
 
 ```sh
 abra connectors mcp register \
-  --scope team:platform \
-  --mcp-url https://mcp.example.internal/mcp \
+  --scope team:docs \
+  --mcp-url https://mcp.example.com/mcp \
   --tool export_documents \
-  --arguments-json '{"space":"ENG"}' \
-  --document-source-type confluence \
-  --bearer-token-env CONFLUENCE_MCP_TOKEN \
-  --header-env X-API-Key=CONFLUENCE_API_KEY \
+  --arguments-json '{"collection":"docs"}' \
+  --document-source-type markdown \
+  --bearer-token-env MCP_EXPORT_TOKEN \
+  --header-env X-Workspace-ID=MCP_WORKSPACE_ID \
   --freshness-seconds 3600 \
   --schedule "@every 1h" \
   --wait
@@ -495,17 +518,21 @@ abra connectors mcp register \
 The same connector can be kept in a declarative manifest:
 
 ```sh
-abra connectors mcp inspect --manifest examples/connectors/mcp-confluence.connector.json
-abra connectors mcp validate --manifest examples/connectors/mcp-confluence.connector.json
-abra connectors mcp register --manifest examples/connectors/mcp-confluence.connector.json --wait --verify
+abra connectors mcp template --scope team:docs --output knowledge-base.connector.json
+abra connectors mcp inspect --manifest knowledge-base.connector.json
+abra connectors mcp validate --manifest knowledge-base.connector.json
+abra connectors mcp add --manifest knowledge-base.connector.json --wait --verify
 ```
 
-5. Inspect the saved source and its job history:
+7. Inspect the saved connector and its job history:
 
 ```sh
+abra connectors status <source-config-id>
+abra connectors logs <source-config-id> --limit 20
+abra connectors sync <source-config-id> --scope team:docs --wait
 abra sources status <source-config-id>
 abra sources logs <source-config-id> --limit 20
-abra jobs --scope team:platform
+abra jobs --scope team:docs
 ```
 
 The configured MCP tool must return normalized Abra documents as JSON, either as
@@ -521,10 +548,16 @@ MCP clients can also use connector-named aliases such as
 `inspect_connector_source`, `validate_connector_source`,
 `upsert_connector_source`, and `sync_connector_source`.
 
+ACL passthrough is metadata-only in core Abra. If a connector includes fields such
+as `metadata.acl_groups`, `metadata.allowed_principals`, `metadata.denied_groups`,
+or `metadata.owner`, Abra preserves them on ingested documents so a deployment
+gateway or policy overlay can enforce deny-by-default filtering before recall is
+shown to a principal. Core Abra does not own vendor group resolution or OAuth.
+
 To run an existing source again without changing its config:
 
 ```sh
-abra sources sync <source-config-id> --scope team:platform --wait --wait-timeout 10m
+abra sources sync <source-config-id> --scope team:docs --wait --wait-timeout 10m
 ```
 
 For explicit historical reprocessing, use a backfill trigger. This still queues
@@ -532,7 +565,7 @@ the existing source config, but records the operator intent separately in the
 job trigger and metadata:
 
 ```sh
-abra sources backfill <source-config-id> --scope team:platform --approval-id <approval-id> --wait --wait-timeout 10m
+abra sources backfill <source-config-id> --scope team:docs --approval-id <approval-id> --wait --wait-timeout 10m
 ```
 
 Inspect a source and its latest job, then drill into recent job history:
@@ -582,9 +615,9 @@ For webhook-style overlays, generate and sign a sample payload without adding
 vendor code to Abra core:
 
 ```sh
-abra connectors webhook sample --scope team:platform --connector confluence
-abra connectors webhook sign --payload-json '{"scope":"team:platform","source_type":"confluence","source_url":"https://wiki.example/doc","title":"Doc","content":"Body"}' --secret-env ABRA_WEBHOOK_SECRET
-abra connectors webhook test --scope team:platform --connector confluence --secret-env ABRA_WEBHOOK_SECRET
+abra connectors webhook sample --scope team:docs --connector knowledge-base
+abra connectors webhook sign --payload-json '{"scope":"team:docs","source_type":"markdown","source_url":"https://kb.example.com/doc","title":"Doc","content":"Body"}' --secret-env ABRA_WEBHOOK_SECRET
+abra connectors webhook test --scope team:docs --connector knowledge-base --secret-env ABRA_WEBHOOK_SECRET
 ```
 
 ## Self-Host Commands

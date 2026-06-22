@@ -70,8 +70,9 @@ function extraForbiddenPatterns() {
 }
 
 function trackedFiles() {
-  const output = execFileSync("git", ["ls-files", "-z"], { encoding: "utf8" });
-  return output.split("\0").filter(Boolean).filter((file) => {
+  const tracked = execFileSync("git", ["ls-files", "-z"], { encoding: "utf8" });
+  const untracked = execFileSync("git", ["ls-files", "--others", "--exclude-standard", "-z"], { encoding: "utf8" });
+  return [...new Set(`${tracked}${untracked}`.split("\0").filter(Boolean))].filter((file) => {
     return !ignoredPathPatterns.some((pattern) => pattern.test(file));
   });
 }

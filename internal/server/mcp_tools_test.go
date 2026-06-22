@@ -46,6 +46,24 @@ func TestUpsertSourceConfigMCPAllowsOverlaySourceTypes(t *testing.T) {
 	}
 }
 
+func TestUserIngestMetadataCannotForgeInternalLineage(t *testing.T) {
+	metadata := sanitizeUserIngestMetadata(map[string]any{
+		"source_config_id":   "source-1",
+		"source_config_name": "trusted source",
+		"ingestion_job_id":   "job-1",
+		"owner":              "platform",
+		"authority":          "official-doc",
+	})
+	for _, key := range []string{"source_config_id", "source_config_name", "ingestion_job_id"} {
+		if _, ok := metadata[key]; ok {
+			t.Fatalf("sanitized metadata still contains %q: %#v", key, metadata)
+		}
+	}
+	if metadata["owner"] != "platform" || metadata["authority"] != "official-doc" {
+		t.Fatalf("sanitized metadata dropped non-lineage fields: %#v", metadata)
+	}
+}
+
 func TestSourceConfigLifecycleMCPToolsAreDiscoverable(t *testing.T) {
 	validateSchema := mcpToolSchema(t, "validate_mcp_source")
 	validateRequired := requiredSet(t, validateSchema)

@@ -117,6 +117,13 @@ type SourceStats struct {
 	FilesSkippedGenerated int
 	ChunksWritten         int
 	ClaimsWritten         int
+	SourceDocuments       []SourceDocumentRef
+}
+
+type SourceDocumentRef struct {
+	SourceType string
+	SourceURL  string
+	Scope      string
 }
 
 type QueuedIngestionJob struct {
@@ -529,7 +536,7 @@ func (r *Runner) runSource(ctx context.Context, source SourceConfig, jobID strin
 	}
 	docs := result.Documents
 
-	stats := SourceStats{DocumentsSeen: len(docs)}
+	stats := SourceStats{DocumentsSeen: len(docs), SourceDocuments: sourceDocumentRefs(docs)}
 	applySkippedFileStats(&stats, result.Skipped)
 	span.SetAttributes(attribute.Int("abra.source.documents_seen", len(docs)))
 	span.SetAttributes(
@@ -611,6 +618,25 @@ func applySkippedFileStats(stats *SourceStats, skipped []ingest.SkippedFile) {
 			stats.FilesSkippedGenerated++
 		}
 	}
+}
+
+func sourceDocumentRefs(docs []ingest.Document) []SourceDocumentRef {
+	refs := make([]SourceDocumentRef, 0, len(docs))
+	seen := map[string]struct{}{}
+	for _, doc := range docs {
+		ref := SourceDocumentRef{
+			SourceType: string(doc.SourceType),
+			SourceURL:  doc.SourceURL,
+			Scope:      doc.Scope,
+		}
+		key := ref.SourceType + "\x00" + ref.SourceURL + "\x00" + ref.Scope
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		refs = append(refs, ref)
+	}
+	return refs
 }
 
 func (r *Runner) ingestDocumentBatch(ctx context.Context, inputs []IngestDocumentInput) ([]IngestDocumentResult, error) {

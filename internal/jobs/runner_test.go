@@ -93,6 +93,59 @@ func TestRunnerIngestsOnlyChangedDocuments(t *testing.T) {
 	}
 }
 
+func TestRunnerRecordsSuccessfulSourceSnapshot(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, root, "docs/current.md", "# Current\n\nKeep this upstream document.")
+
+	store := &fakeStore{
+		sources: []SourceConfig{{
+			ID:         "docs",
+			Scope:      "repo:snapshot",
+			SourceType: ingest.SourceTypeMarkdown,
+			Name:       "Docs",
+			Config:     map[string]any{"root": root},
+		}},
+		states: map[string]DocumentState{},
+	}
+	brain := &fakeIngestor{}
+	runner := NewRunner(store, brain, Options{
+		MaxSourcesPerRun:             10,
+		MaxChangedDocumentsPerSource: 10,
+		SourceTimeout:                time.Second,
+	})
+
+	if _, err := runner.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.successStats.SourceDocuments) != 1 {
+		t.Fatalf("source snapshot = %#v, want one document", store.successStats.SourceDocuments)
+	}
+	ref := store.successStats.SourceDocuments[0]
+	if ref.SourceType != string(ingest.SourceTypeMarkdown) || ref.Scope != "repo:snapshot" || !strings.HasSuffix(ref.SourceURL, "/docs/current.md") {
+		t.Fatalf("source snapshot ref = %#v", ref)
+	}
+}
+
+func TestRetireMissingSourceDocumentsSQLTombstonesSourceMemory(t *testing.T) {
+	query := retireMissingSourceDocumentsSQL()
+	for _, fragment := range []string{
+		"FROM unnest($2::text[], $3::text[], $4::text[])",
+		"UPDATE documents d",
+		"SET status = 'deleted'",
+		"d.source_config_id = $1",
+		"NOT EXISTS",
+		"UPDATE claims c",
+		"SET status = 'deprecated'",
+		"UPDATE relations r",
+		"DELETE FROM memory_summaries",
+		"source_sync_deleted",
+	} {
+		if !strings.Contains(query, fragment) {
+			t.Fatalf("retire missing source documents SQL missing %q:\n%s", fragment, query)
+		}
+	}
+}
+
 func TestRunnerBatchesChangedSourceDocuments(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, root, "a.md", "# A\n\nA should be ingested.")
