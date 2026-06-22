@@ -121,6 +121,10 @@ func run(ctx context.Context, argv []string) error {
 		fmt.Print(commandUsage(args.Command))
 		return nil
 	}
+	if args.Command == "help" && len(args.Rest) > 0 {
+		fmt.Print(commandUsage(args.Rest[0]))
+		return nil
+	}
 	switch args.Command {
 	case "", "help", "-h", "--help":
 		fmt.Print(usage())
@@ -139,11 +143,15 @@ func run(ctx context.Context, argv []string) error {
 		return initEnv(args)
 	case "config":
 		return configCommand(args)
-	case "models", "model":
+	case "model":
+		return modelCommand(ctx, args)
+	case "models":
 		return models(ctx, args)
 	case "scope":
 		return scopeCommand(args)
-	case "agents", "agent":
+	case "agent":
+		return agentCommand(ctx, args)
+	case "agents":
 		return agentsCommand(ctx, args)
 	case "ui", "dashboard":
 		return errors.New("abra ui was removed; use `abra setup` for guided onboarding or `abra up` for non-interactive start")
@@ -157,6 +165,10 @@ func run(ctx context.Context, argv []string) error {
 		return doctor(ctx, args)
 	case "seed":
 		return seed(ctx, args)
+	case "connect":
+		return connectCommand(ctx, args)
+	case "sync":
+		return syncCommand(ctx, args)
 	case "ingest":
 		return ingestCommand(ctx, args)
 	case "watch", "source":
@@ -173,18 +185,78 @@ func run(ctx context.Context, argv []string) error {
 		return observe(ctx, args)
 	case "observations", "episodes":
 		return listObservations(ctx, args)
-	case "think", "ask":
+	case "ask":
+		return think(ctx, args)
+	case "think":
 		return think(ctx, args)
 	case "recall":
 		return recall(ctx, args)
+	case "context":
+		return composeMemory(ctx, args)
 	case "compose":
 		return composeMemory(ctx, args)
+	case "brain":
+		return brainCommand(ctx, args)
 	case "memory":
 		return memoryCommand(ctx, args)
+	case "govern":
+		return governCommand(ctx, args)
+	case "plugin", "plugins":
+		return pluginCommand(ctx, args)
 	case "mcp", "mcp-config":
 		return mcp(ctx, args)
 	default:
 		return fmt.Errorf("unknown command %q\n\n%s", args.Command, usage())
+	}
+}
+
+func modelCommand(ctx context.Context, args cliArgs) error {
+	action := ""
+	if len(args.Rest) > 0 {
+		action = strings.ToLower(strings.TrimSpace(args.Rest[0]))
+	}
+	switch action {
+	case "", "show", "config":
+		return configShow(args)
+	case "local", "qwen3", "local-smart", "openai", "compatible", "openai-compatible":
+		return configModel(args)
+	case "up", "start", "status", "check", "logs", "log", "down", "stop":
+		return models(ctx, args)
+	default:
+		return fmt.Errorf("unknown model command %q\n\n%s", action, commandUsage("model"))
+	}
+}
+
+func agentCommand(ctx context.Context, args cliArgs) error {
+	action := ""
+	if len(args.Rest) > 0 {
+		action = strings.ToLower(strings.TrimSpace(args.Rest[0]))
+		args.Rest = args.Rest[1:]
+	}
+	switch action {
+	case "bootstrap", "init", "verify", "check", "ready":
+		args.Rest = append([]string{action}, args.Rest...)
+		return agentsCommand(ctx, args)
+	case "install", "connect":
+		agent := "codex"
+		if len(args.Rest) > 0 {
+			agent = strings.ToLower(strings.TrimSpace(args.Rest[0]))
+			args.Rest = args.Rest[1:]
+		}
+		if isCodexAgent(agent) {
+			return installCodexMCP(ctx, args)
+		}
+		fmt.Println("Automatic agent install is currently Codex-only.")
+		fmt.Println("Generic MCP config: abra mcp > .tmp/abra.mcp.json")
+		fmt.Println("Endpoint: " + strings.TrimRight(cfg(args).BaseURL, "/") + "/mcp")
+		fmt.Println("Token env: ABRA_API_TOKEN")
+		return nil
+	case "status", "doctor":
+		return mcpStatus(ctx, args)
+	case "", "help":
+		return errors.New(commandUsage("agent"))
+	default:
+		return fmt.Errorf("unknown agent command %q\n\n%s", action, commandUsage("agent"))
 	}
 }
 
@@ -574,7 +646,7 @@ func configModelLocalNeural(args cliArgs, label string) error {
 	if reranker.Provider != "" && !isDisabledProviderName(reranker.Provider) {
 		fmt.Println("Reranker config updated: " + reranker.Provider + " " + reranker.Model)
 	}
-	fmt.Println("Run `abra up` to start the default local Qwen embedding runner and stack, or use `abra models up` only to manage the runner directly.")
+	fmt.Println("Run `abra up` to start the default local Qwen embedding runner and stack, or use `abra model up` only to manage the runner directly.")
 	printRestartHint(args)
 	return nil
 }
@@ -850,7 +922,7 @@ func printRestartHint(args cliArgs) {
 	fmt.Println("Config: " + envPath(args))
 	fmt.Println("Restart: abra down && abra up")
 	fmt.Println("Check:   abra status")
-	fmt.Println("After changing embedding providers, re-ingest important sources so vector recall uses the new embedding space.")
+	fmt.Println("After changing embedding providers, sync important sources again so vector recall uses the new embedding space.")
 }
 
 func up(ctx context.Context, args cliArgs) error {
@@ -1259,7 +1331,7 @@ func modelConfigCheck(args cliArgs) map[string]any {
 			"name":   "model_config",
 			"ok":     true,
 			"detail": detail,
-			"hint":   "local model readiness is checked by local_embeddings; use abra models status when ingest or setup stalls",
+			"hint":   "local model readiness is checked by local_embeddings; use abra model status when sync or setup stalls",
 		}
 	}
 	return map[string]any{"name": "model_config", "ok": true, "detail": detail}
@@ -1486,13 +1558,13 @@ func codexMCPClientCheck(args cliArgs) map[string]any {
 	if strings.TrimSpace(expectedToken) == "" {
 		check["ok"] = false
 		check["detail"] = "Abra token is empty"
-		check["hint"] = "run: abra setup, then abra mcp install-codex"
+		check["hint"] = "run: abra setup, then abra agent install codex"
 		return check
 	}
 	if actualToken == "" {
 		check["ok"] = false
 		check["detail"] = tokenEnv + " is not set in this shell; Codex also needs it in the Codex process environment"
-		check["hint"] = "run: abra mcp install-codex, fully quit and reopen Codex Desktop, or export " + tokenEnv + " before launching terminal Codex"
+		check["hint"] = "run: abra agent install codex, fully quit and reopen Codex Desktop, or export " + tokenEnv + " before launching terminal Codex"
 		check["next"] = codexMCPRecoverySteps(args, tokenEnv)
 		return check
 	}
@@ -1523,7 +1595,7 @@ func codexMCPRecoverySteps(args cliArgs, tokenEnv string) []string {
 		codexInstallCommand(tokenEnv),
 		"fully quit and reopen Codex Desktop",
 		"for terminal Codex: set -a; source " + shellQuote(envPath(args)) + "; set +a; codex",
-		"then run: abra agents verify . --scope " + shellQuote(scopeOrDefault(args, ".")),
+		"then run: abra agent verify . --scope " + shellQuote(scopeOrDefault(args, ".")),
 	}
 }
 
@@ -1543,14 +1615,14 @@ func codexLaunchEnvCheck(args cliArgs) map[string]any {
 	if strings.TrimSpace(expectedToken) == "" {
 		check["ok"] = false
 		check["detail"] = "Abra token is empty"
-		check["hint"] = "run: abra setup, then abra mcp install-codex"
+		check["hint"] = "run: abra setup, then abra agent install codex"
 		return check
 	}
 	actualToken, err := commandOutput("launchctl", "getenv", tokenEnv)
 	if err != nil {
 		check["ok"] = false
 		check["detail"] = "could not read macOS launch environment: " + err.Error()
-		check["hint"] = "run: abra mcp install-codex, or export " + tokenEnv + " before launching terminal Codex"
+		check["hint"] = "run: abra agent install codex, or export " + tokenEnv + " before launching terminal Codex"
 		return check
 	}
 	actualToken = strings.TrimSpace(actualToken)
@@ -1558,7 +1630,7 @@ func codexLaunchEnvCheck(args cliArgs) map[string]any {
 	case actualToken == "":
 		check["ok"] = false
 		check["detail"] = tokenEnv + " is not set in the macOS launch environment used by Codex Desktop"
-		check["hint"] = "run: abra mcp install-codex, then fully quit and reopen Codex Desktop"
+		check["hint"] = "run: abra agent install codex, then fully quit and reopen Codex Desktop"
 	case actualToken != expectedToken:
 		check["ok"] = false
 		check["detail"] = tokenEnv + " in macOS launch environment does not match the active Abra env token"
@@ -1653,7 +1725,7 @@ func seed(ctx context.Context, args cliArgs) error {
 		return err
 	}
 	fmt.Println("Seeded memory in " + scope)
-	fmt.Printf("Try: abra think %q --scope %s\n", "What should agents use before code changes?", scope)
+	fmt.Printf("Try: abra ask %q --scope %s\n", "What should agents use before code changes?", scope)
 	return nil
 }
 
@@ -2105,6 +2177,134 @@ func watch(ctx context.Context, args cliArgs) error {
 	return sourceIngest(ctx, args)
 }
 
+func connectCommand(ctx context.Context, args cliArgs) error {
+	if len(args.Rest) == 0 {
+		return errors.New(commandUsage("connect"))
+	}
+	action := strings.ToLower(strings.TrimSpace(args.Rest[0]))
+	args.Rest = args.Rest[1:]
+	switch action {
+	case "list", "ls", "sources":
+		return listSources(ctx, args)
+	case "status":
+		return sourceStatus(ctx, args)
+	case "logs", "log":
+		return sourceLogs(ctx, args)
+	case "pause":
+		return setSourceStatus(ctx, args, "pause")
+	case "resume":
+		return setSourceStatus(ctx, args, "resume")
+	case "local", "path", "repo":
+		if flag(args, "path", "") == "" {
+			if len(args.Rest) > 0 {
+				args.Flags["path"] = args.Rest[0]
+				args.Rest = args.Rest[1:]
+			} else {
+				args.Flags["path"] = "."
+			}
+		}
+		if !boolFlag(args, "direct") {
+			args.Bools["tracked"] = true
+			if !boolFlag(args, "no-wait") {
+				args.Bools["wait"] = true
+			}
+		}
+		return ingestCommand(ctx, args)
+	case "git", "github", "remote":
+		if flag(args, "git", "") == "" && flag(args, "repo", "") == "" {
+			if len(args.Rest) == 0 {
+				return errors.New("connect git requires a repository URL")
+			}
+			args.Flags["git"] = args.Rest[0]
+			args.Rest = args.Rest[1:]
+		}
+		if !boolFlag(args, "no-wait") {
+			args.Bools["wait"] = true
+		}
+		return sourceIngest(ctx, args)
+	case "mcp":
+		if flag(args, "mcp-url", "") == "" && flag(args, "url", "") == "" {
+			if len(args.Rest) == 0 {
+				return errors.New("connect mcp requires an MCP HTTP URL")
+			}
+			args.Flags["mcp-url"] = args.Rest[0]
+			args.Rest = args.Rest[1:]
+		}
+		if boolFlag(args, "dry-run") || boolFlag(args, "validate") {
+			return sourceIngest(ctx, args)
+		}
+		if !boolFlag(args, "no-wait") {
+			args.Bools["wait"] = true
+		}
+		return sourceIngest(ctx, args)
+	case "webhook":
+		return connectorWebhook(ctx, args)
+	case "agent":
+		return agentCommand(ctx, args)
+	case "model":
+		return modelCommand(ctx, args)
+	default:
+		if _, err := os.Stat(action); err == nil {
+			args.Rest = append([]string{action}, args.Rest...)
+			args.Flags["path"] = action
+			args.Bools["tracked"] = true
+			if !boolFlag(args, "no-wait") {
+				args.Bools["wait"] = true
+			}
+			return ingestCommand(ctx, args)
+		}
+		return fmt.Errorf("unknown connect target %q\n\n%s", action, commandUsage("connect"))
+	}
+}
+
+func syncCommand(ctx context.Context, args cliArgs) error {
+	if len(args.Rest) == 0 {
+		if id := firstNonEmpty(flag(args, "source-config-id", ""), flag(args, "source-id", ""), flag(args, "id", "")); id != "" {
+			args.Rest = []string{id}
+			return syncSource(ctx, args)
+		}
+		return errors.New(commandUsage("sync"))
+	}
+	action := strings.ToLower(strings.TrimSpace(args.Rest[0]))
+	switch action {
+	case "jobs":
+		args.Rest = args.Rest[1:]
+		return listJobs(ctx, args)
+	case "status":
+		args.Rest = args.Rest[1:]
+		if len(args.Rest) > 0 || flag(args, "source-config-id", "") != "" || flag(args, "source-id", "") != "" || flag(args, "id", "") != "" {
+			return sourceStatus(ctx, args)
+		}
+		return listJobs(ctx, args)
+	case "logs", "log":
+		args.Rest = args.Rest[1:]
+		return sourceLogs(ctx, args)
+	case "git", "github", "remote":
+		args.Rest = args.Rest[1:]
+		if flag(args, "git", "") == "" && flag(args, "repo", "") == "" {
+			if len(args.Rest) == 0 {
+				return errors.New("sync git requires a repository URL")
+			}
+			args.Flags["git"] = args.Rest[0]
+			args.Rest = args.Rest[1:]
+		}
+		if !boolFlag(args, "no-wait") {
+			args.Bools["wait"] = true
+		}
+		return sourceIngest(ctx, args)
+	case "mcp":
+		args.Rest = args.Rest[1:]
+		if !boolFlag(args, "no-wait") {
+			args.Bools["wait"] = true
+		}
+		return sourceIngest(ctx, args)
+	}
+	if _, err := os.Stat(args.Rest[0]); err == nil {
+		return ingestCommand(ctx, args)
+	}
+	return syncSource(ctx, args)
+}
+
 func sourceIngest(ctx context.Context, args cliArgs) error {
 	var err error
 	args, err = applyConnectorManifest(args)
@@ -2303,7 +2503,7 @@ func sourceIngest(ctx context.Context, args cliArgs) error {
 		return verifySourceRecall(ctx, args, scope, sourceID, firstNonEmpty(flag(args, "verify-query", ""), name, sourceURL))
 	}
 	if sourceType == "local_repo" {
-		fmt.Println("Tip: local tracked sources require the worker to see the same path. Use `abra ingest . --code` for direct local ingestion.")
+		fmt.Println("Tip: local tracked sources require the worker to see the same path. Use `abra sync . --code` for direct local ingestion.")
 	}
 	return nil
 }
@@ -3664,7 +3864,11 @@ func think(ctx context.Context, args cliArgs) error {
 		question = flag(args, "question", "")
 	}
 	if question == "" {
-		return errors.New("think requires a question, for example: abra think \"what should I know?\"")
+		label := "think"
+		if args.Command == "ask" {
+			label = "ask"
+		}
+		return fmt.Errorf("%s requires a question, for example: abra %s \"what should I know?\"", label, label)
 	}
 	scope := scopeOrDefault(args, ".")
 	result, err := postJSON(ctx, args, "/brain/think", map[string]any{
@@ -3725,7 +3929,11 @@ func composeMemory(ctx context.Context, args cliArgs) error {
 		task = flag(args, "task", "")
 	}
 	if task == "" {
-		return errors.New("compose requires a task, for example: abra compose \"ship a change\"")
+		label := "compose"
+		if args.Command == "context" {
+			label = "context"
+		}
+		return fmt.Errorf("%s requires a task, for example: abra %s \"ship a change\"", label, label)
 	}
 	scope := scopeOrDefault(args, ".")
 	result, err := postJSON(ctx, args, "/memory/compose", map[string]any{
@@ -3750,7 +3958,11 @@ func composeMemory(ctx context.Context, args cliArgs) error {
 	stats, _ := result["stats"].(map[string]any)
 	health, _ := result["memory_health"].(map[string]any)
 	scope = stringValue(result["scope"], scope)
-	fmt.Printf("Compose: %s / %s\n", stringValue(verification["verdict"], "unknown"), stringValue(decision["decision"], "unknown"))
+	label := "Compose"
+	if args.Command == "context" {
+		label = "Context"
+	}
+	fmt.Printf("%s: %s / %s\n", label, stringValue(verification["verdict"], "unknown"), stringValue(decision["decision"], "unknown"))
 	fmt.Println("scope: " + scope)
 	if len(stats) > 0 {
 		fmt.Printf("context: facts=%d documents=%d summaries=%d graph=%d blocks=%d\n",
@@ -3833,10 +4045,10 @@ func composeMemory(ctx context.Context, args cliArgs) error {
 	if len(stats) > 0 && intValue(stats["facts"])+intValue(stats["supporting_documents"])+intValue(stats["summaries"])+intValue(stats["graph_relations"]) == 0 {
 		fmt.Println("No source-backed context found for this scope.")
 		if composeResultHasReadinessWarning(result) {
-			fmt.Println("Retrieval or memory-health warnings are present; run `abra doctor` and `abra models status` before re-ingesting.")
+			fmt.Println("Retrieval or memory-health warnings are present; run `abra doctor` and `abra model status` before syncing again.")
 		} else {
 			fmt.Println("Confirm the project scope: abra scope")
-			fmt.Println("Then ingest the project with that exact scope: abra ingest . --code --scope " + scope)
+			fmt.Println("Then sync the project with that exact scope: abra sync . --code --scope " + scope)
 		}
 	}
 	return nil
@@ -3854,6 +4066,114 @@ func memoryCommand(ctx context.Context, args cliArgs) error {
 	default:
 		return fmt.Errorf("unknown memory command %q\n\n%s", action, commandUsage("memory"))
 	}
+}
+
+func brainCommand(ctx context.Context, args cliArgs) error {
+	action := "status"
+	if len(args.Rest) > 0 {
+		action = strings.ToLower(strings.TrimSpace(args.Rest[0]))
+		args.Rest = args.Rest[1:]
+	}
+	switch action {
+	case "", "status", "health", "doctor":
+		args.Rest = append([]string{action}, args.Rest...)
+		return memoryCommand(ctx, args)
+	case "ask", "think":
+		return think(ctx, args)
+	case "context", "compose":
+		return composeMemory(ctx, args)
+	case "recall", "search":
+		return recall(ctx, args)
+	case "observe":
+		return observe(ctx, args)
+	case "observations", "episodes":
+		return listObservations(ctx, args)
+	default:
+		return fmt.Errorf("unknown brain command %q\n\n%s", action, commandUsage("brain"))
+	}
+}
+
+func governCommand(ctx context.Context, args cliArgs) error {
+	action := "status"
+	if len(args.Rest) > 0 {
+		action = strings.ToLower(strings.TrimSpace(args.Rest[0]))
+		args.Rest = args.Rest[1:]
+	}
+	switch action {
+	case "", "status", "health":
+		return memoryStatus(ctx, args, false)
+	case "doctor":
+		return memoryStatus(ctx, args, true)
+	case "approvals", "approval":
+		return approvalsCommand(ctx, args)
+	case "observe":
+		return observe(ctx, args)
+	case "observations", "episodes":
+		return listObservations(ctx, args)
+	default:
+		return fmt.Errorf("unknown govern command %q\n\n%s", action, commandUsage("govern"))
+	}
+}
+
+func pluginCommand(ctx context.Context, args cliArgs) error {
+	action := "list"
+	if len(args.Rest) > 0 {
+		action = strings.ToLower(strings.TrimSpace(args.Rest[0]))
+		args.Rest = args.Rest[1:]
+	}
+	switch action {
+	case "", "list", "ls":
+		if boolFlag(args, "json") {
+			return printJSON(map[string]any{
+				"core_contracts": []string{"mcp-source", "http-ingest", "signed-webhook", "agent-mcp"},
+				"boundary":       "plugins adapt external systems into normalized Abra documents; core owns transform, governance, memory, and retrieval",
+			})
+		}
+		fmt.Println("Plugin contracts:")
+		fmt.Println("- mcp-source     external MCP tool returns normalized Abra documents")
+		fmt.Println("- http-ingest    external job pushes normalized documents to /ingest")
+		fmt.Println("- signed-webhook external event source pushes signed ingestion events")
+		fmt.Println("- agent-mcp      AI client connects through Abra MCP")
+		fmt.Println("Core stays frozen: transform, chunking, embeddings, graph, citations, approvals, and decision gates are not plugin bypass points.")
+		return nil
+	case "mcp", "source":
+		return connectorMCP(ctx, args)
+	case "webhook":
+		return connectorWebhook(ctx, args)
+	case "contract", "schema":
+		return printPluginContract(args)
+	default:
+		return fmt.Errorf("unknown plugin command %q\n\n%s", action, commandUsage("plugin"))
+	}
+}
+
+func printPluginContract(args cliArgs) error {
+	contract := map[string]any{
+		"documents": []map[string]any{{
+			"source_type":       "markdown",
+			"source_url":        "https://source.example/doc/123",
+			"source_id":         "123",
+			"title":             "Source-backed document",
+			"scope":             "team:docs",
+			"content":           "Markdown or plain text content.",
+			"source_updated_at": "2026-06-22T00:00:00Z",
+			"metadata": map[string]any{
+				"authority":          "official-doc",
+				"authority_score":    0.8,
+				"allowed_principals": []string{"group:docs"},
+				"owner":              "team:docs",
+			},
+		}},
+	}
+	if boolFlag(args, "json") {
+		return printJSON(contract)
+	}
+	bytes, err := json.MarshalIndent(contract, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(bytes))
+	return nil
 }
 
 func memoryStatus(ctx context.Context, args cliArgs, doctor bool) error {
@@ -3885,7 +4205,7 @@ func memoryStatus(ctx context.Context, args cliArgs, doctor bool) error {
 	if doctor {
 		printMemorySourceDiagnostics(sourceDiagnostics, sourceHints, scope)
 	} else if len(sourceDiagnostics) > 0 || len(sourceHints) > 0 {
-		fmt.Println("Run `abra memory doctor --scope " + scope + "` for source diagnostics.")
+		fmt.Println("Run `abra brain doctor --scope " + scope + "` for source diagnostics.")
 	}
 	signals, _ := result["signals"].([]any)
 	if len(signals) == 0 {
@@ -3899,7 +4219,7 @@ func memoryStatus(ctx context.Context, args cliArgs, doctor bool) error {
 	}
 	printComposeSignals(signals, limit)
 	if !doctor && len(signals) > limit {
-		fmt.Println("Run `abra memory doctor --scope " + scope + "` for all health signals.")
+		fmt.Println("Run `abra brain doctor --scope " + scope + "` for all health signals.")
 	}
 	return nil
 }
@@ -4106,8 +4426,8 @@ func printMemorySourceDiagnostics(items []any, hints []any, scope string) {
 			printIndentedStringList(key, item[key])
 		}
 		if sourceIDForCommand != "" {
-			fmt.Println("  inspect: abra sources status " + shellQuote(sourceIDForCommand))
-			fmt.Println("  logs: abra sources logs " + shellQuote(sourceIDForCommand) + " --scope " + shellQuote(scope))
+			fmt.Println("  inspect: abra connect status " + shellQuote(sourceIDForCommand))
+			fmt.Println("  logs: abra connect logs " + shellQuote(sourceIDForCommand) + " --scope " + shellQuote(scope))
 		}
 	}
 	if len(hints) > 0 {
@@ -4258,28 +4578,28 @@ func scopeCommand(args cliArgs) error {
 			"scope": scope,
 			"path":  path,
 			"examples": map[string]string{
-				"bootstrap":       "abra agents bootstrap " + shellQuote(path) + " --agent codex --scope " + shellQuote(scope),
-				"mcp_install":     "abra mcp install-codex",
-				"agents_init":     "abra agents init " + shellQuote(path) + " --agent codex --scope " + shellQuote(scope),
-				"agents_verify":   "abra agents verify " + shellQuote(path) + " --scope " + shellQuote(scope),
-				"ingest":          "abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope),
-				"think":           "abra think \"what should I know before changing this project?\" --scope " + scope,
+				"bootstrap":       "abra agent bootstrap " + shellQuote(path) + " --agent codex --scope " + shellQuote(scope),
+				"agent_install":   "abra agent install codex",
+				"agent_init":      "abra agent init " + shellQuote(path) + " --agent codex --scope " + shellQuote(scope),
+				"agent_verify":    "abra agent verify " + shellQuote(path) + " --scope " + shellQuote(scope),
+				"sync":            "abra sync " + shellQuote(path) + " --code --scope " + shellQuote(scope),
+				"ask":             "abra ask \"what should I know before changing this project?\" --scope " + scope,
 				"codex":           agentReadyPrompt(scope),
-				"compose":         "abra compose \"ship this change\" --scope " + scope + " --agent codex",
-				"troubleshooting": "If an AI client says Abra has no context, run agents_verify --json first. Run abra doctor and repair MCP/API/token/model readiness when verify reports readiness errors. Ingest only when verify proves the exact scope or source-backed memory is missing.",
+				"context":         "abra context \"ship this change\" --scope " + scope + " --agent codex",
+				"troubleshooting": "If an AI client says Abra has no context, run agent_verify --json first. Run abra doctor and repair MCP/API/token/model readiness when verify reports readiness errors. Sync only when verify proves the exact scope or source-backed memory is missing.",
 			},
 		})
 	}
 	fmt.Println("Scope: " + scope)
 	fmt.Println("Use this exact scope with Abra MCP and AI agents.")
-	fmt.Println("Bootstrap: abra agents bootstrap " + shellQuote(path) + " --agent codex --scope " + shellQuote(scope))
-	fmt.Println("MCP:    abra mcp install-codex")
-	fmt.Println("Agent:  abra agents init " + shellQuote(path) + " --agent codex --scope " + shellQuote(scope))
-	fmt.Println("Check:  abra agents verify " + shellQuote(path) + " --scope " + shellQuote(scope))
-	fmt.Println("Ingest only if Check proves missing scope or empty memory: abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope))
-	fmt.Println("Think:  abra think \"what should I know before changing this project?\" --scope " + scope)
+	fmt.Println("Bootstrap: abra agent bootstrap " + shellQuote(path) + " --agent codex --scope " + shellQuote(scope))
+	fmt.Println("MCP:    abra agent install codex")
+	fmt.Println("Agent:  abra agent init " + shellQuote(path) + " --agent codex --scope " + shellQuote(scope))
+	fmt.Println("Check:  abra agent verify " + shellQuote(path) + " --scope " + shellQuote(scope))
+	fmt.Println("Sync only if Check proves missing scope or empty memory: abra sync " + shellQuote(path) + " --code --scope " + shellQuote(scope))
+	fmt.Println("Ask:    abra ask \"what should I know before changing this project?\" --scope " + scope)
 	fmt.Println("Codex:  " + agentReadyPrompt(scope))
-	fmt.Println("Fix:    If Codex says Abra has no context, run Check first. Run abra doctor for readiness errors, reinstall/restart MCP when server_ready=true but agent_ready=false, and ingest only when Check proves missing scope or empty memory.")
+	fmt.Println("Fix:    If Codex says Abra has no context, run Check first. Run abra doctor for readiness errors, reinstall/restart MCP when server_ready=true but agent_ready=false, and sync only when Check proves missing scope or empty memory.")
 	return nil
 }
 
@@ -4327,12 +4647,12 @@ func agentsCommand(ctx context.Context, args cliArgs) error {
 		fmt.Println(stringValue(result["action"], "") + ": " + stringValue(result["path"], ""))
 	}
 	if isCodexAgent(agent) {
-		fmt.Println("MCP:    abra mcp install-codex")
+		fmt.Println("MCP:    abra agent install codex")
 	} else {
 		fmt.Println("MCP:    abra mcp > .tmp/abra.mcp.json")
 	}
-	fmt.Println("Check:  abra agents verify " + shellQuote(path) + " --scope " + shellQuote(scope) + " --agent " + shellQuote(agent))
-	fmt.Println("Ingest only if Check proves missing scope or empty memory: abra ingest " + shellQuote(path) + " --code --scope " + shellQuote(scope))
+	fmt.Println("Check:  abra agent verify " + shellQuote(path) + " --scope " + shellQuote(scope) + " --agent " + shellQuote(agent))
+	fmt.Println("Sync only if Check proves missing scope or empty memory: abra sync " + shellQuote(path) + " --code --scope " + shellQuote(scope))
 	fmt.Println("Then:   tell your AI agent to read AGENTS.md or CLAUDE.md before changing code.")
 	return nil
 }
@@ -4398,7 +4718,7 @@ func verifyAgentContext(ctx context.Context, args cliArgs, path, scope string) e
 	strict := boolFlag(args, "strict")
 	agent := normalizedAgentFlag(args)
 	checks := []map[string]any{
-		agentFileCheck(filepath.Join(path, "AGENTS.md"), scope, []string{"working_memory_compose", "discover_scopes", `expected_scope: "` + scope + `"`, "current task", `agent: "` + agent + `"`, "agent_ready", "abra doctor", "ingest only when verify"}),
+		agentFileCheck(filepath.Join(path, "AGENTS.md"), scope, []string{"working_memory_compose", "discover_scopes", `expected_scope: "` + scope + `"`, "current task", `agent: "` + agent + `"`, "agent_ready", "abra doctor", "sync only when verify"}),
 		optionalAgentFileCheck(filepath.Join(path, "CLAUDE.md"), "@AGENTS.md"),
 	}
 	if filesOnly {
@@ -4493,9 +4813,9 @@ func verifyAgentContext(ctx context.Context, args cliArgs, path, scope string) e
 			return errors.New("agent client readiness failed under --strict; fix AI client advisory checks and rerun")
 		}
 		if filesOnly {
-			return errors.New("agent instruction verification failed; run `abra agents init --force` after confirming local custom instructions are backed up")
+			return errors.New("agent instruction verification failed; run `abra agent init --force` after confirming local custom instructions are backed up")
 		}
-		return errors.New("agent context verification failed; follow the printed Next steps and rerun `abra agents verify`")
+		return errors.New("agent context verification failed; follow the printed Next steps and rerun `abra agent verify`")
 	}
 	if filesOnly {
 		fmt.Println("Ready: agent instruction files are ready for scope " + scope + ".")
@@ -4536,7 +4856,7 @@ func agentReadyPrompt(scope string, agents ...string) string {
 	if len(agents) > 0 && strings.TrimSpace(agents[0]) != "" {
 		agent = strings.ToLower(strings.TrimSpace(agents[0]))
 	}
-	return `Use Abra MCP first. Exact scope: ` + scope + `. Call discover_scopes with expected_scope="` + scope + `", then call working_memory_compose with task=<current task>, scope="` + scope + `", and agent="` + agent + `" before answering or changing code. If Abra MCP tools are unavailable or the AI client says Abra has no context, run abra agents verify . --scope ` + scope + ` --agent ` + agent + ` --json first. Run abra doctor and repair MCP/API/token/model readiness when verify reports readiness errors; when server_ready=true but agent_ready=false, reinstall/restart the AI client MCP integration. Re-ingest only when verify proves the exact scope is missing or source-backed memory is empty, then rerun verify with this exact scope.`
+	return `Use Abra MCP first. Exact scope: ` + scope + `. Call discover_scopes with expected_scope="` + scope + `", then call working_memory_compose with task=<current task>, scope="` + scope + `", and agent="` + agent + `" before answering or changing code. If Abra MCP tools are unavailable or the AI client says Abra has no context, run abra agent verify . --scope ` + scope + ` --agent ` + agent + ` --json first. Run abra doctor and repair MCP/API/token/model readiness when verify reports readiness errors; when server_ready=true but agent_ready=false, reinstall/restart the AI client MCP integration. Sync only when verify proves the exact scope is missing or source-backed memory is empty, then rerun verify with this exact scope.`
 }
 
 func normalizedAgentFlag(args cliArgs) string {
@@ -4554,33 +4874,33 @@ func isCodexAgent(agent string) bool {
 func agentVerifyNextSteps(path, scope, agent string, ok, filesOnly bool, checks []map[string]any) []string {
 	if ok && filesOnly {
 		return []string{
-			"Run `abra agents verify " + shellQuote(path) + " --scope " + shellQuote(scope) + " --agent " + shellQuote(agent) + "` against a live Abra MCP server before giving the prompt to an AI client.",
+			"Run `abra agent verify " + shellQuote(path) + " --scope " + shellQuote(scope) + " --agent " + shellQuote(agent) + "` against a live Abra MCP server before giving the prompt to an AI client.",
 			"Give the ready_prompt to the AI client.",
 		}
 	}
 	if ok {
 		return []string{
 			"Give the ready_prompt to the AI client.",
-			"If the AI client still says Abra has no context, fully restart that client and rerun `abra agents verify " + shellQuote(path) + " --scope " + shellQuote(scope) + " --agent " + shellQuote(agent) + "`.",
+			"If the AI client still says Abra has no context, fully restart that client and rerun `abra agent verify " + shellQuote(path) + " --scope " + shellQuote(scope) + " --agent " + shellQuote(agent) + "`.",
 		}
 	}
 	steps := []string{}
 	if hasFailedCheck(checks, "AGENTS.md") || hasFailedCheck(checks, "CLAUDE.md") {
-		steps = append(steps, "Run `abra agents init "+shellQuote(path)+" --agent "+shellQuote(agent)+" --scope "+shellQuote(scope)+"` if instruction files are missing or stale.")
+		steps = append(steps, "Run `abra agent init "+shellQuote(path)+" --agent "+shellQuote(agent)+" --scope "+shellQuote(scope)+"` if instruction files are missing or stale.")
 	}
 	if hasFailedCheck(checks, "mcp") || failedCheckHasError(checks, "scope_discovery") || failedCheckHasError(checks, "working_memory") || failedCheckHasReadinessIssue(checks, "working_memory") {
 		steps = append(steps,
 			"Run `abra doctor` to check API, MCP, token, and local model readiness.",
-			"If this is Codex, run `abra mcp install-codex`, fully quit and reopen Codex, then retry.",
+			"If this is Codex, run `abra agent install codex`, fully quit and reopen Codex, then retry.",
 		)
 	}
 	if hasFailedCheckWithoutError(checks, "scope_discovery") || (hasFailedCheckWithoutError(checks, "working_memory") && !failedCheckHasReadinessIssue(checks, "working_memory")) {
-		steps = append(steps, "Run `abra ingest "+shellQuote(path)+" --code --scope "+shellQuote(scope)+"` only because verify proved the exact scope or source-backed memory is missing.")
+		steps = append(steps, "Run `abra sync "+shellQuote(path)+" --code --scope "+shellQuote(scope)+"` only because verify proved the exact scope or source-backed memory is missing.")
 	}
 	if len(steps) == 0 {
 		steps = append(steps, "Run `abra doctor` to check API, MCP, token, local model readiness, and agent setup.")
 	}
-	steps = appendUniqueStrings(steps, "Rerun `abra agents verify "+shellQuote(path)+" --scope "+shellQuote(scope)+" --agent "+shellQuote(agent)+"`.")
+	steps = appendUniqueStrings(steps, "Rerun `abra agent verify "+shellQuote(path)+" --scope "+shellQuote(scope)+" --agent "+shellQuote(agent)+"`.")
 	return steps
 }
 
@@ -4683,7 +5003,7 @@ func optionalAgentFileCheck(path, required string) map[string]any {
 	if _, hasDetail := check["detail"]; !hasDetail {
 		check["detail"] = "optional compatibility file missing"
 	}
-	check["hint"] = "run `abra agents init` if this repository should support tools that require " + filepath.Base(path)
+	check["hint"] = "run `abra agent init` if this repository should support tools that require " + filepath.Base(path)
 	delete(check, "error")
 	return check
 }
@@ -4694,7 +5014,7 @@ func agentFileCheck(path, required string, extra []string) map[string]any {
 		return map[string]any{
 			"name":  filepath.Base(path),
 			"ok":    false,
-			"hint":  "run `abra agents init` in the project root",
+			"hint":  "run `abra agent init` in the project root",
 			"error": err.Error(),
 		}
 	}
@@ -4710,7 +5030,7 @@ func agentFileCheck(path, required string, extra []string) map[string]any {
 			"name":   filepath.Base(path),
 			"ok":     false,
 			"detail": "missing " + strings.Join(missing, ", "),
-			"hint":   "run `abra agents init --force` after confirming local custom instructions are backed up",
+			"hint":   "run `abra agent init --force` after confirming local custom instructions are backed up",
 		}
 	}
 	return map[string]any{"name": filepath.Base(path), "ok": true}
@@ -4725,7 +5045,7 @@ func discoverScopeCheck(ctx context.Context, args cliArgs, scope string) map[str
 		return map[string]any{
 			"name":  "scope_discovery",
 			"ok":    false,
-			"hint":  "repair Abra MCP/API/token readiness with `abra doctor`, then rerun `abra agents verify`; re-ingest only if discovery succeeds but the exact scope is missing",
+			"hint":  "repair Abra MCP/API/token readiness with `abra doctor`, then rerun `abra agent verify`; sync only if discovery succeeds but the exact scope is missing",
 			"error": err.Error(),
 		}
 	}
@@ -4736,7 +5056,7 @@ func discoverScopeCheck(ctx context.Context, args cliArgs, scope string) map[str
 			"detail": "discover_scopes returned " + scope,
 		}
 	}
-	hint := "run `abra ingest . --code --scope " + scope + "` and retry with the exact scope"
+	hint := "run `abra sync . --code --scope " + scope + "` and retry with the exact scope"
 	if boolValue(result["candidate_truncated"], false) {
 		hint += "; discovery candidates were truncated"
 	}
@@ -4762,7 +5082,7 @@ func workingMemoryContextCheck(ctx context.Context, args cliArgs, scope, agent s
 		return map[string]any{
 			"name":  "working_memory",
 			"ok":    false,
-			"hint":  "repair Abra MCP/API/token readiness with `abra doctor`, then rerun `abra agents verify`; re-ingest only if compose succeeds but returns no source-backed context",
+			"hint":  "repair Abra MCP/API/token readiness with `abra doctor`, then rerun `abra agent verify`; sync only if compose succeeds but returns no source-backed context",
 			"error": err.Error(),
 		}
 	}
@@ -4779,7 +5099,7 @@ func workingMemoryContextCheck(ctx context.Context, args cliArgs, scope, agent s
 			"name":            "working_memory",
 			"ok":              false,
 			"detail":          fmt.Sprintf("facts=%d documents=%d summaries=%d graph=%d with retrieval or memory-health warnings", facts, documents, summaries, graph),
-			"hint":            "run `abra doctor` and `abra models status`, then retry `abra agents verify`; re-ingest only if readiness is healthy and memory is still empty",
+			"hint":            "run `abra doctor` and `abra model status`, then retry `abra agent verify`; sync only if readiness is healthy and memory is still empty",
 			"readiness_issue": true,
 		}
 	}
@@ -4787,7 +5107,7 @@ func workingMemoryContextCheck(ctx context.Context, args cliArgs, scope, agent s
 		"name":   "working_memory",
 		"ok":     false,
 		"detail": fmt.Sprintf("facts=%d documents=%d summaries=%d graph=%d", facts, documents, summaries, graph),
-		"hint":   "run `abra ingest . --code --scope " + scope + "`, then retry `abra agents verify . --scope " + scope + "`",
+		"hint":   "run `abra sync . --code --scope " + scope + "`, then retry `abra agent verify . --scope " + scope + "`",
 	}
 }
 
@@ -4893,8 +5213,8 @@ Before answering architecture questions or changing code in this repository, use
 2. If discovering scopes first, call ` + "`discover_scopes`" + ` with ` + "`expected_scope: \"" + scope + "\"`" + ` so this repo is not hidden by unrelated scopes.
 3. Call ` + "`working_memory_compose`" + ` with the current task, scope ` + "`" + scope + "`" + `, and ` + "`agent: \"" + agent + "\"`" + ` before implementation work.
 4. Follow the returned ` + "`agent_decision`" + `, verification, memory health, conflicts, impact map, and validation plan.
-5. If Abra MCP tools are unavailable or an AI client says Abra has no context, run ` + "`abra agents verify . --scope " + scope + " --agent " + agent + " --json`" + ` first, then run ` + "`abra doctor`" + ` and fix MCP/API/token/model readiness before re-ingesting.
-6. If ` + "`server_ready=true`" + ` but ` + "`agent_ready=false`" + `, reinstall/restart the AI client's MCP integration, fully restart the AI client, and retry before re-ingesting. Run ingest only when verify proves the exact scope is missing or source-backed memory is empty: ` + "`abra ingest . --code --scope " + scope + "`" + `.
+5. If Abra MCP tools are unavailable or an AI client says Abra has no context, run ` + "`abra agent verify . --scope " + scope + " --agent " + agent + " --json`" + ` first, then run ` + "`abra doctor`" + ` and fix MCP/API/token/model readiness before syncing.
+6. If ` + "`server_ready=true`" + ` but ` + "`agent_ready=false`" + `, reinstall/restart the AI client's MCP integration, fully restart the AI client, and retry before syncing. Run sync only when verify proves the exact scope is missing or source-backed memory is empty: ` + "`abra sync . --code --scope " + scope + "`" + `.
 7. Do not include secrets, API keys, local tokens, or private business context in committed files.
 `
 }
@@ -4910,11 +5230,11 @@ func installCodexMCP(ctx context.Context, args cliArgs) error {
 		return errors.New("missing Abra token")
 	}
 	if err := runQuiet(codex, "mcp", "list"); err != nil {
-		return fmt.Errorf("Codex CLI could not read its MCP configuration: %w\nFix the Codex config, then retry `abra mcp install-codex`", err)
+		return fmt.Errorf("Codex CLI could not read its MCP configuration: %w\nFix the Codex config, then retry `abra agent install codex`", err)
 	}
 	toolCount, err := validateMCPTools(ctx, args)
 	if err != nil {
-		return fmt.Errorf("Abra MCP endpoint validation failed before changing Codex config: %w\n\nRecovery:\n  1. Start or repair Abra: abra up\n  2. Check API, MCP, token env, and model readiness: abra doctor\n  3. If local embeddings are not ready: abra models status && abra models up\n  4. Retry after the endpoint is ready: %s", err, codexInstallCommand(tokenEnv))
+		return fmt.Errorf("Abra MCP endpoint validation failed before changing Codex config: %w\n\nRecovery:\n  1. Start or repair Abra: abra up\n  2. Check API, MCP, token env, and model readiness: abra doctor\n  3. If local embeddings are not ready: abra model status && abra model up\n  4. Retry after the endpoint is ready: %s", err, codexInstallCommand(tokenEnv))
 	}
 	launchctlWarning := ""
 	if runtime.GOOS == "darwin" {
@@ -4940,17 +5260,17 @@ func installCodexMCP(ctx context.Context, args cliArgs) error {
 		fmt.Println("Set " + tokenEnv + " in the shell that starts Codex, then retry.")
 	}
 	fmt.Println("Verify runtime: abra doctor")
-	fmt.Println("For each repo: cd /path/to/project && abra agents bootstrap --agent codex")
+	fmt.Println("For each repo: cd /path/to/project && abra agent bootstrap --agent codex")
 	fmt.Println("Active Codex sessions will not see this until you fully quit and reopen Codex Desktop.")
-	fmt.Println("If Codex says Abra has no context after restart: cd into the repo and run `abra agents verify . --scope <scope-from-abra-scope>`; re-ingest only if verify says scope or source-backed memory is missing.")
+	fmt.Println("If Codex says Abra has no context after restart: cd into the repo and run `abra agent verify . --scope <scope-from-abra-scope>`; sync only if verify says scope or source-backed memory is missing.")
 	return nil
 }
 
 func codexInstallCommand(tokenEnv string) string {
 	if strings.TrimSpace(tokenEnv) == "" || tokenEnv == "ABRA_API_TOKEN" {
-		return "abra mcp install-codex"
+		return "abra agent install codex"
 	}
-	return "abra mcp install-codex --token-env " + tokenEnv
+	return "abra agent install codex --token-env " + tokenEnv
 }
 
 func validateMCPTools(ctx context.Context, args cliArgs) (int, error) {
@@ -5210,7 +5530,7 @@ func readyFailureMessage(args cliArgs, result map[string]any, code int, err erro
 		}
 	}
 	if setupUsesLocalEmbeddings(args) {
-		lines = append(lines, "Check: abra models status")
+		lines = append(lines, "Check: abra model status")
 		lines = append(lines, "Repair: abra up")
 	} else {
 		lines = append(lines, "Repair: abra up")
@@ -5241,7 +5561,7 @@ func readyzPath(args cliArgs) string {
 
 func printThink(result map[string]any) {
 	fmt.Println()
-	fmt.Println("Abra think")
+	fmt.Println("Abra answer")
 	fmt.Println(stringValue(result["answer"], "No answer."))
 	fmt.Println()
 	fmt.Println("scope: " + stringValue(result["scope"], ""))
@@ -5284,9 +5604,9 @@ func printThinkRecovery(scope string) {
 	}
 	fmt.Println("next:")
 	fmt.Println("- abra scope")
-	fmt.Println("- abra agents verify . --scope " + shellQuote(scope) + " --json")
+	fmt.Println("- abra agent verify . --scope " + shellQuote(scope) + " --json")
 	fmt.Println("- abra doctor")
-	fmt.Println("- abra ingest . --code --scope " + shellQuote(scope) + "   # only if verify reports missing scope or empty source-backed memory")
+	fmt.Println("- abra sync . --code --scope " + shellQuote(scope) + "   # only if verify reports missing scope or empty source-backed memory")
 }
 
 func printReady(args cliArgs) {
@@ -5294,11 +5614,11 @@ func printReady(args cliArgs) {
 	fmt.Println("Abra is ready")
 	fmt.Println("MCP:       " + strings.TrimRight(cfg(args).BaseURL, "/") + "/mcp")
 	fmt.Println("Token env: ABRA_API_TOKEN (configured; value not printed)")
-	fmt.Println("Next:      cd /path/to/project && abra agents bootstrap --agent codex")
+	fmt.Println("Next:      cd /path/to/project && abra agent bootstrap --agent codex")
 	fmt.Println("Restart:   fully quit and reopen Codex Desktop after bootstrap")
-	fmt.Println(`Then:      abra think "What should I know before changing this project?" --scope <scope>`)
-	fmt.Println("Manual:    abra mcp install-codex && abra agents init --agent codex && abra agents verify . --scope <scope>")
-	fmt.Println("Ingest:    abra ingest . --code --scope <scope>   # only if verify reports missing scope or empty memory")
+	fmt.Println(`Then:      abra ask "What should I know before changing this project?" --scope <scope>`)
+	fmt.Println("Manual:    abra agent install codex && abra agent init --agent codex && abra agent verify . --scope <scope>")
+	fmt.Println("Sync:      abra sync . --code --scope <scope>   # only if verify reports missing scope or empty memory")
 }
 
 func runCommand(name string, args ...string) error {
@@ -6323,63 +6643,32 @@ func usage() string {
 	return `Abra CLI
 
 Usage:
-  abra --version
-  abra version
   abra setup
   abra up
+  abra connect local . --code --scope repo:project
+  abra sync . --code --scope repo:project
+  abra ask "what should I know?" --scope repo:project
+  abra context "ship this change" --scope repo:project --agent codex
+  abra agent bootstrap --agent codex
+  abra agent verify . --scope repo:project --agent codex
+  abra model
+  abra model local
+  abra model compatible --base-url <url> --model <model> --dimensions <n>
+  abra plugin list
+  abra doctor
+
+System:
+  abra status
+  abra scope
+  abra model status
+  abra model up
+  abra model logs
+  abra govern status
+  abra brain status
+  abra plugin contract
+  abra down [--reset] [--keep-models]
   abra upgrade [--version vX.Y.Z]
   abra uninstall --yes
-  abra demo
-  abra quickstart
-  abra init [--production]
-  abra config show
-  abra scope
-  abra models up
-  abra models status
-  abra models logs
-  abra config model local
-  abra config model openai --api-key-stdin
-  abra config model compatible --base-url <url> --model <model> --dimensions <n> [--api-key-stdin] [--reranker-base-url <url> --reranker-model <model>]
-  abra agents bootstrap
-  abra agents init
-  abra agents verify
-  abra agents ready
-  abra down [--reset] [--keep-models]
-  abra status
-  abra doctor
-  abra seed [--scope repo:demo]
-  abra ingest . [--code] [--continue-on-error] [--quiet]
-  abra ingest ./notes.md
-  abra ingest --scope repo:demo --text "Agents should use Abra" [--title Intro] [--approval-id approval...]
-  abra ingest --git https://github.com/owner/repo.git [--ref main] [--scope repo:demo]
-  abra watch local --scope repo:demo --path . [--freshness-seconds 3600] [--schedule "@every 1h"] [--wait]
-  abra watch git --scope repo:demo --git https://github.com/owner/repo.git [--ref main] [--freshness-seconds 3600] [--wait]
-  abra source mcp --scope team:docs --mcp-url https://mcp.example.com/mcp --tool export_documents --dry-run
-  abra source mcp --scope team:docs --mcp-url https://mcp.example.com/mcp --tool export_documents [--header-env Header=ENV] [--schedule "@every 10m"] [--wait]
-  abra connectors [--scope repo:demo]
-  abra connectors mcp inspect --scope team:docs --mcp-url https://mcp.example.com/mcp
-  abra connectors mcp template --scope team:docs --output knowledge-base.connector.json
-  abra connectors mcp add --scope team:docs --mcp-url https://mcp.example.com/mcp [--tool export_documents]
-  abra connectors mcp validate --scope team:docs --mcp-url https://mcp.example.com/mcp --tool export_documents
-  abra connectors mcp register --scope team:docs --mcp-url https://mcp.example.com/mcp --tool export_documents [--wait] [--verify]
-  abra connectors status <source-config-id>
-  abra connectors webhook sample --scope team:docs --connector knowledge-base
-  abra connectors webhook test --scope team:docs --connector knowledge-base [--secret-env ABRA_WEBHOOK_SECRET]
-  abra approvals [--scope repo:demo] [--status pending]
-  abra approvals request --scope repo:demo --action agent_write [--target-type document] [--target-id doc...] [--reason "..."]
-  abra approvals approve <approval-id> [--reason "..."]
-  abra approvals reject <approval-id> [--reason "..."]
-  abra sources [--scope repo:demo]
-  abra jobs [--scope repo:demo]
-  abra observe "Agents should rerun release checks before tagging" [--scope repo:demo] [--propose]
-  abra observations [--scope repo:demo] [--query release]
-  abra observations propose <observation-id> [--claim "..."] [--source-url file://runbook.md]
-  abra think "What should agents use?"
-  abra recall "agent memory"
-  abra compose "ship a change"
-  abra memory status --scope repo:demo
-  abra mcp
-  abra mcp install-codex
 
 Common flags:
   --base-url http://127.0.0.1:18080
@@ -6392,17 +6681,151 @@ First run:
   abra doctor
   cd /path/to/project
   abra scope
-  abra agents bootstrap --agent codex
+  abra agent bootstrap --agent codex
   fully quit and reopen Codex Desktop
-  abra agents ready . --scope <scope-from-abra-scope> --json
-  abra think "What should I know before changing this project?" --scope <scope-from-abra-scope>
+  abra agent ready . --scope <scope-from-abra-scope> --json
+  abra ask "What should I know before changing this project?" --scope <scope-from-abra-scope>
 
-Abra is CLI + MCP only. No browser UI is shipped.
+Abra is CLI + MCP + HTTP only. No browser UI is shipped.
+Run abra help advanced for compatibility commands and low-level operations.
 `
 }
 
 func commandUsage(command string) string {
 	switch command {
+	case "advanced":
+		return `Advanced compatibility commands:
+  abra config show
+  abra config model <local|openai|compatible>
+  abra models <up|status|logs|down>
+  abra agents <bootstrap|init|verify|ready>
+  abra ingest . --code
+  abra watch local --path .
+  abra source mcp --mcp-url <url> --tool <tool>
+  abra connectors mcp <inspect|template|validate|add|register>
+  abra sources <sync|backfill|status|logs|pause|resume>
+  abra jobs
+  abra approvals <request|approve|reject>
+  abra observe ...
+  abra observations ...
+  abra think ...
+  abra recall ...
+  abra compose ...
+  abra memory <status|doctor>
+  abra mcp [install-codex|status]
+
+These commands remain supported for automation and operators. The stable human
+surface is intentionally smaller: setup, connect, sync, ask, context, agent,
+model, brain, govern, plugin, doctor.
+`
+	case "connect":
+		return `Usage:
+  abra connect local . --code --scope repo:project [--no-wait]
+  abra connect git https://github.com/owner/repo.git --code --scope repo:project [--ref main]
+  abra connect mcp https://mcp.example.com/mcp --tool export_documents --scope team:docs [--schedule "@every 10m"]
+  abra connect webhook sample --scope team:docs --connector knowledge-base
+  abra connect list --scope repo:project
+  abra connect status <source-config-id>
+  abra connect logs <source-config-id>
+  abra connect pause <source-config-id>
+  abra connect resume <source-config-id> [--approval-id approval...]
+
+Connect registers durable sources and queues the first sync. Local sources need
+the worker to see the same filesystem path; use abra sync . --code for a
+one-shot local ingest from the current terminal.
+`
+	case "sync":
+		return `Usage:
+  abra sync . --code --scope repo:project [--continue-on-error] [--quiet]
+  abra sync ./notes.md --scope repo:project
+  abra sync <source-config-id> [--wait]
+  abra sync git https://github.com/owner/repo.git --code --scope repo:project [--ref main]
+  abra sync status [<source-config-id>]
+  abra sync logs <source-config-id>
+  abra sync jobs --scope repo:project
+
+Sync refreshes memory. A local path is ingested directly from the CLI process;
+a source id queues an existing source config through the worker.
+`
+	case "ask":
+		return `Usage:
+  abra ask "question" --scope repo:demo [--agent codex] [--json]
+
+Asks the governed brain layer. Returns a cited answer, verification, gaps,
+memory health, graph context, and an agent decision gate.
+`
+	case "context":
+		return `Usage:
+  abra context "task" --scope repo:demo [--agent codex] [--hook before_task] [--prompt] [--persist-learning] [--json]
+
+Builds task-specific working memory for AI agents. Human output includes the
+decision gate, retrieval quality, health signals, validation plan, allowed next
+actions, and suggested steps.
+`
+	case "agent":
+		return `Usage:
+  abra agent bootstrap [path] [--agent codex] [--scope repo:project] [--force] [--no-mcp]
+  abra agent init [path] [--agent codex] [--scope repo:project] [--force] [--dry-run] [--json]
+  abra agent verify [path] --scope repo:project [--agent codex] [--files-only] [--strict] [--json]
+  abra agent ready [path] --scope repo:project [--agent codex] [--files-only] [--strict] [--json]
+  abra agent install codex
+  abra agent status
+
+Agent commands wire AI clients to the same source-backed Abra scope. Codex MCP
+install is automated; other clients use abra mcp JSON or the HTTP MCP URL.
+`
+	case "model":
+		return `Usage:
+  abra model
+  abra model local
+  abra model openai --api-key-stdin
+  abra model compatible --base-url <url> --model <model> --dimensions <size> [--api-key-stdin]
+  abra model up
+  abra model status [--json] [--force]
+  abra model logs [--force]
+  abra model down [--force]
+
+Model commands configure or operate Abra's embedding and reranker providers.
+Abra does not require an OpenAI ecosystem: local Qwen is the default, and any
+compatible embedding provider can replace it when configured.
+`
+	case "brain":
+		return `Usage:
+  abra brain status --scope repo:demo
+  abra brain doctor --scope repo:demo
+  abra brain ask "question" --scope repo:demo
+  abra brain context "task" --scope repo:demo --agent codex
+  abra brain recall "query" --scope repo:demo
+
+Brain commands expose Abra's governed memory loop: source-backed recall,
+working-memory composition, citations, graph context, and health.
+`
+	case "govern":
+		return `Usage:
+  abra govern status --scope repo:demo
+  abra govern doctor --scope repo:demo
+  abra govern approvals --scope repo:demo
+  abra govern approvals request --scope repo:demo --action agent_write --reason "..."
+  abra govern approvals approve <approval-id>
+  abra govern observe "operator note" --scope repo:demo --propose
+
+Governance commands handle health, approvals, observations, and learning review.
+They do not bypass source authority, approval gates, or evidence requirements.
+`
+	case "plugin", "plugins":
+		return `Usage:
+  abra plugin list [--json]
+  abra plugin contract [--json]
+  abra plugin mcp template --scope team:docs --output connector.json
+  abra plugin mcp validate --scope team:docs --mcp-url https://mcp.example.com/mcp --tool export_documents
+  abra plugin mcp register --scope team:docs --mcp-url https://mcp.example.com/mcp --tool export_documents
+  abra plugin webhook sample --scope team:docs --connector knowledge-base
+
+Plugins are adapter contracts, not core bypasses. External systems normalize
+data into Abra documents through MCP, HTTP ingest, or signed webhooks. Abra core
+keeps transform, chunking, embedding, graph extraction, citations, approvals,
+memory health, and decision gates.
+`
 	case "ingest":
 		return `Usage:
   abra ingest . [--code] [--continue-on-error] [--quiet]
@@ -6469,9 +6892,9 @@ is inferred as compatible. Use --reranker-api-key when the reranker has a
 separate key, or --no-reranker to leave reranking disabled.
 After changing model config, restart with: abra down && abra up
 Check readiness with: abra doctor
-After changing embedding providers, re-ingest important sources for reliable vector recall.
+After changing embedding providers, sync important sources again for reliable vector recall.
 `
-	case "models", "model":
+	case "models":
 		return `Usage:
   abra models up [--recreate] [--port 8080] [--pull-policy missing] [--startup-timeout 10m] [--allow-production-local-embeddings] [--model-id Qwen/Qwen3-Embedding-0.6B-GGUF] [--model Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0]
   abra models status [--json] [--force]
@@ -6661,11 +7084,11 @@ Use status for a compact operator view and doctor when you need every signal.
 
 Prints the stable memory scope for a project path and shows the exact commands
 and agent prompt to use. Use this when an AI client says Abra has no context:
-first run agents verify with the printed scope. If server_ready is true but
-agent_ready is false, repair MCP/token/client restart before re-ingesting. Only
-run ingest when verify proves the exact scope or source-backed memory is missing.
+first run agent verify with the printed scope. If server_ready is true but
+agent_ready is false, repair MCP/token/client restart before syncing. Only
+run sync when verify proves the exact scope or source-backed memory is missing.
 `
-	case "agents", "agent":
+	case "agents":
 		return `Usage:
   abra agents bootstrap [path] [--agent codex] [--scope repo:project] [--force] [--no-mcp]
   abra agents init [path] [--agent codex] [--scope repo:project] [--force] [--dry-run] [--json]
@@ -6711,9 +7134,9 @@ Common Codex path:
   abra setup
   abra doctor
   cd /path/to/project
-  abra agents bootstrap --agent codex
+  abra agent bootstrap --agent codex
   fully quit and reopen Codex Desktop
-  abra agents ready . --scope <scope-from-abra-scope> --json
+  abra agent ready . --scope <scope-from-abra-scope> --json
 
 Run abra mcp status when Codex cannot see Abra; it checks API/MCP readiness,
 Codex registration, token env, and launch environment. Run abra doctor for the
@@ -6744,13 +7167,13 @@ Guided first-run onboarding. It checks prerequisites, creates the runtime env,
 chooses the embedding provider used for retrieval/vector search, and can start
 the local stack. This does not configure a chat model or LLM answer model. The
 default local provider uses the built-in Qwen/Qwen3-Embedding-0.6B runner,
-which abra up starts automatically and abra models up/status manages directly.
+which abra up starts automatically and abra model up/status manages directly.
 Common local, OpenAI, and OpenAI-compatible embedding paths are configured with
 CLI commands only; no manual env file editing is required.
 
 If setup writes config but later commands cannot embed, run abra doctor first.
 For the default local provider, abra up starts the model runner automatically;
-use abra models status and abra models up when you want to inspect or repair it
+use abra model status and abra model up when you want to inspect or repair it
 directly.
 
 Common setup flags:

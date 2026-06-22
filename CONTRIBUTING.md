@@ -27,10 +27,16 @@ ABRA_RELEASE_PROFILE=full ABRA_RELEASE_MANAGE_STACK=1 npm run release:gate
 ## Pull Request Guidelines
 
 - Keep changes scoped to one behavior or documentation topic.
+- Respect the feature freeze in `docs/FEATURE_FREEZE.md`; new user-facing
+  features should fit the frozen CLI surface or live behind a plugin/overlay
+  contract.
 - Add or update tests when changing runtime behavior.
 - Keep public APIs, MCP tools, migrations, and deployment manifests backward-compatible unless the change is explicitly documented.
 - Do not commit secrets, database dumps, embeddings, source-system exports, audit logs, or organization-specific policies.
 - Use generic examples in docs. Avoid company names, real repository URLs, tokens, private domains, incident details, or customer data.
+- Keep docs short and canonical. Prefer `connect`, `sync`, `ask`, `context`,
+  `agent`, and `model` in new docs; mention compatibility aliases only when
+  maintaining older automation.
 - For local/private denylist terms, run `npm run check:oss` with `ABRA_OSS_PRIVATE_CONTEXT_PATTERNS` instead of committing private words to the scanner.
 
 ## Design Principles

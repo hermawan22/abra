@@ -22,7 +22,7 @@ import (
 )
 
 func TestCommandHelpDoesNotRequireFlags(t *testing.T) {
-	for _, command := range []string{"config", "ingest", "setup", "models", "watch", "connectors", "sources", "jobs", "observe", "observations", "scope", "agents", "memory", "mcp"} {
+	for _, command := range []string{"connect", "sync", "ask", "context", "agent", "model", "brain", "govern", "plugin", "config", "ingest", "setup", "models", "watch", "connectors", "sources", "jobs", "observe", "observations", "scope", "agents", "memory", "mcp"} {
 		t.Run(command, func(t *testing.T) {
 			if err := run(context.Background(), []string{command, "--help"}); err != nil {
 				t.Fatalf("run(%s --help) error = %v", command, err)
@@ -340,8 +340,8 @@ func TestConfigAndMCPHelpShowCLIOnlyOnboardingPath(t *testing.T) {
 		"Common Codex path:",
 		"abra setup",
 		"abra doctor",
-		"abra agents bootstrap --agent codex",
-		"abra agents ready . --scope <scope-from-abra-scope> --json",
+		"abra agent bootstrap --agent codex",
+		"abra agent ready . --scope <scope-from-abra-scope> --json",
 		"full model/API/MCP preflight",
 	} {
 		if !strings.Contains(mcpHelp, want) {
@@ -356,9 +356,10 @@ func TestTopLevelHelpShowsCodexOnboardingStatusFlow(t *testing.T) {
 		"abra doctor",
 		"cd /path/to/project",
 		"abra scope",
-		"abra agents bootstrap --agent codex",
+		"abra agent bootstrap --agent codex",
 		"fully quit and reopen Codex Desktop",
-		"abra agents ready . --scope <scope-from-abra-scope> --json",
+		"abra agent ready . --scope <scope-from-abra-scope> --json",
+		"abra ask \"What should I know before changing this project?\"",
 	} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("top-level help missing %q:\n%s", want, help)
@@ -382,14 +383,14 @@ func TestScopeCommandPrintsAgentGuidance(t *testing.T) {
 	for _, want := range []string{
 		wantScope,
 		agentReadyPrompt(wantScope),
-		"abra mcp install-codex",
-		"abra agents init " + shellQuote(root) + " --agent codex --scope " + shellQuote(wantScope),
-		"abra agents verify " + shellQuote(root) + " --scope " + shellQuote(wantScope),
-		"abra ingest " + shellQuote(root) + " --code --scope " + shellQuote(wantScope),
+		"abra agent install codex",
+		"abra agent init " + shellQuote(root) + " --agent codex --scope " + shellQuote(wantScope),
+		"abra agent verify " + shellQuote(root) + " --scope " + shellQuote(wantScope),
+		"abra sync " + shellQuote(root) + " --code --scope " + shellQuote(wantScope),
 		"If Codex says Abra has no context",
 		"run Check first",
 		"agent_ready=false",
-		"ingest only when Check proves missing scope or empty memory",
+		"sync only when Check proves missing scope or empty memory",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("scope output missing %q:\n%s", want, output)
@@ -398,10 +399,10 @@ func TestScopeCommandPrintsAgentGuidance(t *testing.T) {
 	if strings.Contains(output, "run Ingest, then Check") {
 		t.Fatalf("scope output should not unconditionally suggest ingest before verify:\n%s", output)
 	}
-	ingestIndex := strings.Index(output, "Ingest only if Check proves missing scope or empty memory")
-	checkIndex := strings.Index(output, "Check:  abra agents verify")
-	if ingestIndex < 0 || checkIndex < 0 || checkIndex > ingestIndex {
-		t.Fatalf("scope output should list verify before conditional ingest:\n%s", output)
+	syncIndex := strings.Index(output, "Sync only if Check proves missing scope or empty memory")
+	checkIndex := strings.Index(output, "Check:  abra agent verify")
+	if syncIndex < 0 || checkIndex < 0 || checkIndex > syncIndex {
+		t.Fatalf("scope output should list verify before conditional sync:\n%s", output)
 	}
 }
 
@@ -424,10 +425,10 @@ func TestScopeCommandJSON(t *testing.T) {
 	}
 	examples, _ := payload["examples"].(map[string]any)
 	for key, want := range map[string]string{
-		"mcp_install":   "abra mcp install-codex",
-		"agents_init":   "abra agents init",
-		"agents_verify": "abra agents verify",
-		"ingest":        "--scope " + shellQuote(wantScope),
+		"agent_install": "abra agent install codex",
+		"agent_init":    "abra agent init",
+		"agent_verify":  "abra agent verify",
+		"sync":          "--scope " + shellQuote(wantScope),
 	} {
 		if !strings.Contains(stringValue(examples[key], ""), want) {
 			t.Fatalf("%s example = %#v, want %q", key, examples[key], want)
@@ -437,7 +438,7 @@ func TestScopeCommandJSON(t *testing.T) {
 		t.Fatalf("codex example = %#v", examples["codex"])
 	}
 	troubleshooting := stringValue(examples["troubleshooting"], "")
-	for _, want := range []string{"run agents_verify --json first", "readiness errors", "Ingest only when verify proves"} {
+	for _, want := range []string{"run agent_verify --json first", "readiness errors", "Sync only when verify proves"} {
 		if !strings.Contains(troubleshooting, want) {
 			t.Fatalf("troubleshooting missing %q: %s", want, troubleshooting)
 		}
@@ -474,8 +475,8 @@ func TestAgentsInitCreatesCrossAgentInstructionFiles(t *testing.T) {
 		"Abra MCP tools are unavailable",
 		"abra doctor",
 		"fully restart the AI client",
-		"retry before re-ingesting",
-		"abra agents verify . --scope " + wantScope + " --agent claude",
+		"retry before syncing",
+		"abra agent verify . --scope " + wantScope + " --agent claude",
 		"Do not include secrets",
 	} {
 		if !strings.Contains(string(agents), want) {
@@ -880,7 +881,7 @@ func TestAgentsVerifyFilesOnlyStrictSkipsMCP(t *testing.T) {
 		"skip  mcp skipped by --files-only",
 		"Ready: agent instruction files are ready",
 		"Next:",
-		"Run `abra agents verify " + shellQuote(root) + " --scope " + shellQuote(wantScope) + " --agent 'codex'` against a live Abra MCP server",
+		"Run `abra agent verify " + shellQuote(root) + " --scope " + shellQuote(wantScope) + " --agent 'codex'` against a live Abra MCP server",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("files-only verify output missing %q:\n%s", want, output)
@@ -1093,13 +1094,13 @@ func TestAgentVerifyNextStepsAvoidIngestForMCPToolErrors(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			steps := agentVerifyNextSteps("/repo", "repo:demo", "codex", false, false, tc.checks)
 			joined := strings.Join(steps, "\n")
-			if strings.Contains(joined, "abra ingest") {
-				t.Fatalf("tool readiness error should not suggest ingest:\n%s", joined)
+			if strings.Contains(joined, "abra ingest") || strings.Contains(joined, "abra sync") {
+				t.Fatalf("tool readiness error should not suggest sync:\n%s", joined)
 			}
 			if !strings.Contains(joined, "abra doctor") {
 				t.Fatalf("tool readiness error should suggest doctor:\n%s", joined)
 			}
-			if !strings.Contains(joined, "abra mcp install-codex") {
+			if !strings.Contains(joined, "abra agent install codex") {
 				t.Fatalf("tool readiness error should suggest MCP/token repair:\n%s", joined)
 			}
 		})
@@ -1132,11 +1133,11 @@ func TestAgentVerifyNextStepsSuggestIngestOnlyForMissingMemory(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			steps := agentVerifyNextSteps("/repo", "repo:demo", "codex", false, false, tc.checks)
 			joined := strings.Join(steps, "\n")
-			if !strings.Contains(joined, "abra ingest") {
-				t.Fatalf("missing memory should suggest ingest:\n%s", joined)
+			if !strings.Contains(joined, "abra sync") {
+				t.Fatalf("missing memory should suggest sync:\n%s", joined)
 			}
 			if !strings.Contains(joined, "only because verify proved") {
-				t.Fatalf("ingest step should be conditional and evidence-based:\n%s", joined)
+				t.Fatalf("sync step should be conditional and evidence-based:\n%s", joined)
 			}
 		})
 	}
@@ -1210,7 +1211,7 @@ func TestAgentsVerifyUsesSelectedAgent(t *testing.T) {
 	if !strings.Contains(output, `agent="claude"`) || strings.Contains(output, "codex_mcp_client") {
 		t.Fatalf("claude verify output did not use selected agent cleanly:\n%s", output)
 	}
-	if !strings.Contains(output, "abra agents verify "+shellQuote(root)+" --scope "+shellQuote(wantScope)+" --agent "+shellQuote("claude")) {
+	if !strings.Contains(output, "abra agent verify "+shellQuote(root)+" --scope "+shellQuote(wantScope)+" --agent "+shellQuote("claude")) {
 		t.Fatalf("claude verify next steps should preserve selected agent:\n%s", output)
 	}
 }
@@ -1238,13 +1239,13 @@ func TestAgentsVerifyJSONIncludesReadyPromptAndNextSteps(t *testing.T) {
 		t.Fatalf("payload = %#v", payload)
 	}
 	readyPrompt := stringValue(payload["ready_prompt"], "")
-	for _, want := range []string{wantScope, "discover_scopes", "working_memory_compose", "task=<current task>", `agent="codex"`, "Abra MCP tools are unavailable", "abra doctor", "agent_ready=false", "source-backed memory is empty", "abra agents verify . --scope " + wantScope + " --agent codex"} {
+	for _, want := range []string{wantScope, "discover_scopes", "working_memory_compose", "task=<current task>", `agent="codex"`, "Abra MCP tools are unavailable", "abra doctor", "agent_ready=false", "source-backed memory is empty", "abra agent verify . --scope " + wantScope + " --agent codex"} {
 		if !strings.Contains(readyPrompt, want) {
 			t.Fatalf("ready_prompt missing %q:\n%s", want, readyPrompt)
 		}
 	}
 	nextSteps, _ := payload["next_steps"].([]any)
-	if len(nextSteps) == 0 || !strings.Contains(stringValue(nextSteps[0], ""), "abra agents verify") {
+	if len(nextSteps) == 0 || !strings.Contains(stringValue(nextSteps[0], ""), "abra agent verify") {
 		t.Fatalf("next_steps = %#v", payload["next_steps"])
 	}
 }
@@ -1441,7 +1442,7 @@ func TestAgentsVerifyFailsWhenScopeIsMissing(t *testing.T) {
 			t.Fatalf("agents verify error = %v", err)
 		}
 	})
-	if !strings.Contains(output, "fail  scope_discovery") || !strings.Contains(output, "abra ingest . --code --scope") || !strings.Contains(output, "Next:") {
+	if !strings.Contains(output, "fail  scope_discovery") || !strings.Contains(output, "abra sync") || !strings.Contains(output, "Next:") {
 		t.Fatalf("verify output did not explain missing scope:\n%s", output)
 	}
 }
@@ -1516,7 +1517,7 @@ func TestAgentsVerifyFailsWhenWorkingMemoryIsEmpty(t *testing.T) {
 			t.Fatalf("agents verify error = %v", err)
 		}
 	})
-	for _, want := range []string{"ok  scope_discovery", "fail  working_memory", "facts=0 documents=0 summaries=0 graph=0", "Next:", "abra ingest . --code --scope " + wantScope} {
+	for _, want := range []string{"ok  scope_discovery", "fail  working_memory", "facts=0 documents=0 summaries=0 graph=0", "Next:", "abra sync", "--scope " + wantScope} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("verify output missing %q:\n%s", want, output)
 		}
@@ -1552,7 +1553,7 @@ func TestComposeReportsNoSourceBackedContextWhenOnlyGateBlocksExist(t *testing.T
 			t.Fatalf("compose error = %v", err)
 		}
 	})
-	for _, want := range []string{"context: facts=0 documents=0 summaries=0 graph=0 blocks=1", "No source-backed context found for this scope.", "abra ingest . --code --scope repo:demo"} {
+	for _, want := range []string{"context: facts=0 documents=0 summaries=0 graph=0 blocks=1", "No source-backed context found for this scope.", "abra sync . --code --scope repo:demo"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("compose output missing %q:\n%s", want, output)
 		}
@@ -1740,7 +1741,7 @@ func TestMemoryStatusAndDoctor(t *testing.T) {
 		"learning: total=6 pending=3 accepted=1 applied=1 rejected=1 duplicate_pending_groups=1",
 		"signal_08 (warning, count=8) -> fix_signal_08",
 		"- +1 more",
-		"abra memory doctor --scope repo:demo",
+		"abra brain doctor --scope repo:demo",
 	} {
 		if !strings.Contains(statusOutput, want) {
 			t.Fatalf("memory status output missing %q:\n%s", want, statusOutput)
@@ -1828,7 +1829,7 @@ func TestMemoryStatusAndDoctorSourceDiagnostics(t *testing.T) {
 	})
 	for _, want := range []string{
 		"sources: total=3 healthy=1 unhealthy=2 refresh_due=1 custom_new_metric=7",
-		"Run `abra memory doctor --scope repo:demo` for source diagnostics.",
+		"Run `abra brain doctor --scope repo:demo` for source diagnostics.",
 	} {
 		if !strings.Contains(statusOutput, want) {
 			t.Fatalf("memory status output missing %q:\n%s", want, statusOutput)
@@ -1849,8 +1850,8 @@ func TestMemoryStatusAndDoctorSourceDiagnostics(t *testing.T) {
 		"source diagnostics:",
 		"source-code (overdue): last successful refresh is older than freshness policy",
 		"action: run abra sources sync source-code --scope repo:demo",
-		"inspect: abra sources status 'source-code'",
-		"logs: abra sources logs 'source-code' --scope 'repo:demo'",
+		"inspect: abra connect status 'source-code'",
+		"logs: abra connect logs 'source-code' --scope 'repo:demo'",
 		"source-wiki (mcp, error): 401 unauthorized",
 		"last_error_at: 2026-06-21T02:03:04Z",
 		"remediation_hints:",
@@ -1934,7 +1935,7 @@ func TestModelConfigCheckExplainsLocalModel(t *testing.T) {
 					t.Fatalf("detail missing %q: %s", want, detail)
 				}
 			}
-			if !strings.Contains(stringValue(check["hint"], ""), "abra models status") {
+			if !strings.Contains(stringValue(check["hint"], ""), "abra model status") {
 				t.Fatalf("hint = %q", check["hint"])
 			}
 		})
@@ -2177,9 +2178,9 @@ func TestPrintDoctorIncludesDetailsAndHints(t *testing.T) {
 				"name":   "codex_mcp_client",
 				"ok":     false,
 				"detail": "ABRA_API_TOKEN is not set",
-				"hint":   "run: abra mcp install-codex",
+				"hint":   "run: abra agent install codex",
 				"next": []string{
-					"abra mcp install-codex",
+					"abra agent install codex",
 					"for terminal Codex: set -a; source .tmp/quickstart.env; set +a; codex",
 				},
 			},
@@ -2187,7 +2188,7 @@ func TestPrintDoctorIncludesDetailsAndHints(t *testing.T) {
 			t.Fatalf("printDoctor error = %v", err)
 		}
 	})
-	for _, want := range []string{"ok  model_config", "info provider=local model=embed", "warn  codex_mcp_client", "hint run: abra mcp install-codex", "next", "for terminal Codex: set -a"} {
+	for _, want := range []string{"ok  model_config", "info provider=local model=embed", "warn  codex_mcp_client", "hint run: abra agent install codex", "next", "for terminal Codex: set -a"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("doctor output missing %q:\n%s", want, output)
 		}
@@ -2251,10 +2252,10 @@ func TestPrintDoctorJSONStrictFailsWithMachineReadableOutput(t *testing.T) {
 }
 
 func TestCodexInstallCommandIncludesCustomTokenEnv(t *testing.T) {
-	if got := codexInstallCommand("ABRA_API_TOKEN"); got != "abra mcp install-codex" {
+	if got := codexInstallCommand("ABRA_API_TOKEN"); got != "abra agent install codex" {
 		t.Fatalf("default command = %q", got)
 	}
-	if got := codexInstallCommand("ABRA_OTHER_TOKEN"); got != "abra mcp install-codex --token-env ABRA_OTHER_TOKEN" {
+	if got := codexInstallCommand("ABRA_OTHER_TOKEN"); got != "abra agent install codex --token-env ABRA_OTHER_TOKEN" {
 		t.Fatalf("custom command = %q", got)
 	}
 }
@@ -2530,7 +2531,7 @@ func TestMCPStatusChecksServerToolsAndClientRecovery(t *testing.T) {
 			t.Fatalf("mcp status error = %v", err)
 		}
 	})
-	for _, want := range []string{"ok  readyz", "ok  mcp", "warn  codex_mcp_client", "abra mcp install-codex"} {
+	for _, want := range []string{"ok  readyz", "ok  mcp", "warn  codex_mcp_client", "abra agent install codex"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("mcp status output missing %q:\n%s", want, output)
 		}
@@ -2555,9 +2556,9 @@ func TestPrintThinkIncludesRecoveryWhenContextIsWeak(t *testing.T) {
 	})
 	for _, want := range []string{
 		"next:",
-		"abra agents verify . --scope 'repo:demo' --json",
+		"abra agent verify . --scope 'repo:demo' --json",
 		"abra doctor",
-		"abra ingest . --code --scope 'repo:demo'",
+		"abra sync . --code --scope 'repo:demo'",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("think recovery output missing %q:\n%s", want, output)
@@ -2680,28 +2681,28 @@ func TestSetupYesNoStartDefaultsLocalQwen(t *testing.T) {
 		"go run ./cmd/abra <command>",
 		"Codex MCP and repo onboarding:",
 		"cd /path/to/project",
-		"abra agents bootstrap --agent codex   # installs Codex MCP, ingests this repo, and verifies",
+		"abra agent bootstrap --agent codex   # installs Codex MCP, syncs this repo, and verifies",
 		"fully quit and reopen Codex Desktop",
-		"abra agents ready . --scope <scope-from-abra-scope> --json",
-		"abra mcp status",
-		"abra agents init --agent codex",
-		"abra agents verify",
+		"abra agent ready . --scope <scope-from-abra-scope> --json",
+		"abra agent status",
+		"abra agent init --agent codex",
+		"abra agent verify",
 		"If Codex says Abra has no context",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("setup next steps missing %q:\n%s", want, output)
 		}
 	}
-	if !strings.Contains(output, "abra ingest . --code --scope <scope-from-abra-scope>") ||
-		!strings.Contains(output, `abra think "What should I know before changing this project?" --scope <scope-from-abra-scope>`) {
+	if !strings.Contains(output, "abra sync . --code --scope <scope-from-abra-scope>") ||
+		!strings.Contains(output, `abra ask "What should I know before changing this project?" --scope <scope-from-abra-scope>`) {
 		t.Fatalf("setup next steps should defer scope until after cd and abra scope:\n%s", output)
 	}
-	verifyIndex := strings.Index(output, "abra agents verify . --scope <scope-from-abra-scope>")
-	ingestIndex := strings.Index(output, "abra ingest . --code --scope <scope-from-abra-scope>")
-	if verifyIndex < 0 || ingestIndex < 0 || verifyIndex > ingestIndex {
-		t.Fatalf("setup manual path should verify before conditional ingest:\n%s", output)
+	verifyIndex := strings.Index(output, "abra agent verify . --scope <scope-from-abra-scope>")
+	syncIndex := strings.Index(output, "abra sync . --code --scope <scope-from-abra-scope>")
+	if verifyIndex < 0 || syncIndex < 0 || verifyIndex > syncIndex {
+		t.Fatalf("setup manual path should verify before conditional sync:\n%s", output)
 	}
-	for _, want := range []string{"run `abra agents ready . --scope <scope-from-abra-scope> --json` first", "server_ready=true but agent_ready=false", "re-ingest only if verify reports missing scope or empty source-backed memory"} {
+	for _, want := range []string{"run `abra agent ready . --scope <scope-from-abra-scope> --json` first", "server_ready=true but agent_ready=false", "sync only if verify reports missing scope or empty source-backed memory"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("setup recovery guidance missing %q:\n%s", want, output)
 		}
@@ -2975,7 +2976,7 @@ func TestReadyFailureMessageIncludesLocalModelRecovery(t *testing.T) {
 		"embedding_status: timeout",
 		"embedding_check_timeout: 10s",
 		"embedding_provider_timeout: 10m",
-		"Check: abra models status",
+		"Check: abra model status",
 		"Repair: abra up",
 		"Diagnose: abra doctor",
 	} {
@@ -3000,7 +3001,7 @@ func TestReadyFailureMessageIncludesNetworkError(t *testing.T) {
 			t.Fatalf("ready failure message missing %q:\n%s", want, message)
 		}
 	}
-	if strings.Contains(message, "abra models status") {
+	if strings.Contains(message, "abra model status") {
 		t.Fatalf("compatible provider failure should not include local model hint:\n%s", message)
 	}
 }
@@ -3034,7 +3035,7 @@ func TestStatusPrintsReadyFailureDetail(t *testing.T) {
 		"embedding_status: timeout",
 		"embedding_check_timeout: 10s",
 		"embedding_provider_timeout: 10m",
-		"Check: abra models status",
+		"Check: abra model status",
 		"Repair: abra up",
 		"Diagnose: abra doctor",
 	} {
@@ -3149,7 +3150,7 @@ func TestWaitReadyReturnsLastReadinessDetailOnCancel(t *testing.T) {
 		"embedding_status: timeout",
 		"embedding_check_timeout: 10s",
 		"embedding_provider_timeout: 10m",
-		"Check: abra models status",
+		"Check: abra model status",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("waitReady error missing %q:\n%s", want, err.Error())
@@ -3162,11 +3163,11 @@ func TestPrintReadyShowsAgentVerificationFlow(t *testing.T) {
 		printReady(parseArgs([]string{"up"}))
 	})
 	for _, want := range []string{
-		"abra mcp install-codex",
-		"abra agents bootstrap --agent codex",
-		"abra agents init --agent codex",
-		"abra agents verify",
-		"abra ingest . --code --scope <scope>",
+		"abra agent install codex",
+		"abra agent bootstrap --agent codex",
+		"abra agent init --agent codex",
+		"abra agent verify",
+		"abra sync . --code --scope <scope>",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("ready output missing %q:\n%s", want, output)

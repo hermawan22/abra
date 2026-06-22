@@ -75,7 +75,7 @@ func setup(ctx context.Context, args cliArgs) error {
 			args.Bools["skip-models"] = true
 		} else {
 			fmt.Println("Skipped separate model start.")
-			fmt.Println("abra up starts them automatically for provider=local; use abra models up only to repair them directly.")
+			fmt.Println("abra up starts them automatically for provider=local; use abra model up only to repair them directly.")
 		}
 	}
 	if interactive && !boolFlag(args, "yes") {
@@ -366,13 +366,13 @@ func setupLocalNeuralEmbeddings(args cliArgs, reader *bufio.Reader, interactive 
 	} else {
 		fmt.Println("Reranker: " + rerankerProvider + " " + strings.TrimSpace(rerankerModel))
 	}
-	fmt.Println("Local model runner: started automatically by abra up; inspect with abra models status")
+	fmt.Println("Local model runner: started automatically by abra up; inspect with abra model status")
 	fmt.Println("Host endpoint: embedding http://127.0.0.1:8080/v1")
 	if !isDisabledProviderName(rerankerProvider) && isLocalProviderName(rerankerProvider) {
 		fmt.Println("Host endpoint: reranker  http://127.0.0.1:8081/v1")
 	}
 	fmt.Println("Compose endpoints are written as host.docker.internal so Abra containers can reach those host services.")
-	fmt.Println("After changing embedding providers, re-ingest important sources so vector recall uses the new embedding space.")
+	fmt.Println("After changing embedding providers, sync important sources again so vector recall uses the new embedding space.")
 	return nil
 }
 
@@ -468,7 +468,7 @@ func setupCompatibleEmbeddings(args cliArgs, reader *bufio.Reader, interactive b
 	if reranker.Provider != "" && !isDisabledProviderName(reranker.Provider) {
 		fmt.Println("Reranker: " + reranker.Provider + " " + reranker.Model)
 	}
-	fmt.Println("After changing embedding providers, re-ingest important sources so vector recall uses the new embedding space.")
+	fmt.Println("After changing embedding providers, sync important sources again so vector recall uses the new embedding space.")
 	return nil
 }
 
@@ -517,19 +517,19 @@ func printSetupNext(args cliArgs) {
 	fmt.Println("Codex MCP and repo onboarding:")
 	fmt.Println("  cd /path/to/project")
 	fmt.Println("  abra scope")
-	fmt.Println("  abra agents bootstrap --agent codex   # installs Codex MCP, ingests this repo, and verifies")
+	fmt.Println("  abra agent bootstrap --agent codex   # installs Codex MCP, syncs this repo, and verifies")
 	fmt.Println("  fully quit and reopen Codex Desktop")
-	fmt.Println("  abra agents ready . --scope <scope-from-abra-scope> --json")
-	fmt.Println(`  abra think "What should I know before changing this project?" --scope <scope-from-abra-scope>`)
+	fmt.Println("  abra agent ready . --scope <scope-from-abra-scope> --json")
+	fmt.Println(`  abra ask "What should I know before changing this project?" --scope <scope-from-abra-scope>`)
 	fmt.Println("Manual alternative to bootstrap:")
-	fmt.Println("  abra mcp status")
-	fmt.Println("  abra agents init --agent codex")
-	fmt.Println("  abra agents verify . --scope <scope-from-abra-scope>")
-	fmt.Println("  abra ingest . --code --scope <scope-from-abra-scope>   # only if verify reports missing scope or empty memory")
-	fmt.Println("  abra mcp install-codex")
+	fmt.Println("  abra agent status")
+	fmt.Println("  abra agent init --agent codex")
+	fmt.Println("  abra agent verify . --scope <scope-from-abra-scope>")
+	fmt.Println("  abra sync . --code --scope <scope-from-abra-scope>   # only if verify reports missing scope or empty memory")
+	fmt.Println("  abra agent install codex")
 	fmt.Println("  fully quit and reopen Codex Desktop")
-	fmt.Println("  abra agents ready . --scope <scope-from-abra-scope> --json")
-	fmt.Println("If Codex says Abra has no context, run `abra agents ready . --scope <scope-from-abra-scope> --json` first. Reinstall/restart MCP when server_ready=true but agent_ready=false; re-ingest only if verify reports missing scope or empty source-backed memory.")
+	fmt.Println("  abra agent ready . --scope <scope-from-abra-scope> --json")
+	fmt.Println("If Codex says Abra has no context, run `abra agent ready . --scope <scope-from-abra-scope> --json` first. Reinstall/restart MCP when server_ready=true but agent_ready=false; sync only if verify reports missing scope or empty source-backed memory.")
 }
 
 func setupConfiguredValues(args cliArgs) map[string]string {

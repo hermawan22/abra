@@ -314,7 +314,8 @@ Production ingestion should be automated but bounded:
 - Store connector state outside the request path so ingestion spikes do not affect recall latency.
 
 When approval enforcement is active, direct `POST /ingest/documents`, MCP
-`ingest_document(s)`, and CLI `abra ingest` use the `agent_write` approval gate.
+`ingest_document(s)`, and CLI `abra sync`/compatibility `abra ingest` use the
+`agent_write` approval gate.
 Automated connectors should either carry an approved `approval_id` for planned
 writes or run behind stored agent-action policies that explicitly allow the
 source scope.
@@ -323,7 +324,7 @@ Before registering a user-owned MCP export tool as a production source, validate
 it from the operator CLI with `--dry-run` or `--validate`:
 
 ```sh
-abra source mcp \
+abra connect mcp \
   --scope team:docs \
   --mcp-url https://mcp.example.com/mcp \
   --tool export_documents \
@@ -345,12 +346,12 @@ and custom headers in env references such as `bearer_token_env` and
 Operate registered sources through the source lifecycle commands:
 
 ```sh
-abra sources status <source-config-id>
-abra sources logs <source-config-id> --limit 20
-abra sources sync <source-config-id> --scope team:docs --wait --wait-timeout 10m
+abra connect status <source-config-id>
+abra connect logs <source-config-id> --limit 20
+abra sync <source-config-id> --scope team:docs --wait --wait-timeout 10m
 abra sources backfill <source-config-id> --scope team:docs --approval-id <approval-id> --wait --wait-timeout 10m
-abra sources pause <source-config-id>
-abra sources resume <source-config-id> --approval-id <approval-id>
+abra connect pause <source-config-id>
+abra connect resume <source-config-id> --approval-id <approval-id>
 ```
 
 Manual sync and backfill are operator actions and bypass normal due checks, so
