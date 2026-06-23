@@ -126,14 +126,6 @@ func AIProviderMetricsSnapshot() []AIProviderMetric {
 	return out
 }
 
-func ResetAIProviderMetricsForTest() {
-	aiProviderMetrics.mu.Lock()
-	defer aiProviderMetrics.mu.Unlock()
-	aiProviderMetrics.calls = map[string]*AIProviderMetric{}
-	aiProviderMetrics.waits = map[string]*AIProviderMetric{}
-	aiProviderMetrics.gauges = map[string]*AIProviderMetric{}
-}
-
 func (s *aiProviderMetricStore) callMetric(operation, provider, status string) *AIProviderMetric {
 	key := operation + "\n" + provider + "\n" + status
 	metric := s.calls[key]

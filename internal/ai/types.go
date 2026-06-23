@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"strings"
 	"time"
 )
@@ -21,7 +20,6 @@ type ProviderKind string
 
 const (
 	ProviderOpenAICompatible ProviderKind = "openai-compatible"
-	ProviderCustomHTTP       ProviderKind = "custom-http"
 )
 
 type Provider interface {
@@ -118,13 +116,6 @@ type Usage struct {
 
 type JSONSchema map[string]any
 
-type ProviderConfig struct {
-	Name               string
-	Kind               ProviderKind
-	OpenAICompatible   *OpenAICompatibleConfig
-	CustomHTTPProvider *CustomHTTPProviderConfig
-}
-
 type OpenAICompatibleConfig struct {
 	Name                string
 	BaseURL             string
@@ -137,91 +128,6 @@ type OpenAICompatibleConfig struct {
 	Project             string
 	Headers             map[string]string
 	Timeout             time.Duration
-}
-
-type CustomHTTPProviderConfig struct {
-	Name       string
-	Headers    map[string]string
-	Embeddings *CustomHTTPEndpointConfig
-	Extractor  *CustomHTTPEndpointConfig
-}
-
-type CustomHTTPEndpointConfig struct {
-	URL               string
-	Method            string
-	Model             string
-	Headers           map[string]string
-	Timeout           time.Duration
-	Auth              *CustomHTTPAuthConfig
-	RequestTemplate   map[string]any
-	InputPath         string
-	ModelPath         string
-	SchemaPath        string
-	ResponseValuePath string
-	ResponseUsagePath string
-	Dimensions        int
-}
-
-type CustomHTTPAuthConfig struct {
-	Type        string
-	HeaderName  string
-	Token       string
-	QueryName   string
-	QueryValue  string
-	BearerToken string
-}
-
-func NewProvider(config ProviderConfig, client *http.Client) (Provider, error) {
-	switch config.Kind {
-	case ProviderOpenAICompatible:
-		if config.OpenAICompatible == nil {
-			return nil, fmt.Errorf("%w: openai-compatible config is required", ErrInvalidConfig)
-		}
-		return NewOpenAICompatibleProvider(*config.OpenAICompatible, client)
-	case ProviderCustomHTTP:
-		if config.CustomHTTPProvider == nil {
-			return nil, fmt.Errorf("%w: custom-http config is required", ErrInvalidConfig)
-		}
-		return NewCustomHTTPProvider(*config.CustomHTTPProvider, client)
-	default:
-		return nil, fmt.Errorf("%w: unsupported provider kind %q", ErrInvalidConfig, config.Kind)
-	}
-}
-
-func NewEmbeddingProvider(config ProviderConfig, client *http.Client) (EmbeddingProvider, error) {
-	provider, err := NewProvider(config, client)
-	if err != nil {
-		return nil, err
-	}
-	embeddingProvider, ok := provider.(EmbeddingProvider)
-	if !ok {
-		return nil, fmt.Errorf("%w: provider %q does not support embeddings", ErrInvalidConfig, provider.Name())
-	}
-	return embeddingProvider, nil
-}
-
-func NewRerankerProvider(config ProviderConfig, client *http.Client) (RerankerProvider, error) {
-	provider, err := NewProvider(config, client)
-	if err != nil {
-		return nil, err
-	}
-	rerankerProvider, ok := provider.(RerankerProvider)
-	if !ok {
-		return nil, fmt.Errorf("%w: provider %q does not support reranking", ErrInvalidConfig, provider.Name())
-	}
-	return rerankerProvider, nil
-}
-
-func NewExtractorProvider(config ProviderConfig, client *http.Client) (ExtractorProvider, error) {
-	provider, err := NewProvider(config, client)
-	if err != nil {
-		return nil, err
-	}
-	extractorProvider, ok := provider.(ExtractorProvider)
-	if !ok {
-		return nil, fmt.Errorf("%w: provider %q does not support extraction", ErrInvalidConfig, provider.Name())
-	}
-	return extractorProvider, nil
 }
 
 func validateRerankRequest(request RerankRequest) error {
@@ -262,6 +168,15 @@ func embeddingDimensions(request EmbeddingRequest, fallback int) int {
 		return request.Dimensions
 	}
 	return fallback
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func validateEmbeddingRequest(request EmbeddingRequest) error {

@@ -118,6 +118,33 @@ func TestBuildLearningApplyPlanForObservationClaimTargetsMemoryWrite(t *testing.
 	}
 }
 
+func TestBuildLearningApplyPlanForEvidenceAnchorDoesNotPromoteClaim(t *testing.T) {
+	plan := buildLearningApplyPlan(store.LearningProposalRecord{
+		ID:           "proposal-anchor",
+		Scope:        "repo:app",
+		ProposalType: "claim",
+		Status:       "accepted",
+		TargetType:   "claim",
+		TargetID:     "claim-1",
+		Payload: map[string]any{
+			"action":      "add_evidence_anchor",
+			"claim_id":    "claim-1",
+			"quote":       "Agents should use source-backed evidence.",
+			"source_url":  "file://runbook.md",
+			"document_id": "doc-1",
+		},
+	}, "enforce")
+	if !plan.Ready || plan.Action != "attach_evidence_anchor" || plan.Endpoint != "/learning/proposals/proposal-anchor/apply" {
+		t.Fatalf("unexpected evidence anchor apply plan: %#v", plan)
+	}
+	if !plan.RequiresApproval || plan.ApprovalAction != "agent_write" {
+		t.Fatalf("evidence anchor apply should still use governance approval in enforce mode: %#v", plan)
+	}
+	if plan.TargetType != "claim" || plan.TargetID != "claim-1" {
+		t.Fatalf("evidence anchor apply should target existing claim, got %#v", plan)
+	}
+}
+
 func TestBuildLearningApplyPlanForSummaryRebuild(t *testing.T) {
 	plan := buildLearningApplyPlan(store.LearningProposalRecord{
 		ID:           "proposal-1",

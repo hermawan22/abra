@@ -54,14 +54,6 @@ func NewLocalRepoMarkdownIngestor(source SourceSpec) (*LocalRepoMarkdownIngestor
 	return &LocalRepoMarkdownIngestor{Source: cloneSource(source)}, nil
 }
 
-func (i *LocalRepoMarkdownIngestor) Ingest(ctx context.Context) ([]Document, error) {
-	result, err := i.IngestWithStats(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return result.Documents, nil
-}
-
 func (i *LocalRepoMarkdownIngestor) IngestWithStats(ctx context.Context) (IngestResult, error) {
 	root, err := filepath.Abs(i.Source.Root)
 	if err != nil {

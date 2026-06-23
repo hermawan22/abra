@@ -1,0 +1,103 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="title desc">
+  <title id="title">Abra cognitive loop</title>
+  <desc id="desc">A polished cognitive loop diagram showing perception, encoding, recall, focus, reasoning, verification, decision, response, observation, and consolidation.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#f1f5f9"/>
+    </linearGradient>
+    <radialGradient id="center" cx=".5" cy=".5" r=".62">
+      <stop offset="0" stop-color="#ecfeff"/>
+      <stop offset="1" stop-color="#dbeafe"/>
+    </radialGradient>
+    <filter id="shadow" x="-25%" y="-30%" width="150%" height="170%">
+      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#0f172a" flood-opacity=".12"/>
+    </filter>
+    <marker id="arrow" markerWidth="14" markerHeight="14" refX="11" refY="7" orient="auto">
+      <path d="M2 2 12 7 2 12Z" fill="#2563eb"/>
+    </marker>
+    <style>
+      .bg{fill:url(#bg)}
+      .title{font:800 33px Inter,Arial,sans-serif;fill:#0f172a}
+      .subtitle{font:15px Inter,Arial,sans-serif;fill:#475569}
+      .center{fill:url(#center);stroke:#2563eb;stroke-width:2;filter:url(#shadow)}
+      .node{fill:#ffffff;stroke:#d7e0ea;stroke-width:1.5;rx:18;filter:url(#shadow)}
+      .gate{fill:#fff7ed;stroke:#ea580c;stroke-width:2;rx:18;filter:url(#shadow)}
+      .learn{fill:#ecfdf5;stroke:#059669;stroke-width:2;rx:18;filter:url(#shadow)}
+      .label{font:800 17px Inter,Arial,sans-serif;fill:#111827}
+      .body{font:13px Inter,Arial,sans-serif;fill:#475569}
+      .centerLabel{font:800 24px Inter,Arial,sans-serif;fill:#0f172a}
+      .centerBody{font:14px Inter,Arial,sans-serif;fill:#334155}
+      .line{stroke:#2563eb;stroke-width:2.6;fill:none;marker-end:url(#arrow)}
+      .loop{stroke:#cbd5e1;stroke-width:1.5;fill:none;stroke-dasharray:7 9}
+    </style>
+  </defs>
+
+  <rect class="bg" width="1280" height="720"/>
+  <text class="title" x="78" y="78">Cognitive architecture for agent work</text>
+  <text class="subtitle" x="80" y="110">Abra separates recall, reasoning support, verification, and learning so agents can act without inventing memory.</text>
+
+  <ellipse class="loop" cx="640" cy="380" rx="436" ry="220"/>
+  <circle class="center" cx="640" cy="380" r="116"/>
+  <text class="centerLabel" x="566" y="362">Brain packet</text>
+  <text class="centerBody" x="548" y="394">answer, evidence, trust,</text>
+  <text class="centerBody" x="554" y="416">gaps, conflicts, next action</text>
+
+  <g transform="translate(120 192)">
+    <rect class="node" width="162" height="92"/>
+    <text class="label" x="34" y="36">Perceive</text>
+    <text class="body" x="26" y="64">sources, outcomes,</text>
+    <text class="body" x="26" y="82">agent observations</text>
+  </g>
+  <g transform="translate(362 128)">
+    <rect class="node" width="162" height="92"/>
+    <text class="label" x="43" y="36">Encode</text>
+    <text class="body" x="26" y="64">chunks, claims,</text>
+    <text class="body" x="26" y="82">entities, relations</text>
+  </g>
+  <g transform="translate(756 128)">
+    <rect class="node" width="162" height="92"/>
+    <text class="label" x="48" y="36">Recall</text>
+    <text class="body" x="26" y="64">hybrid search, graph,</text>
+    <text class="body" x="26" y="82">freshness boost</text>
+  </g>
+  <g transform="translate(998 192)">
+    <rect class="node" width="162" height="92"/>
+    <text class="label" x="52" y="36">Focus</text>
+    <text class="body" x="26" y="64">bounded context</text>
+    <text class="body" x="26" y="82">and source budget</text>
+  </g>
+  <g transform="translate(998 476)">
+    <rect class="node" width="162" height="92"/>
+    <text class="label" x="43" y="36">Reason</text>
+    <text class="body" x="26" y="64">supported claims,</text>
+    <text class="body" x="26" y="82">not free-form truth</text>
+  </g>
+  <g transform="translate(756 540)">
+    <rect class="gate" width="162" height="92"/>
+    <text class="label" x="45" y="36">Verify</text>
+    <text class="body" x="26" y="64">anchors, freshness,</text>
+    <text class="body" x="26" y="82">conflict status</text>
+  </g>
+  <g transform="translate(362 540)">
+    <rect class="gate" width="162" height="92"/>
+    <text class="label" x="45" y="36">Decide</text>
+    <text class="body" x="26" y="64">proceed, caution,</text>
+    <text class="body" x="26" y="82">review, blocked</text>
+  </g>
+  <g transform="translate(120 476)">
+    <rect class="learn" width="162" height="92"/>
+    <text class="label" x="31" y="36">Consolidate</text>
+    <text class="body" x="26" y="64">proposal flow,</text>
+    <text class="body" x="26" y="82">auditable learning</text>
+  </g>
+
+  <path class="line" d="M282 238C320 200 336 183 362 174"/>
+  <path class="line" d="M524 174H746"/>
+  <path class="line" d="M918 174C956 184 974 202 998 238"/>
+  <path class="line" d="M1079 284V466"/>
+  <path class="line" d="M998 522C960 560 944 578 918 586"/>
+  <path class="line" d="M756 586H534"/>
+  <path class="line" d="M362 586C324 576 306 558 282 522"/>
+  <path class="line" d="M201 476V294"/>
+</svg>

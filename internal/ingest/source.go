@@ -3,9 +3,7 @@ package ingest
 import (
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
-	"sync"
 )
 
 // SourceType identifies a class of source connector. Keep this generic so
@@ -59,74 +57,6 @@ func (s SourceSpec) Validate() error {
 		return fmt.Errorf("source %q git_remote_url is required for %s", s.ID, SourceTypeGitRepo)
 	}
 	return nil
-}
-
-// Registry stores source definitions by stable source id.
-type Registry struct {
-	mu      sync.RWMutex
-	sources map[string]SourceSpec
-}
-
-func NewRegistry(sources ...SourceSpec) (*Registry, error) {
-	r := &Registry{sources: make(map[string]SourceSpec, len(sources))}
-	for _, source := range sources {
-		if err := r.Register(source); err != nil {
-			return nil, err
-		}
-	}
-	return r, nil
-}
-
-func (r *Registry) Register(source SourceSpec) error {
-	if err := source.Validate(); err != nil {
-		return err
-	}
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if _, exists := r.sources[source.ID]; exists {
-		return fmt.Errorf("source %q already registered", source.ID)
-	}
-	r.sources[source.ID] = cloneSource(source)
-	return nil
-}
-
-func (r *Registry) Get(id string) (SourceSpec, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	source, ok := r.sources[id]
-	if !ok {
-		return SourceSpec{}, false
-	}
-	return cloneSource(source), true
-}
-
-func (r *Registry) List() []SourceSpec {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	sources := make([]SourceSpec, 0, len(r.sources))
-	for _, source := range r.sources {
-		sources = append(sources, cloneSource(source))
-	}
-	sort.Slice(sources, func(i, j int) bool {
-		return sources[i].ID < sources[j].ID
-	})
-	return sources
-}
-
-func (r *Registry) ListByType(sourceType SourceType) []SourceSpec {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	var sources []SourceSpec
-	for _, source := range r.sources {
-		if source.Type == sourceType {
-			sources = append(sources, cloneSource(source))
-		}
-	}
-	sort.Slice(sources, func(i, j int) bool {
-		return sources[i].ID < sources[j].ID
-	})
-	return sources
 }
 
 func cloneSource(source SourceSpec) SourceSpec {

@@ -2,11 +2,7 @@ package memory
 
 import (
 	"context"
-	"errors"
-	"path/filepath"
 	"regexp"
-	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,15 +22,33 @@ type Store interface {
 	InsertAuditEvent(ctx context.Context, eventType, targetType, targetID, scope, sourceURL string, metadata map[string]any) error
 }
 
-const defaultHealthCacheTTL = 2 * time.Second
+type recallOptionsStore interface {
+	RecallWithOptions(ctx context.Context, query, scope string, limit int, includeUnverified bool, options store.RecallOptions) (store.RecallResult, error)
+}
+
+type graphOptionsStore interface {
+	RelatedGraphWithOptions(ctx context.Context, query, scope string, limit int, options store.RecallOptions) ([]store.RelationResult, error)
+}
+
+type summaryLevelStore interface {
+	ListMemorySummariesByLevels(ctx context.Context, query, scope string, levels []string, limit int) ([]store.MemorySummaryResult, error)
+}
+
+type evidenceAnchorDocumentStore interface {
+	DocumentsBySource(ctx context.Context, scope string, sourceURLs []string, limitPerSource int) ([]store.DocumentResult, error)
+}
+
 const (
-	defaultRecallConcurrency = 1
-	defaultGraphConcurrency  = 4
-	maxStageConcurrency      = 32
+	defaultRecallConcurrency    = 1
+	defaultGraphConcurrency     = 4
+	maxStageConcurrency         = 32
+	evidenceAnchorSourcesMax    = 8
+	evidenceAnchorDocsPerSource = 3
 )
 
 type Composer struct {
 	store             Store
+	synthesizer       Synthesizer
 	healthCacheTTL    time.Duration
 	recallConcurrency int
 	graphConcurrency  int
@@ -58,6 +72,7 @@ type ComposerOptions struct {
 	HealthCacheTTL    time.Duration
 	RecallConcurrency int
 	GraphConcurrency  int
+	Synthesizer       Synthesizer
 }
 
 type ComposeInput struct {
@@ -65,6 +80,10 @@ type ComposeInput struct {
 	Scope             string                    `json:"scope"`
 	Hook              string                    `json:"hook,omitempty"`
 	Agent             string                    `json:"agent,omitempty"`
+	Entity            string                    `json:"entity,omitempty"`
+	Mode              RetrievalMode             `json:"mode,omitempty"`
+	AsOf              string                    `json:"as_of,omitempty"`
+	IncludeHistorical bool                      `json:"include_historical,omitempty"`
 	Files             []string                  `json:"files,omitempty"`
 	ChangedFiles      []string                  `json:"changed_files,omitempty"`
 	Language          string                    `json:"language,omitempty"`
@@ -81,6 +100,7 @@ type ComposeResult struct {
 	Task                 string                      `json:"task"`
 	Scope                string                      `json:"scope"`
 	Intent               string                      `json:"intent"`
+	RetrievalMode        RetrievalMode               `json:"mode,omitempty"`
 	Strategy             string                      `json:"strategy"`
 	Plan                 policy.RecallPlan           `json:"plan"`
 	RetrievalPlan        RetrievalPlan               `json:"retrieval_plan"`
@@ -90,6 +110,8 @@ type ComposeResult struct {
 	Facts                []store.ClaimResult         `json:"facts"`
 	SupportingDocuments  []store.DocumentResult      `json:"supporting_documents"`
 	GraphContext         []store.RelationResult      `json:"graph_context"`
+	EntityDossiers       []EntityDossier             `json:"entity_dossiers,omitempty"`
+	TemporalContext      TemporalContext             `json:"temporal_context,omitempty"`
 	GraphWarnings        []GraphWarning              `json:"graph_warnings,omitempty"`
 	RetrievalReasons     []store.RetrievalReason     `json:"retrieval_reasons,omitempty"`
 	Citations            []Citation                  `json:"citations,omitempty"`
@@ -99,6 +121,7 @@ type ComposeResult struct {
 	ImpactMap            []ImpactItem                `json:"impact_map"`
 	Risks                []string                    `json:"risks"`
 	Evidence             []EvidenceItem              `json:"evidence"`
+	EvidenceAnchors      []EvidenceAnchor            `json:"evidence_anchors,omitempty"`
 	Verification         VerificationReport          `json:"verification"`
 	AgentPolicyDecisions []AgentPolicyDecision       `json:"agent_policy_decisions"`
 	AgentProfile         *store.AgentProfileRecord   `json:"agent_profile,omitempty"`
@@ -115,19 +138,34 @@ type EvidenceItem struct {
 	Ref       string `json:"ref,omitempty"`
 	Title     string `json:"title,omitempty"`
 	Count     int    `json:"count"`
+	Anchors   int    `json:"anchors,omitempty"`
+}
+
+type EvidenceAnchor struct {
+	Ref        string  `json:"ref,omitempty"`
+	Kind       string  `json:"kind"`
+	SourceURL  string  `json:"source_url"`
+	Title      string  `json:"title,omitempty"`
+	ClaimID    string  `json:"claim_id,omitempty"`
+	DocumentID string  `json:"document_id,omitempty"`
+	Quote      string  `json:"quote"`
+	StartChar  int     `json:"start_char,omitempty"`
+	EndChar    int     `json:"end_char,omitempty"`
+	Score      float64 `json:"score,omitempty"`
 }
 
 type Citation struct {
-	Ref         string   `json:"ref"`
-	Kind        string   `json:"kind"`
-	SourceURL   string   `json:"source_url"`
-	Title       string   `json:"title,omitempty"`
-	ClaimID     string   `json:"claim_id,omitempty"`
-	DocumentID  string   `json:"document_id,omitempty"`
-	ClaimIDs    []string `json:"claim_ids,omitempty"`
-	DocumentIDs []string `json:"document_ids,omitempty"`
-	SummaryIDs  []string `json:"summary_ids,omitempty"`
-	RelationIDs []string `json:"relation_ids,omitempty"`
+	Ref         string           `json:"ref"`
+	Kind        string           `json:"kind"`
+	SourceURL   string           `json:"source_url"`
+	Title       string           `json:"title,omitempty"`
+	ClaimID     string           `json:"claim_id,omitempty"`
+	DocumentID  string           `json:"document_id,omitempty"`
+	ClaimIDs    []string         `json:"claim_ids,omitempty"`
+	DocumentIDs []string         `json:"document_ids,omitempty"`
+	SummaryIDs  []string         `json:"summary_ids,omitempty"`
+	RelationIDs []string         `json:"relation_ids,omitempty"`
+	Anchors     []EvidenceAnchor `json:"anchors,omitempty"`
 }
 
 type ComposeStats struct {
@@ -200,16 +238,27 @@ type retrievalResult struct {
 	recall    store.RecallResult
 }
 
-type healthLookup struct {
-	CacheStatus string
+type RetrievalMode string
+
+const (
+	RetrievalModeFast     RetrievalMode = "fast"
+	RetrievalModeBalanced RetrievalMode = "balanced"
+	RetrievalModeDeep     RetrievalMode = "deep"
+)
+
+func NormalizeRetrievalMode(value string) RetrievalMode {
+	switch RetrievalMode(strings.ToLower(strings.TrimSpace(value))) {
+	case RetrievalModeFast:
+		return RetrievalModeFast
+	case RetrievalModeDeep:
+		return RetrievalModeDeep
+	default:
+		return RetrievalModeBalanced
+	}
 }
 
-func NewComposer(store Store) *Composer {
-	return NewComposerWithOptions(store, ComposerOptions{
-		HealthCacheTTL:    defaultHealthCacheTTL,
-		RecallConcurrency: defaultRecallConcurrency,
-		GraphConcurrency:  defaultGraphConcurrency,
-	})
+type healthLookup struct {
+	CacheStatus string
 }
 
 func NewComposerWithOptions(store Store, options ComposerOptions) *Composer {
@@ -221,6 +270,7 @@ func NewComposerWithOptions(store Store, options ComposerOptions) *Composer {
 	graphConcurrency := boundedStageConcurrency(options.GraphConcurrency, defaultGraphConcurrency)
 	return &Composer{
 		store:             store,
+		synthesizer:       options.Synthesizer,
 		healthCacheTTL:    ttl,
 		recallConcurrency: recallConcurrency,
 		graphConcurrency:  graphConcurrency,
@@ -265,6 +315,7 @@ func (c *Composer) Compose(ctx context.Context, input ComposeInput) (ComposeResu
 
 	stageStart := time.Now()
 	input = normalizeInput(input)
+	input = applyRetrievalMode(input)
 	intent := classifyIntent(input)
 	plan := policy.NewEngine(policy.Config{
 		DefaultScope:      input.Scope,
@@ -290,30 +341,19 @@ func (c *Composer) Compose(ctx context.Context, input ComposeInput) (ComposeResu
 	facts := map[string]store.ClaimResult{}
 	docs := map[string]store.DocumentResult{}
 	graph := map[string]store.RelationResult{}
-	summaries := map[string]store.MemorySummaryResult{}
 	retrievalReasons := map[string]store.RetrievalReason{}
-	stageStart = time.Now()
-	taskSummaries, err := c.store.ListMemorySummaries(ctx, input.Task, input.Scope, input.Limit)
+	summaries, summaryTrace, summaryWarnings, err := c.composeSummaryLookups(ctx, input)
 	if err != nil {
-		if isContextError(err) {
-			return ComposeResult{}, err
-		}
-		warnings = append(warnings, RetrievalWarning{
-			Stage:     "summaries",
-			Operation: "task_summary_lookup",
-			Query:     input.Task,
-			Message:   compactError(err),
-		})
-		taskSummaries = nil
+		return ComposeResult{}, err
 	}
-	addTrace("summaries", "task_summary_lookup", false, 1, len(taskSummaries), stageStart, warningsFor(warnings, "summaries", "task_summary_lookup"))
-	for _, summary := range taskSummaries {
-		if existing, ok := summaries[summary.ID]; !ok || summary.Rank > existing.Rank {
-			summaries[summary.ID] = summary
-		}
+	trace = append(trace, summaryTrace...)
+	warnings = append(warnings, summaryWarnings...)
+	recallOptions, asOfApplied, asOfWarning := recallOptionsFromInput(input)
+	if asOfWarning != "" {
+		warnings = append(warnings, RetrievalWarning{Stage: "planning", Operation: "temporal_recall_options", Query: input.AsOf, Message: asOfWarning})
 	}
 	stageStart = time.Now()
-	queryResults, retrievalWarnings, err := c.retrieveQueries(ctx, plan.Queries)
+	queryResults, retrievalWarnings, err := c.retrieveQueries(ctx, plan.Queries, recallOptions)
 	if err != nil {
 		return ComposeResult{}, err
 	}
@@ -342,7 +382,11 @@ func (c *Composer) Compose(ctx context.Context, input ComposeInput) (ComposeResu
 	}
 
 	stageStart = time.Now()
-	directGraph, err := c.store.RelatedGraph(ctx, input.Task, input.Scope, input.Limit)
+	graphLookupLimit := input.Limit
+	if input.Mode == RetrievalModeFast {
+		graphLookupLimit = minInt(graphLookupLimit, 2)
+	}
+	directGraph, err := c.relatedGraph(ctx, input.Task, input.Scope, graphLookupLimit, recallOptions)
 	if err != nil {
 		if isContextError(err) {
 			return ComposeResult{}, err
@@ -363,8 +407,11 @@ func (c *Composer) Compose(ctx context.Context, input ComposeInput) (ComposeResu
 	graphQueries := 1
 
 	graphSeeds := graphExpansionSeeds(input, facts, docs, summaries, graph)
+	if input.Mode == RetrievalModeFast {
+		graphSeeds = nil
+	}
 	stageStart = time.Now()
-	graphResults, graphRetrievalWarnings, err := c.retrieveGraphSeeds(ctx, graphSeeds, input.Scope, minInt(input.Limit, 6))
+	graphResults, graphRetrievalWarnings, err := c.retrieveGraphSeeds(ctx, graphSeeds, input.Scope, minInt(input.Limit, 6), recallOptions)
 	if err != nil {
 		return ComposeResult{}, err
 	}
@@ -377,10 +424,23 @@ func (c *Composer) Compose(ctx context.Context, input ComposeInput) (ComposeResu
 		}
 	}
 
+	anchorDocs, anchorTrace, anchorWarnings, err := c.composeEvidenceAnchorDocuments(ctx, input.Scope, facts)
+	if err != nil {
+		return ComposeResult{}, err
+	}
+	trace = append(trace, anchorTrace)
+	warnings = append(warnings, anchorWarnings...)
+	for _, doc := range anchorDocs {
+		if existing, ok := docs[doc.ID]; !ok || doc.Rank > existing.Rank || len(doc.Content) > len(existing.Content) {
+			docs[doc.ID] = doc
+		}
+	}
+
 	result := ComposeResult{
 		Task:                input.Task,
 		Scope:               input.Scope,
 		Intent:              intent,
+		RetrievalMode:       input.Mode,
 		Strategy:            strategyDescription(intent),
 		Plan:                plan,
 		RetrievalTrace:      trace,
@@ -417,8 +477,21 @@ func (c *Composer) Compose(ctx context.Context, input ComposeInput) (ComposeResu
 	result.Risks = applyMemoryHealthRisks(risks(result.Facts, result.GraphContext, result.Conflicts, result.RetrievalWarnings, result.GraphWarnings), result.MemoryHealth)
 	var citationRefs map[string]string
 	result.Citations, citationRefs = buildCitations(result)
-	result.Evidence = evidence(result.Facts, result.SupportingDocuments, citationRefs)
-	result.Verification = verifyPacket(result.Summaries, result.Facts, result.SupportingDocuments, result.GraphContext, result.Evidence, result.RetrievalPlan, result.Conflicts, result.RetrievalWarnings, result.GraphWarnings, result.MemoryHealth)
+	result.EvidenceAnchors = evidenceAnchors(result.Facts, result.SupportingDocuments, citationRefs)
+	storedAnchors, err := c.storedEvidenceAnchors(ctx, input.Scope, result.Facts, citationRefs)
+	if err != nil {
+		if isContextError(err) {
+			return ComposeResult{}, err
+		}
+		result.RetrievalWarnings = append(result.RetrievalWarnings, RetrievalWarning{Stage: "evidence", Operation: "stored_evidence_anchor_lookup", Query: input.Scope, Message: compactError(err)})
+	} else {
+		result.EvidenceAnchors = mergeEvidenceAnchors(result.EvidenceAnchors, storedAnchors)
+	}
+	result.Citations = attachCitationAnchors(result.Citations, result.EvidenceAnchors)
+	result.Evidence = evidence(result.Facts, result.SupportingDocuments, citationRefs, result.EvidenceAnchors)
+	result.TemporalContext = buildTemporalContext(input, result, asOfApplied, asOfWarning)
+	result.EntityDossiers = buildEntityDossiers(input, result)
+	result.Verification = verifyPacket(result.Summaries, result.Facts, result.SupportingDocuments, result.GraphContext, result.Evidence, result.RetrievalPlan, result.Conflicts, result.RetrievalWarnings, result.GraphWarnings, result.MemoryHealth, result.EvidenceAnchors)
 	addTrace("compile", "evidence_impact_and_verification", false, len(result.Facts)+len(result.SupportingDocuments)+len(result.GraphContext), len(result.Evidence)+len(result.ImpactMap)+len(result.Risks), stageStart, nil)
 	stageStart = time.Now()
 	agentPolicyDecisions, err := c.agentPolicyDecisions(ctx, input)
@@ -495,1441 +568,7 @@ func (c *Composer) Compose(ctx context.Context, input ComposeInput) (ComposeResu
 	return result, nil
 }
 
-func (c *Composer) retrieveQueries(ctx context.Context, queries []policy.RecallQuery) ([]retrievalResult, []RetrievalWarning, error) {
-	if len(queries) == 0 {
-		return nil, nil, nil
-	}
-
-	results := make([]retrievalResult, len(queries))
-	warningsByQuery := make([][]RetrievalWarning, len(queries))
-	errs := make(chan error, len(queries)*2)
-	sem := make(chan struct{}, minInt(c.recallConcurrency, len(queries)))
-	var wg sync.WaitGroup
-	for i, query := range queries {
-		i, query := i, query
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := acquireStageSlot(ctx, sem); err != nil {
-				errs <- err
-				return
-			}
-			defer releaseStageSlot(sem)
-			querySummaries, err := c.store.ListMemorySummaries(ctx, query.Query, query.Scope, minInt(query.Limit, 4))
-			if err != nil {
-				if isContextError(err) {
-					errs <- err
-					return
-				}
-				warningsByQuery[i] = append(warningsByQuery[i], RetrievalWarning{
-					Stage:     "retrieval",
-					Operation: "query_summary_lookup",
-					Query:     query.Query,
-					Message:   compactError(err),
-				})
-				querySummaries = nil
-			}
-			recall, err := c.store.Recall(ctx, query.Query, query.Scope, query.Limit, query.IncludeUnverified)
-			if err != nil {
-				if isContextError(err) {
-					errs <- err
-					return
-				}
-				warningsByQuery[i] = append(warningsByQuery[i], RetrievalWarning{
-					Stage:     "retrieval",
-					Operation: "recall",
-					Query:     query.Query,
-					Message:   compactError(err),
-				})
-				return
-			}
-			warningsByQuery[i] = append(warningsByQuery[i], recallWarnings(recall.RetrievalWarnings)...)
-			results[i] = retrievalResult{summaries: querySummaries, recall: recall}
-		}()
-	}
-	wg.Wait()
-	close(errs)
-	for err := range errs {
-		if err != nil {
-			return nil, nil, err
-		}
-	}
-	warnings := []RetrievalWarning{}
-	for _, queryWarnings := range warningsByQuery {
-		warnings = append(warnings, queryWarnings...)
-	}
-	return results, warnings, nil
-}
-
-func recallWarnings(values []store.RetrievalWarning) []RetrievalWarning {
-	if len(values) == 0 {
-		return nil
-	}
-	warnings := make([]RetrievalWarning, 0, len(values))
-	for _, value := range values {
-		warnings = append(warnings, RetrievalWarning{
-			Stage:     strings.TrimSpace(value.Stage),
-			Operation: strings.TrimSpace(value.Operation),
-			Query:     strings.TrimSpace(value.Query),
-			Message:   strings.TrimSpace(value.Message),
-		})
-	}
-	return warnings
-}
-
-func acquireStageSlot(ctx context.Context, sem chan struct{}) error {
-	select {
-	case sem <- struct{}{}:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-func releaseStageSlot(sem chan struct{}) {
-	select {
-	case <-sem:
-	default:
-	}
-}
-
-func (c *Composer) activeConflicts(ctx context.Context, scope string, facts []store.ClaimResult, graph []store.RelationResult) ([]store.ConflictResult, error) {
-	claimConflicts, err := c.store.ListOpenConflictsForClaims(ctx, scope, claimIDs(facts))
-	if err != nil {
-		return nil, err
-	}
-	relationConflicts, err := c.store.ListOpenConflictsForRelations(ctx, scope, relationIDs(graph))
-	if err != nil {
-		return nil, err
-	}
-	return mergeConflicts(claimConflicts, relationConflicts), nil
-}
-
-func (c *Composer) memoryHealth(ctx context.Context, scope string) (store.MemoryHealthResult, healthLookup, error) {
-	if c.healthCacheTTL <= 0 {
-		health, err := c.store.MemoryHealth(ctx, scope)
-		return health, healthLookup{CacheStatus: "disabled"}, err
-	}
-	now := time.Now()
-	c.healthMu.Lock()
-	if entry, ok := c.healthCache[scope]; ok && now.Before(entry.expiresAt) {
-		health := cloneMemoryHealth(entry.health)
-		c.healthMu.Unlock()
-		return health, healthLookup{CacheStatus: "cache_hit"}, nil
-	}
-	if call := c.healthInflight[scope]; call != nil {
-		c.healthMu.Unlock()
-		select {
-		case <-call.done:
-			if call.err != nil {
-				return store.MemoryHealthResult{}, healthLookup{CacheStatus: "coalesced"}, call.err
-			}
-			return cloneMemoryHealth(call.health), healthLookup{CacheStatus: "coalesced"}, nil
-		case <-ctx.Done():
-			return store.MemoryHealthResult{}, healthLookup{CacheStatus: "coalesced"}, ctx.Err()
-		}
-	}
-	call := &healthInflight{done: make(chan struct{})}
-	c.healthInflight[scope] = call
-	c.healthMu.Unlock()
-
-	health, err := c.store.MemoryHealth(ctx, scope)
-	if err != nil {
-		if isContextError(err) {
-			c.finishMemoryHealth(scope, call, store.MemoryHealthResult{}, err, now)
-			return store.MemoryHealthResult{}, healthLookup{CacheStatus: "fresh"}, err
-		}
-		health = unavailableMemoryHealth(scope, err)
-		err = nil
-	}
-	c.finishMemoryHealth(scope, call, health, err, now)
-	return cloneMemoryHealth(health), healthLookup{CacheStatus: "fresh"}, nil
-}
-
-func (c *Composer) finishMemoryHealth(scope string, call *healthInflight, health store.MemoryHealthResult, err error, now time.Time) {
-	c.healthMu.Lock()
-	defer c.healthMu.Unlock()
-	if err == nil {
-		health = cloneMemoryHealth(health)
-		c.healthCache[scope] = healthCacheEntry{
-			health:    health,
-			expiresAt: now.Add(c.healthCacheTTL),
-		}
-	}
-	call.health = health
-	call.err = err
-	delete(c.healthInflight, scope)
-	close(call.done)
-}
-
-func cloneMemoryHealth(health store.MemoryHealthResult) store.MemoryHealthResult {
-	health.Reasons = append([]string(nil), health.Reasons...)
-	health.Signals = append([]store.MemoryHealthSignal(nil), health.Signals...)
-	if health.Summaries.Levels != nil {
-		levels := make(map[string]int, len(health.Summaries.Levels))
-		for key, value := range health.Summaries.Levels {
-			levels[key] = value
-		}
-		health.Summaries.Levels = levels
-	}
-	if health.LastUpdated != nil {
-		lastUpdated := make(map[string]string, len(health.LastUpdated))
-		for key, value := range health.LastUpdated {
-			lastUpdated[key] = value
-		}
-		health.LastUpdated = lastUpdated
-	}
-	return health
-}
-
-func mergeConflicts(groups ...[]store.ConflictResult) []store.ConflictResult {
-	seen := map[string]struct{}{}
-	out := []store.ConflictResult{}
-	for _, group := range groups {
-		for _, conflict := range group {
-			id := strings.TrimSpace(conflict.ID)
-			if id == "" {
-				continue
-			}
-			if _, ok := seen[id]; ok {
-				continue
-			}
-			seen[id] = struct{}{}
-			out = append(out, conflict)
-		}
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		left := conflictSeverityRank(out[i].Severity)
-		right := conflictSeverityRank(out[j].Severity)
-		if left != right {
-			return left > right
-		}
-		return out[i].UpdatedAt > out[j].UpdatedAt
-	})
-	return out
-}
-
-func conflictSeverityRank(severity string) int {
-	switch strings.ToLower(strings.TrimSpace(severity)) {
-	case "blocking":
-		return 4
-	case "high":
-		return 3
-	case "medium":
-		return 2
-	case "low":
-		return 1
-	default:
-		return 0
-	}
-}
-
-func (c *Composer) retrieveGraphSeeds(ctx context.Context, seeds []string, scope string, limit int) ([][]store.RelationResult, []RetrievalWarning, error) {
-	if len(seeds) == 0 {
-		return nil, nil, nil
-	}
-
-	results := make([][]store.RelationResult, len(seeds))
-	warningsBySeed := make([][]RetrievalWarning, len(seeds))
-	errs := make(chan error, len(seeds))
-	sem := make(chan struct{}, minInt(c.graphConcurrency, len(seeds)))
-	var wg sync.WaitGroup
-	for i, seed := range seeds {
-		i, seed := i, seed
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := acquireStageSlot(ctx, sem); err != nil {
-				errs <- err
-				return
-			}
-			defer releaseStageSlot(sem)
-			expanded, err := c.store.RelatedGraph(ctx, seed, scope, limit)
-			if err != nil {
-				if isContextError(err) {
-					errs <- err
-					return
-				}
-				warningsBySeed[i] = append(warningsBySeed[i], RetrievalWarning{
-					Stage:     "graph",
-					Operation: "seed_graph_expansion",
-					Query:     seed,
-					Message:   compactError(err),
-				})
-				return
-			}
-			results[i] = expanded
-		}()
-	}
-	wg.Wait()
-	close(errs)
-	for err := range errs {
-		if err != nil {
-			return nil, nil, err
-		}
-	}
-	warnings := []RetrievalWarning{}
-	for _, seedWarnings := range warningsBySeed {
-		warnings = append(warnings, seedWarnings...)
-	}
-	return results, warnings, nil
-}
-
-func isContextError(err error) bool {
-	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
-}
-
-func compactError(err error) string {
-	message := strings.Join(strings.Fields(err.Error()), " ")
-	if len(message) > 180 {
-		return message[:177] + "..."
-	}
-	return message
-}
-
-func traceStatus(warnings []RetrievalWarning) string {
-	if len(warnings) == 0 {
-		return "ok"
-	}
-	return "degraded"
-}
-
-func traceError(warnings []RetrievalWarning) string {
-	if len(warnings) == 0 {
-		return ""
-	}
-	if len(warnings) == 1 {
-		return warnings[0].Message
-	}
-	return warnings[0].Message + " and " + strconv.Itoa(len(warnings)-1) + " more warning(s)"
-}
-
-func warningsFor(warnings []RetrievalWarning, stage, operation string) []RetrievalWarning {
-	out := []RetrievalWarning{}
-	for _, warning := range warnings {
-		if warning.Stage == stage && warning.Operation == operation {
-			out = append(out, warning)
-		}
-	}
-	return out
-}
-
-func retrievalResultCount(results []retrievalResult) int {
-	total := 0
-	for _, result := range results {
-		total += len(result.summaries)
-		total += len(result.recall.Claims)
-		total += len(result.recall.SupportingDocuments)
-		total += len(result.recall.GraphContext)
-	}
-	return total
-}
-
-func graphResultCount(results [][]store.RelationResult) int {
-	total := 0
-	for _, result := range results {
-		total += len(result)
-	}
-	return total
-}
-
-func durationMS(started time.Time) int {
-	elapsed := time.Since(started).Milliseconds()
-	if elapsed < 0 {
-		return 0
-	}
-	return int(elapsed)
-}
-
-func (c *Composer) agentPolicyDecisions(ctx context.Context, input ComposeInput) ([]AgentPolicyDecision, error) {
-	principalID := strings.TrimSpace(input.Agent)
-	if principalID == "" {
-		principalID = "unknown"
-	}
-	actions := []struct {
-		action     string
-		targetType string
-		targetID   string
-	}{
-		{action: "agent_write", targetType: "memory_write", targetID: input.Scope},
-		{action: "challenge_claim", targetType: "claim", targetID: "*"},
-		{action: "forget_claim", targetType: "claim", targetID: "*"},
-		{action: "backfill", targetType: "memory_summaries", targetID: input.Scope},
-		{action: "source_authority_change", targetType: "source_config", targetID: "*"},
-		{action: "acl_change", targetType: "policy", targetID: "*"},
-	}
-	inputs := make([]store.AgentActionDecisionInput, 0, len(actions))
-	for _, action := range actions {
-		inputs = append(inputs, store.AgentActionDecisionInput{
-			Action:        action.action,
-			Scope:         input.Scope,
-			TargetType:    action.targetType,
-			TargetID:      action.targetID,
-			PrincipalType: "agent",
-			PrincipalID:   principalID,
-		})
-	}
-	results, err := c.store.EvaluateAgentActionPolicies(ctx, inputs)
-	if err != nil {
-		return nil, err
-	}
-	decisions := make([]AgentPolicyDecision, 0, len(results))
-	for i, result := range results {
-		decisions = append(decisions, AgentPolicyDecision{
-			Action:        inputs[i].Action,
-			TargetType:    inputs[i].TargetType,
-			TargetID:      inputs[i].TargetID,
-			Allowed:       result.Allowed,
-			Decision:      result.Decision,
-			Reason:        result.Reason,
-			MatchedPolicy: result.MatchedPolicy,
-		})
-	}
-	return decisions, nil
-}
-
-func normalizeInput(input ComposeInput) ComposeInput {
-	input.Task = strings.Join(strings.Fields(input.Task), " ")
-	input.Scope = strings.TrimSpace(input.Scope)
-	input.Hook = strings.TrimSpace(input.Hook)
-	if input.Hook == "" {
-		input.Hook = string(policy.HookBeforeTask)
-	}
-	if input.Limit < 1 || input.Limit > 20 {
-		input.Limit = 6
-	}
-	if input.MaxQueries < 1 || input.MaxQueries > 12 {
-		input.MaxQueries = 6
-	}
-	if input.TokenBudget < 1 {
-		input.TokenBudget = 1600
-	}
-	if input.TokenBudget < 300 {
-		input.TokenBudget = 300
-	}
-	if input.TokenBudget > 12000 {
-		input.TokenBudget = 12000
-	}
-	input.Files = compactList(input.Files)
-	input.ChangedFiles = compactList(input.ChangedFiles)
-	return input
-}
-
-func classifyIntent(input ComposeInput) string {
-	text := strings.ToLower(input.Task + " " + input.Language + " " + strings.Join(input.Files, " ") + " " + strings.Join(input.ChangedFiles, " "))
-	switch {
-	case containsAny(text, "upgrade", "migration", "migrate", "breaking", "dependency", "version"):
-		return "migration"
-	case containsAny(text, "bug", "fix", "error", "incident", "regression", "failing", "fail"):
-		return "debugging"
-	case containsAny(text, "implement", "build", "add", "feature", "refactor", "code"):
-		return "implementation"
-	case containsAny(text, "architecture", "design", "how", "explain", "overview", "flow"):
-		return "architecture"
-	default:
-		return "general"
-	}
-}
-
-func strategyQueries(input ComposeInput, intent string) []policy.RecallQuery {
-	base := "Task: " + input.Task
-	query := func(text, reason string) policy.RecallQuery {
-		return policy.RecallQuery{Query: text, Scope: input.Scope, Limit: input.Limit, IncludeUnverified: input.IncludeUnverified, Reason: reason}
-	}
-	queries := []policy.RecallQuery{
-		query("Hierarchical summaries, code intelligence overview, source areas, package operations, and verified facts for "+base, "load compact high-signal memory before detailed retrieval"),
-	}
-	if len(input.Files)+len(input.ChangedFiles) > 0 {
-		queries = append(queries, query("File-specific decisions, symbols, owners, tests, and dependency context for "+strings.Join(append(input.Files, input.ChangedFiles...), " "), "anchor memory to touched files"))
-	}
-	switch intent {
-	case "migration":
-		queries = append(queries,
-			query("Dependency versions, package scripts, runtime constraints, breaking changes, compatibility risks, and rollout notes for "+base, "plan migration safely"),
-			query("Known failures, stale claims, disputed assumptions, and verification gates related to "+base, "avoid unsafe upgrades"),
-		)
-	case "debugging":
-		queries = append(queries,
-			query("Known incidents, regression risks, failing tests, error handling, and ownership context for "+base, "prioritize likely failure causes"),
-			query("Relevant source files, call paths, data flow, and graph relations for "+base, "trace the issue through the system"),
-		)
-	case "architecture":
-		queries = append(queries,
-			query("Architecture summaries, module boundaries, source areas, routes, APIs, entities, and relations for "+base, "answer with global structure"),
-			query("Important decisions, constraints, and evidence-backed tradeoffs for "+base, "separate facts from guesses"),
-		)
-	default:
-		queries = append(queries,
-			query("Implementation conventions, reusable components, APIs, tests, and validation expectations for "+base, "prepare an agent to change code"),
-			query("Graph relations, dependencies, impacted modules, and related symbols for "+base, "find cross-file impact"),
-		)
-	}
-	return queries
-}
-
-func mergeQueries(first []policy.RecallQuery, rest ...policy.RecallQuery) []policy.RecallQuery {
-	seen := map[string]struct{}{}
-	out := []policy.RecallQuery{}
-	for _, query := range append(first, rest...) {
-		query.Query = strings.Join(strings.Fields(query.Query), " ")
-		query.Scope = strings.TrimSpace(query.Scope)
-		if query.Query == "" || query.Scope == "" {
-			continue
-		}
-		key := query.Scope + "\x00" + strings.ToLower(query.Query)
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		out = append(out, query)
-	}
-	return out
-}
-
-func strategyDescription(intent string) string {
-	switch intent {
-	case "migration":
-		return "migration-aware packet: summaries, dependency facts, compatibility risks, graph impact, and verification gates"
-	case "debugging":
-		return "debugging packet: known failures, likely impacted files, graph context, stale claims, and test guidance"
-	case "architecture":
-		return "architecture packet: hierarchical summaries, module boundaries, source areas, graph context, and evidence"
-	case "implementation":
-		return "implementation packet: conventions, relevant files, reusable components, dependencies, graph impact, and checks"
-	default:
-		return "general packet: source-backed facts, documents, graph context, risks, and next steps"
-	}
-}
-
-func sortClaims(in map[string]store.ClaimResult) []store.ClaimResult {
-	out := make([]store.ClaimResult, 0, len(in))
-	for _, claim := range in {
-		out = append(out, claim)
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		leftFreshness := freshnessPriority(out[i].Freshness)
-		rightFreshness := freshnessPriority(out[j].Freshness)
-		if leftFreshness != rightFreshness {
-			return leftFreshness < rightFreshness
-		}
-		if out[i].Rank == out[j].Rank {
-			return out[i].ID < out[j].ID
-		}
-		return out[i].Rank > out[j].Rank
-	})
-	return out
-}
-
-func claimPreferred(candidate, existing store.ClaimResult) bool {
-	candidateFreshness := freshnessPriority(candidate.Freshness)
-	existingFreshness := freshnessPriority(existing.Freshness)
-	if candidateFreshness != existingFreshness {
-		return candidateFreshness < existingFreshness
-	}
-	return candidate.Rank > existing.Rank
-}
-
-func freshnessPriority(freshness string) int {
-	switch strings.ToLower(strings.TrimSpace(freshness)) {
-	case "fresh":
-		return 0
-	case "", "unknown":
-		return 1
-	case "stale":
-		return 2
-	case "expired":
-		return 3
-	default:
-		return 1
-	}
-}
-
-func claimIDs(claims []store.ClaimResult) []string {
-	out := make([]string, 0, len(claims))
-	for _, claim := range claims {
-		if strings.TrimSpace(claim.ID) != "" {
-			out = append(out, claim.ID)
-		}
-	}
-	return compactList(out)
-}
-
-func relationIDs(relations []store.RelationResult) []string {
-	out := make([]string, 0, len(relations))
-	for _, relation := range relations {
-		if strings.TrimSpace(relation.ID) != "" {
-			out = append(out, relation.ID)
-		}
-	}
-	return compactList(out)
-}
-
-func sortDocuments(in map[string]store.DocumentResult) []store.DocumentResult {
-	out := make([]store.DocumentResult, 0, len(in))
-	for _, doc := range in {
-		out = append(out, doc)
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Rank == out[j].Rank {
-			return out[i].ID < out[j].ID
-		}
-		return out[i].Rank > out[j].Rank
-	})
-	return out
-}
-
-func sortSummaries(in map[string]store.MemorySummaryResult) []store.MemorySummaryResult {
-	out := make([]store.MemorySummaryResult, 0, len(in))
-	for _, summary := range in {
-		out = append(out, summary)
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Rank == out[j].Rank {
-			return out[i].ID < out[j].ID
-		}
-		return out[i].Rank > out[j].Rank
-	})
-	return out
-}
-
-func sortRelations(in map[string]store.RelationResult) []store.RelationResult {
-	out := make([]store.RelationResult, 0, len(in))
-	for _, relation := range in {
-		out = append(out, relation)
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Confidence == out[j].Confidence {
-			return relationKey(out[i]) < relationKey(out[j])
-		}
-		return out[i].Confidence > out[j].Confidence
-	})
-	return out
-}
-
-func mergeRetrievalReasons(target map[string]store.RetrievalReason, reasons []store.RetrievalReason) {
-	for _, reason := range reasons {
-		key := strings.ToLower(strings.TrimSpace(reason.Mode) + "\x00" + strings.TrimSpace(reason.Signal) + "\x00" + strings.TrimSpace(reason.Message))
-		if key == "\x00\x00" {
-			continue
-		}
-		if existing, ok := target[key]; ok {
-			existing.Count += reason.Count
-			target[key] = existing
-			continue
-		}
-		target[key] = reason
-	}
-}
-
-func sortRetrievalReasons(in map[string]store.RetrievalReason) []store.RetrievalReason {
-	out := make([]store.RetrievalReason, 0, len(in))
-	for _, reason := range in {
-		out = append(out, reason)
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Count == out[j].Count {
-			if out[i].Signal == out[j].Signal {
-				return out[i].Mode < out[j].Mode
-			}
-			return out[i].Signal < out[j].Signal
-		}
-		return out[i].Count > out[j].Count
-	})
-	return out
-}
-
-func relationKey(relation store.RelationResult) string {
-	return strings.ToLower(relation.FromEntity + "\x00" + relation.Type + "\x00" + relation.ToEntity)
-}
-
-func graphExpansionSeeds(input ComposeInput, facts map[string]store.ClaimResult, docs map[string]store.DocumentResult, summaries map[string]store.MemorySummaryResult, graph map[string]store.RelationResult) []string {
-	seen := map[string]struct{}{}
-	out := []string{}
-	add := func(value string) {
-		value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
-		if value == "" || strings.EqualFold(value, input.Task) {
-			return
-		}
-		key := strings.ToLower(value)
-		if _, ok := seen[key]; ok {
-			return
-		}
-		seen[key] = struct{}{}
-		out = append(out, value)
-	}
-
-	for _, value := range append(input.Files, input.ChangedFiles...) {
-		add(value)
-	}
-	for _, value := range relevantFiles(sortClaims(facts), sortDocuments(docs), nil, nil) {
-		add(value)
-	}
-	for _, relation := range sortRelations(graph) {
-		add(relation.FromEntity)
-		add(relation.ToEntity)
-	}
-	for _, summary := range sortSummaries(summaries) {
-		add(summary.Key)
-		add(summary.Title)
-	}
-	if len(out) > 4 {
-		return out[:4]
-	}
-	return out
-}
-
 var (
 	filePattern    = regexp.MustCompile("(?:^|[\\s(\"'`])((?:[\\w.-]+/)+(?:[\\w.-]+)(?:\\.(?:go|js|jsx|ts|tsx|md|sql|json|yaml|yml|scss|css))?)")
 	fileExtPattern = regexp.MustCompile(`\.(go|js|jsx|ts|tsx|md|sql|json|yaml|yml|scss|css)$`)
 )
-
-func relevantFiles(facts []store.ClaimResult, docs []store.DocumentResult, files []string, changedFiles []string) []string {
-	seen := map[string]struct{}{}
-	out := []string{}
-	add := func(value string) {
-		value = strings.Trim(value, " .,;:)]}\"'")
-		if value == "" || strings.Contains(value, "://") || strings.Contains(value, "../") || strings.HasPrefix(value, "/") || strings.HasPrefix(value, ".") {
-			return
-		}
-		if !looksLikeRepoPath(value) {
-			return
-		}
-		if _, ok := seen[value]; ok {
-			return
-		}
-		seen[value] = struct{}{}
-		out = append(out, value)
-	}
-	for _, value := range append(files, changedFiles...) {
-		add(value)
-	}
-	for _, claim := range facts {
-		for _, match := range filePattern.FindAllStringSubmatch(claim.Claim, -1) {
-			add(match[1])
-		}
-	}
-	for _, doc := range docs {
-		for _, match := range filePattern.FindAllStringSubmatch(doc.Source+" "+doc.Content, -1) {
-			add(match[1])
-		}
-	}
-	sort.Strings(out)
-	if len(out) > 30 {
-		return out[:30]
-	}
-	return out
-}
-
-func looksLikeRepoPath(value string) bool {
-	if fileExtPattern.MatchString(value) {
-		return true
-	}
-	for _, prefix := range []string{"src/", "internal/", "cmd/", "frontend/", "migrations/", "scripts/", "deploy/", "examples/", "docs/", "test/", "tests/"} {
-		if strings.HasPrefix(value, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
-func risks(facts []store.ClaimResult, graph []store.RelationResult, conflicts []store.ConflictResult, retrievalWarnings []RetrievalWarning, graphWarnings []GraphWarning) []string {
-	out := []string{}
-	stale := 0
-	challenged := 0
-	unverified := 0
-	for _, fact := range facts {
-		if fact.Freshness == "stale" || fact.Freshness == "expired" {
-			stale++
-		}
-		if fact.Status == "challenged" {
-			challenged++
-		}
-		if fact.Status == "unverified" {
-			unverified++
-		}
-	}
-	if stale > 0 {
-		out = append(out, "Some recalled facts are stale or expired; verify source freshness before acting.")
-	}
-	if challenged > 0 {
-		out = append(out, "Some recalled facts are challenged; do not treat them as authoritative without source review.")
-	}
-	if unverified > 0 {
-		out = append(out, "Unverified claims were included; use them only as leads, not proof.")
-	}
-	if len(conflicts) > 0 {
-		out = append(out, "Active memory conflicts surfaced; treat contradictory claims or graph relations as unsafe until resolved.")
-	}
-	if len(retrievalWarnings) > 0 {
-		out = append(out, "Some retrieval branches failed; treat the packet as degraded and rerun retrieval before autonomous work.")
-	}
-	if len(graphWarnings) > 0 {
-		out = append(out, "Graph warnings surfaced competing or opposing relations; review graph evidence before autonomous work.")
-	}
-	if len(graph) == 0 {
-		out = append(out, "No graph relations matched the task; cross-file impact may be underexplored.")
-	}
-	if len(out) == 0 {
-		out = append(out, "No stale, challenged, or unverified memory surfaced in this packet.")
-	}
-	return out
-}
-
-func unavailableMemoryHealth(scope string, err error) store.MemoryHealthResult {
-	message := "memory health could not be checked"
-	if err != nil {
-		message = "memory health could not be checked: " + compactError(err)
-	}
-	return store.MemoryHealthResult{
-		Scope:   scope,
-		Status:  "critical",
-		Score:   0,
-		Reasons: []string{message},
-		Signals: []store.MemoryHealthSignal{
-			{
-				Code:        "memory_health_unavailable",
-				Category:    "readiness",
-				Severity:    "critical",
-				Count:       1,
-				ScoreImpact: 100,
-				Message:     message,
-				Action:      "check_memory_health_endpoint_and_storage",
-			},
-		},
-	}
-}
-
-func applyMemoryHealthRisks(risks []string, health store.MemoryHealthResult) []string {
-	status := strings.TrimSpace(health.Status)
-	if status == "" || status == "healthy" {
-		return risks
-	}
-	cleaned := risks[:0]
-	for _, risk := range risks {
-		if risk == "No stale, challenged, or unverified memory surfaced in this packet." {
-			continue
-		}
-		cleaned = append(cleaned, risk)
-	}
-	for _, signal := range health.Signals {
-		if signal.Severity == "critical" || signal.Severity == "warning" {
-			cleaned = append(cleaned, "Memory health "+signal.Severity+" signal "+signal.Code+": "+signal.Action+".")
-		}
-	}
-	if len(cleaned) == 0 {
-		cleaned = append(cleaned, "Memory health is "+status+"; review health signals before autonomous work.")
-	}
-	return appendUnique(cleaned)
-}
-
-func buildCitations(packet ComposeResult) ([]Citation, map[string]string) {
-	out := []Citation{}
-	refs := map[string]string{}
-	indexes := map[string]int{}
-	add := func(kind, sourceURL, title, claimID, documentID, summaryID, relationID string) {
-		sourceURL = strings.TrimSpace(sourceURL)
-		if sourceURL == "" {
-			return
-		}
-		idx, ok := indexes[sourceURL]
-		if !ok {
-			ref := "C" + strconv.Itoa(len(out)+1)
-			refs[sourceURL] = ref
-			out = append(out, Citation{
-				Ref:       ref,
-				Kind:      kind,
-				SourceURL: sourceURL,
-				Title:     strings.TrimSpace(title),
-			})
-			idx = len(out) - 1
-			indexes[sourceURL] = idx
-		}
-		citation := out[idx]
-		if citation.Kind == "" {
-			citation.Kind = kind
-		}
-		if citation.Title == "" {
-			citation.Title = strings.TrimSpace(title)
-		}
-		if citation.ClaimID == "" {
-			citation.ClaimID = strings.TrimSpace(claimID)
-		}
-		if citation.DocumentID == "" {
-			citation.DocumentID = strings.TrimSpace(documentID)
-		}
-		citation.ClaimIDs = appendUnique(citation.ClaimIDs, claimID)
-		citation.DocumentIDs = appendUnique(citation.DocumentIDs, documentID)
-		citation.SummaryIDs = appendUnique(citation.SummaryIDs, summaryID)
-		citation.RelationIDs = appendUnique(citation.RelationIDs, relationID)
-		out[idx] = citation
-	}
-	for _, fact := range packet.Facts {
-		if fact.Source != nil {
-			add("claim", *fact.Source, "", fact.ID, "", "", "")
-		}
-	}
-	for _, doc := range packet.SupportingDocuments {
-		add("document", doc.Source, doc.Title, "", doc.ID, "", "")
-	}
-	for _, summary := range packet.Summaries {
-		for _, sourceURL := range summary.SourceURLs {
-			add("summary", sourceURL, summary.Title, "", "", summary.ID, "")
-		}
-	}
-	for _, relation := range packet.GraphContext {
-		if relation.SourceURL != nil {
-			add("graph_relation", *relation.SourceURL, "", "", "", "", relation.ID)
-		}
-	}
-	return out, refs
-}
-
-func evidence(facts []store.ClaimResult, docs []store.DocumentResult, citationRefs map[string]string) []EvidenceItem {
-	bySource := map[string]EvidenceItem{}
-	for _, fact := range facts {
-		if fact.Source == nil || strings.TrimSpace(*fact.Source) == "" {
-			continue
-		}
-		item := bySource[*fact.Source]
-		item.SourceURL = *fact.Source
-		item.Ref = citationRefs[*fact.Source]
-		item.Count++
-		bySource[*fact.Source] = item
-	}
-	for _, doc := range docs {
-		if strings.TrimSpace(doc.Source) == "" {
-			continue
-		}
-		item := bySource[doc.Source]
-		item.SourceURL = doc.Source
-		item.Ref = citationRefs[doc.Source]
-		item.Title = doc.Title
-		item.Count++
-		bySource[doc.Source] = item
-	}
-	out := make([]EvidenceItem, 0, len(bySource))
-	for _, item := range bySource {
-		out = append(out, item)
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Count == out[j].Count {
-			return out[i].SourceURL < out[j].SourceURL
-		}
-		return out[i].Count > out[j].Count
-	})
-	if len(out) > 20 {
-		return out[:20]
-	}
-	return out
-}
-
-type impactAccumulator struct {
-	kind      string
-	name      string
-	score     float64
-	reasons   map[string]struct{}
-	sources   map[string]struct{}
-	relations int
-	summaries int
-	facts     int
-}
-
-func impactMap(input ComposeInput, summaries []store.MemorySummaryResult, facts []store.ClaimResult, docs []store.DocumentResult, graph []store.RelationResult, relevant []string) []ImpactItem {
-	items := map[string]*impactAccumulator{}
-	add := func(kind, name, reason string, score float64, sources []string) {
-		kind = strings.TrimSpace(kind)
-		name = strings.TrimSpace(name)
-		reason = strings.TrimSpace(reason)
-		if kind == "" || name == "" {
-			return
-		}
-		key := strings.ToLower(kind + "\x00" + name)
-		item := items[key]
-		if item == nil {
-			item = &impactAccumulator{
-				kind:    kind,
-				name:    name,
-				reasons: map[string]struct{}{},
-				sources: map[string]struct{}{},
-			}
-			items[key] = item
-		}
-		item.score += score
-		if reason != "" {
-			item.reasons[reason] = struct{}{}
-		}
-		for _, source := range sources {
-			source = strings.TrimSpace(source)
-			if source != "" {
-				item.sources[source] = struct{}{}
-			}
-		}
-	}
-	incRelation := func(kind, name string) {
-		if item := items[strings.ToLower(kind+"\x00"+name)]; item != nil {
-			item.relations++
-		}
-	}
-	incSummary := func(kind, name string) {
-		if item := items[strings.ToLower(kind+"\x00"+name)]; item != nil {
-			item.summaries++
-		}
-	}
-	incFact := func(kind, name string) {
-		if item := items[strings.ToLower(kind+"\x00"+name)]; item != nil {
-			item.facts++
-		}
-	}
-
-	for _, file := range append(input.Files, input.ChangedFiles...) {
-		add("file", file, "provided as task file context", 0.45, nil)
-	}
-	for _, file := range relevant {
-		add("file", file, "mentioned by recalled facts or supporting documents", 0.35, sourcesForName(file, facts, docs))
-		incFact("file", file)
-	}
-	for _, summary := range summaries {
-		kind := impactKind(summary.Level, summary.Key)
-		score := 0.25 + minFloat(summary.Rank, 1)*0.35
-		add(kind, summary.Key, "matched hierarchical summary", score, summary.SourceURLs)
-		incSummary(kind, summary.Key)
-	}
-	for _, relation := range graph {
-		source := pointerString(relation.SourceURL)
-		fromKind := impactKind("", relation.FromEntity)
-		toKind := impactKind("", relation.ToEntity)
-		reason := "connected by graph relation " + relation.Type
-		score := 0.3 + minFloat(relation.Confidence, 1)*0.45
-		add(fromKind, relation.FromEntity, reason, score, []string{source})
-		add(toKind, relation.ToEntity, reason, score, []string{source})
-		incRelation(fromKind, relation.FromEntity)
-		incRelation(toKind, relation.ToEntity)
-	}
-	for _, fact := range facts {
-		source := pointerString(fact.Source)
-		for _, match := range filePattern.FindAllStringSubmatch(fact.Claim, -1) {
-			if len(match) > 1 && looksLikeRepoPath(match[1]) {
-				add("file", match[1], "mentioned by source-backed fact", 0.35, []string{source})
-				incFact("file", match[1])
-			}
-		}
-	}
-
-	out := make([]ImpactItem, 0, len(items))
-	for _, item := range items {
-		out = append(out, ImpactItem{
-			Kind:            item.kind,
-			Name:            item.name,
-			Confidence:      impactConfidence(item),
-			Reasons:         sortedSet(item.reasons, 4),
-			EvidenceSources: sortedSet(item.sources, 5),
-			RelationCount:   item.relations,
-			SummaryCount:    item.summaries,
-			FactCount:       item.facts,
-		})
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Confidence == out[j].Confidence {
-			if out[i].Kind == out[j].Kind {
-				return out[i].Name < out[j].Name
-			}
-			return out[i].Kind < out[j].Kind
-		}
-		return out[i].Confidence > out[j].Confidence
-	})
-	if len(out) > 20 {
-		return out[:20]
-	}
-	return out
-}
-
-func impactKind(level, name string) string {
-	level = strings.TrimSpace(level)
-	switch level {
-	case "file", "repo", "module", "route", "component", "symbol", "package", "source", "decision":
-		return level
-	}
-	name = strings.TrimSpace(name)
-	switch {
-	case strings.HasPrefix(name, "/"):
-		return "route"
-	case looksLikeImpactFile(name):
-		return "file"
-	case strings.Contains(name, "/") && !strings.Contains(name, "."):
-		return "module"
-	default:
-		return "entity"
-	}
-}
-
-func looksLikeImpactFile(name string) bool {
-	if !looksLikeRepoPath(name) {
-		return false
-	}
-	if strings.Contains(name, "/") {
-		return true
-	}
-	for _, exact := range []string{"package.json", "go.mod", "go.sum", "Dockerfile"} {
-		if name == exact {
-			return true
-		}
-	}
-	return false
-}
-
-func impactConfidence(item *impactAccumulator) float64 {
-	score := item.score
-	score += float64(item.relations) * 0.08
-	score += float64(item.summaries) * 0.07
-	score += float64(item.facts) * 0.06
-	if len(item.sources) > 0 {
-		score += 0.08
-	}
-	return round2(minFloat(score, 1))
-}
-
-func sourcesForName(name string, facts []store.ClaimResult, docs []store.DocumentResult) []string {
-	needle := strings.ToLower(strings.TrimSpace(name))
-	if needle == "" {
-		return nil
-	}
-	sources := map[string]struct{}{}
-	for _, fact := range facts {
-		if strings.Contains(strings.ToLower(fact.Claim), needle) {
-			if source := pointerString(fact.Source); source != "" {
-				sources[source] = struct{}{}
-			}
-		}
-	}
-	for _, doc := range docs {
-		if strings.Contains(strings.ToLower(doc.Source+" "+doc.Content), needle) && strings.TrimSpace(doc.Source) != "" {
-			sources[doc.Source] = struct{}{}
-		}
-	}
-	return sortedSet(sources, 5)
-}
-
-func sortedSet(values map[string]struct{}, limit int) []string {
-	out := make([]string, 0, len(values))
-	for value := range values {
-		if strings.TrimSpace(value) != "" {
-			out = append(out, value)
-		}
-	}
-	sort.Strings(out)
-	if limit > 0 && len(out) > limit {
-		return out[:limit]
-	}
-	return out
-}
-
-func pointerString(value *string) string {
-	if value == nil {
-		return ""
-	}
-	return strings.TrimSpace(*value)
-}
-
-func minFloat(a, b float64) float64 {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func validationPlan(input ComposeInput, result ComposeResult) []ValidationStep {
-	targets := validationTargets(input, result)
-	steps := []ValidationStep{}
-	add := func(step ValidationStep) {
-		step.Name = strings.TrimSpace(step.Name)
-		step.Type = strings.TrimSpace(step.Type)
-		step.Command = strings.TrimSpace(step.Command)
-		step.Reason = strings.TrimSpace(step.Reason)
-		step.Targets = compactList(step.Targets)
-		if step.Name == "" || step.Type == "" || step.Reason == "" {
-			return
-		}
-		for _, existing := range steps {
-			if existing.Type == step.Type && existing.Command == step.Command && existing.Name == step.Name {
-				return
-			}
-		}
-		steps = append(steps, step)
-	}
-
-	if result.Verification.ActionRequired || result.AgentDecision.ReviewRequired {
-		add(ValidationStep{
-			Name:     "Review memory gate",
-			Type:     "memory_gate",
-			Reason:   "Verification, memory health, or stored agent policy requires review before autonomous work.",
-			Targets:  gateTargets(result),
-			Priority: 1,
-			Required: true,
-		})
-	}
-	if touchesGo(input, targets) {
-		add(ValidationStep{
-			Name:     "Run Go tests",
-			Type:     "test",
-			Command:  "go test ./...",
-			Reason:   "Go files or Go service areas appear in the task impact set.",
-			Targets:  filterTargets(targets, goTarget),
-			Priority: 2,
-			Required: true,
-		})
-	}
-	if touchesJavaScript(input, targets) {
-		add(ValidationStep{
-			Name:     "Run package tests",
-			Type:     "test",
-			Command:  "npm test",
-			Reason:   "JavaScript or TypeScript files appear in the task impact set.",
-			Targets:  filterTargets(targets, jsTarget),
-			Priority: 2,
-			Required: true,
-		})
-		if result.Intent == "migration" || result.Intent == "implementation" {
-			add(ValidationStep{
-				Name:     "Run package build",
-				Type:     "build",
-				Command:  "npm run build",
-				Reason:   "Implementation or migration work should verify frontend/package build compatibility when a build script exists.",
-				Targets:  filterTargets(targets, jsTarget),
-				Priority: 3,
-				Required: false,
-			})
-		}
-	}
-	if touchesDocker(targets) {
-		add(ValidationStep{
-			Name:     "Validate Docker Compose config",
-			Type:     "config",
-			Command:  "docker compose config",
-			Reason:   "Docker Compose files appear in the task impact set.",
-			Targets:  filterTargets(targets, dockerTarget),
-			Priority: 3,
-			Required: true,
-		})
-	}
-	if touchesHelm(targets) {
-		add(ValidationStep{
-			Name:     "Render Helm chart",
-			Type:     "config",
-			Command:  "helm template abra deploy/helm",
-			Reason:   "Helm chart files appear in the task impact set.",
-			Targets:  filterTargets(targets, helmTarget),
-			Priority: 3,
-			Required: true,
-		})
-	}
-	if len(steps) == 0 {
-		add(ValidationStep{
-			Name:     "Source review",
-			Type:     "review",
-			Reason:   "No deterministic test command was inferred; inspect cited evidence and impacted files before acting.",
-			Targets:  targets,
-			Priority: 4,
-			Required: true,
-		})
-	}
-	sort.SliceStable(steps, func(i, j int) bool {
-		if steps[i].Priority == steps[j].Priority {
-			return steps[i].Name < steps[j].Name
-		}
-		return steps[i].Priority < steps[j].Priority
-	})
-	if len(steps) > 8 {
-		return steps[:8]
-	}
-	return steps
-}
-
-func validationTargets(input ComposeInput, result ComposeResult) []string {
-	seen := map[string]struct{}{}
-	out := []string{}
-	add := func(value string) {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			return
-		}
-		if _, ok := seen[value]; ok {
-			return
-		}
-		seen[value] = struct{}{}
-		out = append(out, value)
-	}
-	for _, value := range append(input.Files, input.ChangedFiles...) {
-		add(value)
-	}
-	for _, value := range result.RelevantFiles {
-		add(value)
-	}
-	for _, item := range result.ImpactMap {
-		if item.Kind == "file" || item.Kind == "module" || item.Kind == "repo" {
-			add(item.Name)
-		}
-	}
-	sort.Strings(out)
-	if len(out) > 30 {
-		return out[:30]
-	}
-	return out
-}
-
-func gateTargets(result ComposeResult) []string {
-	targets := []string{}
-	targets = append(targets, result.Verification.UnverifiedClaims...)
-	targets = append(targets, result.Verification.StaleClaims...)
-	targets = append(targets, result.Verification.ChallengedClaims...)
-	targets = append(targets, result.Verification.MissingEvidenceClaims...)
-	targets = append(targets, result.Verification.ConflictClaims...)
-	for _, conflict := range result.Conflicts {
-		targets = append(targets, conflict.ID)
-	}
-	for _, warning := range result.GraphWarnings {
-		targets = append(targets, warning.Entity)
-		for _, relation := range warning.Relations {
-			targets = append(targets, relation.FromEntity, relation.ToEntity)
-		}
-	}
-	return compactList(targets)
-}
-
-func touchesGo(input ComposeInput, targets []string) bool {
-	if strings.Contains(strings.ToLower(input.Language), "go") {
-		return true
-	}
-	for _, target := range targets {
-		if goTarget(target) {
-			return true
-		}
-	}
-	return false
-}
-
-func touchesJavaScript(input ComposeInput, targets []string) bool {
-	language := strings.ToLower(input.Language)
-	if strings.Contains(language, "javascript") || strings.Contains(language, "typescript") || strings.Contains(language, "react") || strings.Contains(language, "node") {
-		return true
-	}
-	for _, target := range targets {
-		if jsTarget(target) {
-			return true
-		}
-	}
-	return false
-}
-
-func touchesDocker(targets []string) bool {
-	for _, target := range targets {
-		if dockerTarget(target) {
-			return true
-		}
-	}
-	return false
-}
-
-func touchesHelm(targets []string) bool {
-	for _, target := range targets {
-		if helmTarget(target) {
-			return true
-		}
-	}
-	return false
-}
-
-func filterTargets(targets []string, predicate func(string) bool) []string {
-	out := []string{}
-	for _, target := range targets {
-		if predicate(target) {
-			out = append(out, target)
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-func goTarget(target string) bool {
-	return strings.HasSuffix(target, ".go") || target == "go.mod" || target == "go.sum" || strings.HasPrefix(target, "cmd/") || strings.HasPrefix(target, "internal/")
-}
-
-func jsTarget(target string) bool {
-	switch filepath.Ext(target) {
-	case ".js", ".jsx", ".ts", ".tsx", ".json":
-		return true
-	default:
-		return target == "package.json" || strings.HasPrefix(target, "frontend/") || strings.HasPrefix(target, "src/")
-	}
-}
-
-func dockerTarget(target string) bool {
-	base := strings.ToLower(filepath.Base(target))
-	return base == "dockerfile" || strings.HasPrefix(base, "docker-compose") || strings.Contains(base, "compose.")
-}
-
-func helmTarget(target string) bool {
-	return strings.HasPrefix(target, "deploy/helm/") || strings.HasSuffix(target, "Chart.yaml")
-}
-
-func suggestedSteps(input ComposeInput, intent string, result ComposeResult) []string {
-	steps := []string{"Review the top facts and evidence sources before changing behavior."}
-	switch intent {
-	case "migration":
-		steps = append(steps, "Check package/runtime compatibility and identify dependency blockers before bumping versions.")
-	case "debugging":
-		steps = append(steps, "Trace the highest-confidence graph relations and inspect the most relevant files first.")
-	case "architecture":
-		steps = append(steps, "Use hierarchical summaries for the global answer, then cite specific facts and source chunks.")
-	default:
-		steps = append(steps, "Use the relevant files list as the initial edit/read set, then expand through graph relations.")
-	}
-	if len(result.Risks) > 0 && !strings.HasPrefix(result.Risks[0], "No stale") {
-		steps = append(steps, "Resolve stale, challenged, or unverified memory before presenting conclusions as facts.")
-	}
-	if result.Verification.ActionRequired {
-		steps = append(steps, "Treat the verification report as a gate before using this packet for autonomous changes.")
-	}
-	if result.MemoryHealth.Status != "" && result.MemoryHealth.Status != "healthy" {
-		steps = append(steps, "Inspect memory health signals before using this packet for autonomous changes.")
-	}
-	if len(input.ChangedFiles) > 0 {
-		steps = append(steps, "Run focused validation for changed files and compare against recalled verification expectations.")
-	}
-	return steps
-}
-
-func compactList(values []string) []string {
-	out := []string{}
-	for _, value := range values {
-		value = strings.Join(strings.Fields(value), " ")
-		if value != "" {
-			out = append(out, value)
-		}
-	}
-	return out
-}
-
-func containsAny(text string, needles ...string) bool {
-	for _, needle := range needles {
-		if strings.Contains(text, needle) {
-			return true
-		}
-	}
-	return false
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}

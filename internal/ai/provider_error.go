@@ -135,10 +135,6 @@ func ProviderErrorInfo(err error) (*ProviderError, bool) {
 	return nil, false
 }
 
-func classifyHTTPStatus(status int) (string, bool) {
-	return classifyHTTPStatusWithBody(status, "")
-}
-
 func classifyHTTPStatusWithBody(status int, body string) (string, bool) {
 	switch {
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:

@@ -54,7 +54,7 @@ func TestValidateMCPSourceCallsToolAndNormalizesStructuredDocuments(t *testing.T
 	}))
 	defer server.Close()
 
-	docs, err := ValidateMCPSource(context.Background(), SourceConfig{
+	report, err := ValidateMCPSourceReport(context.Background(), SourceConfig{
 		ID:            "mcp-confluence",
 		Scope:         "repo:abra",
 		SourceType:    ingest.SourceTypeMCP,
@@ -72,6 +72,7 @@ func TestValidateMCPSourceCallsToolAndNormalizesStructuredDocuments(t *testing.T
 	if !called {
 		t.Fatal("expected ValidateMCPSource to call mock MCP endpoint")
 	}
+	docs := report.Documents
 	if len(docs) != 1 {
 		t.Fatalf("documents = %d, want 1", len(docs))
 	}
@@ -277,7 +278,7 @@ func TestValidateMCPSourceRejectsStructuredDocumentsMissingRequiredFields(t *tes
 			}))
 			defer server.Close()
 
-			_, err := ValidateMCPSource(context.Background(), SourceConfig{
+			_, err := ValidateMCPSourceReport(context.Background(), SourceConfig{
 				ID:            "mcp-confluence",
 				Scope:         "repo:abra",
 				SourceType:    ingest.SourceTypeMCP,
@@ -329,7 +330,7 @@ func TestValidateMCPSourceSendsConfiguredCredentialHeaders(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if _, err := ValidateMCPSource(context.Background(), SourceConfig{
+	if _, err := ValidateMCPSourceReport(context.Background(), SourceConfig{
 		ID:            "mcp-confluence",
 		Scope:         "repo:abra",
 		SourceType:    ingest.SourceTypeMCP,
@@ -380,7 +381,7 @@ func TestValidateMCPSourceRejectsMissingCredentialEnv(t *testing.T) {
 			}))
 			defer server.Close()
 
-			_, err := ValidateMCPSource(context.Background(), SourceConfig{
+			_, err := ValidateMCPSourceReport(context.Background(), SourceConfig{
 				ID:         "mcp-confluence",
 				Scope:      "repo:abra",
 				SourceType: ingest.SourceTypeMCP,
@@ -404,7 +405,7 @@ func TestValidateMCPSourceRejectsOversizedResponse(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := ValidateMCPSource(context.Background(), SourceConfig{
+	_, err := ValidateMCPSourceReport(context.Background(), SourceConfig{
 		ID:            "mcp-confluence",
 		Scope:         "repo:abra",
 		SourceType:    ingest.SourceTypeMCP,
@@ -444,7 +445,7 @@ func TestValidateMCPSourceRejectsTooManyDocuments(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := ValidateMCPSource(context.Background(), SourceConfig{
+	_, err := ValidateMCPSourceReport(context.Background(), SourceConfig{
 		ID:            "mcp-confluence",
 		Scope:         "repo:abra",
 		SourceType:    ingest.SourceTypeMCP,
@@ -482,7 +483,7 @@ func TestValidateMCPSourceRejectsOversizedDocumentContent(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := ValidateMCPSource(context.Background(), SourceConfig{
+	_, err := ValidateMCPSourceReport(context.Background(), SourceConfig{
 		ID:            "mcp-confluence",
 		Scope:         "repo:abra",
 		SourceType:    ingest.SourceTypeMCP,

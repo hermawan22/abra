@@ -1,0 +1,37 @@
+{
+  "cases": [
+    {
+      "name": "token-efficient default brain packet",
+      "question": "What should an agent know before changing Abra memory code?",
+      "scope": "repo:abra",
+      "min_verdict": "partial",
+      "require_synthesis": "disabled",
+      "max_context_tokens": 1600,
+      "require_answer_text": ["Evidence", "Next action"]
+    },
+    {
+      "name": "source-cited answer with anchor coverage",
+      "question": "Why is Abra safer than direct agent memory writes?",
+      "scope": "repo:abra",
+      "min_citations": 1,
+      "min_evidence_anchors": 1,
+      "require_answer_text": ["Governance"]
+    },
+    {
+      "name": "agent handoff includes decision quality",
+      "question": "Can an agent proceed autonomously after reading Abra memory?",
+      "scope": "repo:abra",
+      "min_verdict": "partial",
+      "require_decision": "proceed",
+      "require_answer_text": ["Agent handoff"]
+    },
+    {
+      "name": "brain quality benchmark dimensions are documented",
+      "question": "How should Abra benchmark brain quality and token efficiency?",
+      "scope": "repo:abra",
+      "min_citations": 1,
+      "max_context_tokens": 1800,
+      "require_answer_text": ["token"]
+    }
+  ]
+}

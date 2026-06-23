@@ -3,6 +3,7 @@
 import { readFile } from "node:fs/promises";
 
 import { assertHybridRetrievalMode } from "./lib/eval-contracts.mjs";
+import { createMCPToolCaller } from "./lib/mcp.mjs";
 
 const baseUrl = (process.env.ABRA_BASE_URL || "http://127.0.0.1:18080").replace(/\/$/, "");
 const token = process.env.ABRA_API_TOKEN || "dev-token";
@@ -30,6 +31,7 @@ let expectedCitationCases = 0;
 let citationHits = 0;
 let leakageCount = 0;
 let verifiedWithoutCitation = 0;
+const mcpTool = createMCPToolCaller({ baseUrl, token });
 
 requireTokenForRemoteBaseURL(baseUrl);
 
@@ -52,6 +54,12 @@ function decimalEnv(name, fallback) {
 }
 
 async function request(path, { method = "GET", body, expectStatus = 200 } = {}) {
+  if (method === "POST" && path === "working_memory_compose") {
+    return mcpTool("working_memory_compose", body || {});
+  }
+  if (method === "POST" && path === "brain_think") {
+    return mcpTool("brain_think", body || {});
+  }
   const response = await fetch(`${baseUrl}${path}`, {
     method,
     headers: {
@@ -270,7 +278,7 @@ await runCheck("provider_quality_cases", async () => {
     let agentDecision = null;
     if (item.memory_task) {
       const memoryStarted = Date.now();
-      const memory = await request("/memory/compose", {
+      const memory = await request("working_memory_compose", {
         method: "POST",
         body: {
           task: item.memory_task,

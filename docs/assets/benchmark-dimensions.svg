@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="title desc">
+  <title id="title">Abra benchmark dimensions</title>
+  <desc id="desc">A professional benchmark map showing evidence, governance, temporal reasoning, agent handoff, token efficiency, graph recall, learning safety, and performance metrics.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#f4f8fb"/>
+    </linearGradient>
+    <filter id="shadow" x="-18%" y="-22%" width="136%" height="150%">
+      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#0f172a" flood-opacity=".10"/>
+    </filter>
+    <style>
+      .bg{fill:url(#bg)}
+      .title{font:800 33px Inter,Arial,sans-serif;fill:#0f172a}
+      .subtitle{font:15px Inter,Arial,sans-serif;fill:#475569}
+      .center{fill:#0f172a;filter:url(#shadow)}
+      .centerLabel{font:800 24px Inter,Arial,sans-serif;fill:#ffffff}
+      .centerBody{font:14px Inter,Arial,sans-serif;fill:#cbd5e1}
+      .card{fill:#ffffff;stroke:#d8e2ec;stroke-width:1.5;filter:url(#shadow)}
+      .evidence{stroke:#2563eb}
+      .govern{stroke:#059669}
+      .temporal{stroke:#7c3aed}
+      .perf{stroke:#ea580c}
+      .label{font:800 17px Inter,Arial,sans-serif;fill:#111827}
+      .body{font:13px Inter,Arial,sans-serif;fill:#475569}
+      .tag{font:800 11px Inter,Arial,sans-serif;fill:#64748b;letter-spacing:.05em}
+      .line{stroke:#cbd5e1;stroke-width:1.5}
+      .axis{stroke:#dbe5ee;stroke-width:1.2;stroke-dasharray:5 8}
+    </style>
+  </defs>
+
+  <rect class="bg" width="1280" height="720"/>
+  <text class="title" x="78" y="74">Benchmark the brain, not just retrieval</text>
+  <text class="subtitle" x="80" y="106">Abra separates capability comparison from live performance metrics so claims remain reproducible.</text>
+
+  <line class="axis" x1="196" y1="312" x2="1084" y2="312"/>
+  <line class="axis" x1="196" y1="492" x2="1084" y2="492"/>
+  <line class="axis" x1="640" y1="274" x2="640" y2="522"/>
+
+  <rect class="center" x="500" y="324" width="280" height="156" rx="28"/>
+  <text class="centerLabel" x="554" y="386">Agent brain quality</text>
+  <text class="centerBody" x="548" y="420">evidence, decisions, cost,</text>
+  <text class="centerBody" x="572" y="442">learning, and recall</text>
+
+  <line class="line" x1="300" y1="268" x2="500" y2="356"/>
+  <line class="line" x1="500" y1="268" x2="560" y2="324"/>
+  <line class="line" x1="780" y1="356" x2="800" y2="268"/>
+  <line class="line" x1="780" y1="386" x2="980" y2="268"/>
+  <line class="line" x1="300" y1="536" x2="500" y2="448"/>
+  <line class="line" x1="500" y1="536" x2="560" y2="480"/>
+  <line class="line" x1="780" y1="448" x2="800" y2="536"/>
+  <line class="line" x1="780" y1="420" x2="980" y2="536"/>
+
+  <g transform="translate(80 154)">
+    <rect class="card evidence" width="240" height="124" rx="22"/>
+    <text class="tag" x="26" y="32">EVIDENCE</text>
+    <text class="label" x="26" y="62">Faithfulness</text>
+    <text class="body" x="26" y="92">Source-cited answers,</text>
+    <text class="body" x="26" y="112">same-source anchors.</text>
+  </g>
+  <g transform="translate(360 154)">
+    <rect class="card govern" width="240" height="124" rx="22"/>
+    <text class="tag" x="26" y="32">AGENT UX</text>
+    <text class="label" x="26" y="62">Handoff quality</text>
+    <text class="body" x="26" y="92">Trust, gaps, conflicts,</text>
+    <text class="body" x="26" y="112">and next action.</text>
+  </g>
+  <g transform="translate(680 154)">
+    <rect class="card govern" width="240" height="124" rx="22"/>
+    <text class="tag" x="26" y="32">LEARNING</text>
+    <text class="label" x="26" y="62">Proposal safety</text>
+    <text class="body" x="26" y="92">Observe and propose;</text>
+    <text class="body" x="26" y="112">verify before promote.</text>
+  </g>
+  <g transform="translate(960 154)">
+    <rect class="card perf" width="240" height="124" rx="22"/>
+    <text class="tag" x="26" y="32">PERFORMANCE</text>
+    <text class="label" x="26" y="62">Live metrics</text>
+    <text class="body" x="26" y="92">latency_p95_ms,</text>
+    <text class="body" x="26" y="112">throughput, failures.</text>
+  </g>
+
+  <g transform="translate(80 526)">
+    <rect class="card govern" width="240" height="124" rx="22"/>
+    <text class="tag" x="26" y="32">GOVERNANCE</text>
+    <text class="label" x="26" y="62">Decision safety</text>
+    <text class="body" x="26" y="92">Conflict gates, approval,</text>
+    <text class="body" x="26" y="112">no silent promotion.</text>
+  </g>
+  <g transform="translate(360 526)">
+    <rect class="card temporal" width="240" height="124" rx="22"/>
+    <text class="tag" x="26" y="32">TEMPORAL</text>
+    <text class="label" x="26" y="62">Current truth</text>
+    <text class="body" x="26" y="92">Fresh, stale, expired,</text>
+    <text class="body" x="26" y="112">historical labels.</text>
+  </g>
+  <g transform="translate(680 526)">
+    <rect class="card evidence" width="240" height="124" rx="22"/>
+    <text class="tag" x="26" y="32">RECALL</text>
+    <text class="label" x="26" y="62">Graph + entities</text>
+    <text class="body" x="26" y="92">Hybrid search, graph</text>
+    <text class="body" x="26" y="112">neighborhood, authority.</text>
+  </g>
+  <g transform="translate(960 526)">
+    <rect class="card perf" width="240" height="124" rx="22"/>
+    <text class="tag" x="26" y="32">EFFICIENCY</text>
+    <text class="label" x="26" y="62">Cost controls</text>
+    <text class="body" x="26" y="92">context_tokens_p95,</text>
+    <text class="body" x="26" y="112">llm_calls_default.</text>
+  </g>
+</svg>

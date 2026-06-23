@@ -1,0 +1,62 @@
+{
+  "cases": [
+    {
+      "name": "anchored answer passes",
+      "question": "What answer is safe to cite from governed memory?",
+      "scope": "repo:abra",
+      "min_verdict": "partial",
+      "require_decision": "proceed",
+      "require_anchored_claim": true
+    },
+    {
+      "name": "answer keeps citations",
+      "question": "What should an agent do before changing this repo?",
+      "scope": "repo:abra",
+      "min_verdict": "partial",
+      "require_answer_text": ["Evidence"]
+    },
+    {
+      "name": "entity dossier recall",
+      "question": "What does Abra remember about Abra as an entity?",
+      "scope": "repo:abra",
+      "min_verdict": "partial",
+      "require_answer_text": ["Entity dossier"],
+      "require_entity_dossier": "Abra",
+      "min_entity_active_claims": 1
+    },
+    {
+      "name": "decision gate is present",
+      "question": "What should Abra tell an agent before it uses governed memory?",
+      "scope": "repo:abra",
+      "min_verdict": "partial",
+      "require_decision": "proceed",
+      "require_answer_text": ["Decision gate"]
+    },
+    {
+      "name": "memory health is usable",
+      "question": "Is the repo brain memory healthy enough for agent use?",
+      "scope": "repo:abra",
+      "min_verdict": "partial",
+      "require_memory_health": "healthy"
+    },
+    {
+      "name": "citations and anchors are present",
+      "question": "Which source-backed evidence can Abra cite for this repo?",
+      "scope": "repo:abra",
+      "min_citations": 1,
+      "min_evidence_anchors": 1
+    },
+    {
+      "name": "deterministic synthesis status",
+      "question": "What answer can be produced without LLM synthesis?",
+      "scope": "repo:abra",
+      "require_synthesis": "disabled"
+    },
+    {
+      "name": "context window respects default token budget",
+      "question": "What repo brain context should fit inside the default bounded context window?",
+      "scope": "repo:abra",
+      "max_context_tokens": 1600
+    }
+  ]
+}

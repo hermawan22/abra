@@ -7,13 +7,6 @@ import (
 	"unicode"
 )
 
-type Document struct {
-	ID        string
-	Title     string
-	Content   string
-	SourceURL string
-}
-
 type CandidateSet struct {
 	Entities  []EntityCandidate
 	Relations []RelationCandidate
@@ -161,26 +154,11 @@ var ignoredEntityPrefixes = map[string]struct{}{
 	"an":  {},
 }
 
-// ExtractText returns deterministic entity and relation candidates from plain text.
-func ExtractText(text string) CandidateSet {
-	return extract([]sourceText{{Text: text}})
-}
-
 // ExtractFromClaims returns deterministic entity and relation candidates from claim text.
 func ExtractFromClaims(claims []string) CandidateSet {
 	texts := make([]sourceText, 0, len(claims))
 	for _, claim := range claims {
 		texts = append(texts, sourceText{Text: claim})
-	}
-	return extract(texts)
-}
-
-// ExtractFromDocuments returns deterministic entity and relation candidates from documents.
-func ExtractFromDocuments(documents []Document) CandidateSet {
-	texts := make([]sourceText, 0, len(documents))
-	for _, doc := range documents {
-		text := strings.TrimSpace(strings.TrimSpace(doc.Title) + "\n" + strings.TrimSpace(doc.Content))
-		texts = append(texts, sourceText{ID: doc.ID, SourceURL: doc.SourceURL, Text: text})
 	}
 	return extract(texts)
 }

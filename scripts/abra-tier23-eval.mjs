@@ -1,6 +1,16 @@
 #!/usr/bin/env node
 
 import { assertHybridRetrievalMode } from "./lib/eval-contracts.mjs";
+import {
+  approvalGateBlocked,
+  assert,
+  countHitAt,
+  rankClaim,
+  requireTokenForRemoteBaseURL,
+  retrievedMemoryText,
+  skipped,
+  textOf
+} from "./lib/tier23-helpers.mjs";
 
 const baseUrl = (process.env.ABRA_BASE_URL || "http://127.0.0.1:18080").replace(/\/$/, "");
 const token = process.env.ABRA_API_TOKEN || "dev-token";
@@ -34,15 +44,13 @@ let baselineClaimID;
 let approvalEnforcementExpected = process.env.ABRA_TIER23_EXPECT_APPROVAL_ENFORCEMENT === "1";
 let baselineMemoryPacket;
 
-function requireTokenForRemoteBaseURL(rawBaseUrl) {
-  const url = new URL(rawBaseUrl);
-  const loopback = ["127.0.0.1", "localhost", "::1", "[::1]"].includes(url.hostname);
-  if (!loopback && !process.env.ABRA_API_TOKEN && process.env.ABRA_ALLOW_DEV_TOKEN !== "1") {
-    throw new Error("ABRA_API_TOKEN is required when ABRA_BASE_URL is not loopback. Set ABRA_ALLOW_DEV_TOKEN=1 only for isolated test environments.");
-  }
-}
-
 async function request(path, { method = "GET", body, expectStatus = 200, text = false } = {}) {
+  if (method === "POST" && path === "working_memory_compose") {
+    return mcpTool("working_memory_compose", body || {});
+  }
+  if (method === "POST" && path === "brain_think") {
+    return mcpTool("brain_think", body || {});
+  }
   const response = await rawRequest(path, { method, body });
   const expected = Array.isArray(expectStatus) ? expectStatus : [expectStatus];
   if (!expected.includes(response.status)) {
@@ -108,30 +116,6 @@ async function mcpTool(name, args) {
   return payload;
 }
 
-function assert(condition, message) {
-  if (!condition) {
-    throw new Error(message);
-  }
-}
-
-function textOf(value) {
-  return JSON.stringify(value).toLowerCase();
-}
-
-function retrievedMemoryText(packet) {
-  return textOf({
-    summaries: packet.summaries,
-    facts: packet.facts,
-    supporting_documents: packet.supporting_documents,
-    graph_context: packet.graph_context,
-    evidence: packet.evidence
-  });
-}
-
-function skipped(reason, details = {}) {
-  return { skipped: true, reason, details };
-}
-
 async function runCheck(name, fn) {
   const before = Date.now();
   try {
@@ -156,26 +140,6 @@ async function runCheck(name, fn) {
       error: error instanceof Error ? error.message : String(error)
     });
   }
-}
-
-function rankClaim(claims, { contains, source }) {
-  const needle = contains.toLowerCase();
-  const index = claims.findIndex((claim) => {
-    const claimText = String(claim.claim_text || "").toLowerCase();
-    return claimText.includes(needle) && (!source || claim.source_url === source);
-  });
-  return index === -1 ? null : index + 1;
-}
-
-function countHitAt(ranks, cutoff) {
-  return ranks.filter((rank) => rank !== null && rank <= cutoff).length;
-}
-
-function approvalGateBlocked(response) {
-  if ([202, 401, 403, 409, 412, 423, 425, 428].includes(response.status)) {
-    return true;
-  }
-  return response.status >= 400 && /\bapproval|review|pending|required\b/i.test(response.raw);
 }
 
 function assertApprovalGate(response, operationName) {
@@ -506,7 +470,7 @@ await runCheck("tier3_working_memory_agent_packet_baseline", async () => {
   let totalGraph = 0;
   for (const item of cases) {
     const before = Date.now();
-    const packet = await request("/memory/compose", {
+    const packet = await request("working_memory_compose", {
       method: "POST",
       body: {
         task: item.task,
@@ -650,7 +614,7 @@ await runCheck("tier3_agent_workflow_trace", async () => {
     supporting_documents: recalledDocuments
   });
 
-  const packet = await request("/memory/compose", {
+  const packet = await request("working_memory_compose", {
     method: "POST",
     body: {
       task,
@@ -757,7 +721,7 @@ await runCheck("tier3_working_memory_persist_learning_opt_in", async () => {
     include_unverified: true,
     persist_learning: true
   };
-  const packet = await request("/memory/compose", {
+  const packet = await request("working_memory_compose", {
     method: "POST",
     body: composeBody
   });
@@ -770,7 +734,7 @@ await runCheck("tier3_working_memory_persist_learning_opt_in", async () => {
   });
   assert(proposalSuggestion, "working memory did not persist the unverified-memory learning suggestion when persist_learning=true");
 
-  const repeated = await request("/memory/compose", {
+  const repeated = await request("working_memory_compose", {
     method: "POST",
     body: composeBody
   });
@@ -781,9 +745,9 @@ await runCheck("tier3_working_memory_persist_learning_opt_in", async () => {
   assert(repeatedSuggestion.persisted_new === false, "repeated compose should not create a duplicate learning proposal");
 
   const concurrent = await Promise.all([
-    request("/memory/compose", { method: "POST", body: composeBody }),
-    request("/memory/compose", { method: "POST", body: composeBody }),
-    request("/memory/compose", { method: "POST", body: composeBody })
+    request("working_memory_compose", { method: "POST", body: composeBody }),
+    request("working_memory_compose", { method: "POST", body: composeBody }),
+    request("working_memory_compose", { method: "POST", body: composeBody })
   ]);
   const concurrentIds = new Set(
     concurrent.map((concurrentPacket) => {
@@ -1075,7 +1039,7 @@ await runCheck("tier3_mcp_observation_learning_proposal_lifecycle", async () => 
 });
 
 await runCheck("tier3_working_memory_scope_leakage_guard", async () => {
-  const packet = await request("/memory/compose", {
+  const packet = await request("working_memory_compose", {
     method: "POST",
     body: {
       task: "plan provider migration from local embedding baseline to external embedding pilot",
@@ -1285,7 +1249,7 @@ await runCheck("agent_action_policy_requires_review_for_matching_agent_write", a
   });
   assert(remembered.claim_id, "policy-gated approved write did not return claim_id");
 
-  const packet = await request("/memory/compose", {
+  const packet = await request("working_memory_compose", {
     method: "POST",
     body: {
       task: "write scoped memory after reviewing stored agent policy",

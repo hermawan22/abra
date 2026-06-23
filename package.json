@@ -1,6 +1,6 @@
 {
   "name": "abra",
-  "version": "0.3.8",
+  "version": "0.4.0",
   "description": "Repository maintenance scripts for Abra. The production runtime, CLI, and release image are Go.",
   "type": "module",
   "license": "Apache-2.0",
@@ -28,8 +28,10 @@
   "scripts": {
     "quickstart": "go run ./cmd/abra demo",
     "quickstart:down": "go run ./cmd/abra down",
-    "check:scripts": "bash -n scripts/*.sh && node --check scripts/lib/eval-contracts.mjs && node --check scripts/abra-eval-contracts.mjs && node --check scripts/abra-install-test.mjs && node --check scripts/abra-oss-hygiene.mjs && node --check scripts/abra-npm-pack-check.mjs && node --check scripts/abra-tier1-eval.mjs && node --check scripts/abra-tier23-eval.mjs && node --check scripts/abra-golden-eval.mjs && node --check scripts/abra-provider-benchmark.mjs && node --check scripts/abra-perf-eval.mjs && node --check scripts/abra-dogfood-eval.mjs && node --check scripts/abra-queue-pressure-eval.mjs && node --check scripts/abra-release-gate.mjs",
+    "check:scripts": "bash -n scripts/*.sh && node --check scripts/lib/eval-contracts.mjs && node --check scripts/lib/mcp.mjs && node --check scripts/lib/smoke-assertions.cjs && node --check scripts/lib/tier23-helpers.mjs && node --check scripts/abra-brain-benchmark.mjs && node --check scripts/abra-eval-contracts.mjs && node --check scripts/abra-install-test.mjs && node --check scripts/abra-oss-hygiene.mjs && node --check scripts/abra-maintainability-check.mjs && node --check scripts/abra-migration-check.mjs && node --check scripts/abra-npm-pack-check.mjs && node --check scripts/abra-tier1-eval.mjs && node --check scripts/abra-tier23-eval.mjs && node --check scripts/abra-golden-eval.mjs && node --check scripts/abra-provider-benchmark.mjs && node --check scripts/abra-perf-eval.mjs && node --check scripts/abra-dogfood-eval.mjs && node --check scripts/abra-queue-pressure-eval.mjs && node --check scripts/abra-release-gate.mjs",
     "check:oss": "node scripts/abra-oss-hygiene.mjs",
+    "check:go-vet": "go vet ./...",
+    "check:staticcheck": "go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...",
     "ops:backup": "bash scripts/abra-backup.sh",
     "ops:restore-drill": "bash scripts/abra-restore-drill.sh",
     "ops:reindex": "bash scripts/abra-reindex.sh",
@@ -37,6 +39,7 @@
     "eval:tier1": "node scripts/abra-tier1-eval.mjs",
     "eval:tier23": "node scripts/abra-tier23-eval.mjs",
     "eval:golden": "node scripts/abra-golden-eval.mjs",
+    "eval:brain-benchmark": "node scripts/abra-brain-benchmark.mjs",
     "eval:provider": "node scripts/abra-provider-benchmark.mjs",
     "eval:dogfood": "node scripts/abra-dogfood-eval.mjs",
     "eval:queue-pressure": "node scripts/abra-queue-pressure-eval.mjs",
@@ -47,6 +50,8 @@
     "test:eval-contracts": "node scripts/abra-eval-contracts.mjs",
     "test:oss-hygiene": "node scripts/abra-oss-hygiene.mjs --self-test",
     "test:npm-pack": "node scripts/abra-npm-pack-check.mjs",
-    "test": "npm run check:scripts && npm run test:eval-contracts && npm run test:installer && npm run test:oss-hygiene && npm run test:npm-pack && npm run check:oss"
+    "test:maintainability": "node scripts/abra-maintainability-check.mjs",
+    "test:migrations": "node scripts/abra-migration-check.mjs",
+    "test": "npm run check:scripts && npm run test:eval-contracts && npm run test:installer && npm run test:oss-hygiene && npm run test:maintainability && npm run test:migrations && npm run test:npm-pack && npm run check:oss"
   }
 }

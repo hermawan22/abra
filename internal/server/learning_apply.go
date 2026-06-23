@@ -35,6 +35,9 @@ type applyLearningProposalInput struct {
 }
 
 func (h *handler) auditLearningProposed(ctx context.Context, proposal store.LearningProposalRecord, channel string) {
+	if h.db == nil {
+		return
+	}
 	_ = h.db.InsertAuditEvent(ctx, "learning.proposed", "learning_proposal", proposal.ID, proposal.Scope, proposal.SourceURL, map[string]any{
 		"proposal_type": proposal.ProposalType,
 		"target_type":   proposal.TargetType,
@@ -45,6 +48,9 @@ func (h *handler) auditLearningProposed(ctx context.Context, proposal store.Lear
 }
 
 func (h *handler) auditLearningDecided(ctx context.Context, proposal store.LearningProposalRecord, channel string) {
+	if h.db == nil {
+		return
+	}
 	_ = h.db.InsertAuditEvent(ctx, "learning.decided", "learning_proposal", proposal.ID, proposal.Scope, proposal.SourceURL, map[string]any{
 		"proposal_type": proposal.ProposalType,
 		"status":        proposal.Status,
@@ -54,6 +60,9 @@ func (h *handler) auditLearningDecided(ctx context.Context, proposal store.Learn
 }
 
 func (h *handler) auditLearningApplied(ctx context.Context, proposal store.LearningProposalRecord, channel string, result any) {
+	if h.db == nil {
+		return
+	}
 	_ = h.db.InsertAuditEvent(ctx, "learning.applied", "learning_proposal", proposal.ID, proposal.Scope, proposal.SourceURL, map[string]any{
 		"proposal_type": proposal.ProposalType,
 		"target_type":   proposal.TargetType,
@@ -73,6 +82,50 @@ func (h *handler) applyLearningProposal(ctx context.Context, proposal store.Lear
 	payload := cloneAnyMap(proposal.Payload)
 	switch proposal.ProposalType {
 	case "claim":
+		if payloadString(payload, "action") == "add_evidence_anchor" {
+			claimID := firstNonEmpty(proposal.TargetID, payloadString(payload, "claim_id"))
+			if claimID == "" {
+				return nil, fmt.Errorf("claim proposal target_id or payload.claim_id is required")
+			}
+			claimScope, err := h.db.ClaimScope(ctx, claimID)
+			if err != nil {
+				return nil, err
+			}
+			if claimScope != proposal.Scope {
+				return nil, fmt.Errorf("claim scope %q does not match proposal scope %q", claimScope, proposal.Scope)
+			}
+			quote := strings.TrimSpace(payloadString(payload, "quote"))
+			if quote == "" {
+				return nil, fmt.Errorf("payload.quote is required for add_evidence_anchor")
+			}
+			sourceURL := firstNonEmpty(payloadString(payload, "source_url"), proposal.SourceURL)
+			if sourceURL == "" {
+				return nil, fmt.Errorf("payload.source_url is required for add_evidence_anchor")
+			}
+			evidence := store.EvidenceRecord{
+				ClaimID:    claimID,
+				DocumentID: payloadString(payload, "document_id"),
+				Quote:      quote,
+				StartChar:  payloadInt(payload, "start_char", 0),
+				EndChar:    payloadInt(payload, "end_char", 0),
+				SourceURL:  sourceURL,
+				SourceType: firstNonEmpty(payloadString(payload, "source_type"), "learning_proposal"),
+			}
+			if err := h.db.AddEvidence(ctx, evidence); err != nil {
+				return nil, err
+			}
+			result := map[string]any{
+				"action":      "add_evidence_anchor",
+				"claim_id":    evidence.ClaimID,
+				"document_id": evidence.DocumentID,
+				"quote":       evidence.Quote,
+				"start_char":  evidence.StartChar,
+				"end_char":    evidence.EndChar,
+				"source_url":  evidence.SourceURL,
+				"source_type": evidence.SourceType,
+			}
+			return result, nil
+		}
 		claim := firstNonEmpty(payloadString(payload, "claim"), payloadString(payload, "observation_text"), proposal.Title)
 		result, err := h.brain.RememberClaim(ctx, brain.RememberClaimInput{
 			Claim:      claim,
@@ -220,6 +273,17 @@ func buildLearningApplyPlan(proposal store.LearningProposalRecord, approvalMode 
 	plan.Ready = true
 	switch proposal.ProposalType {
 	case "claim":
+		if payloadString(proposal.Payload, "action") == "add_evidence_anchor" {
+			plan.Action = "attach_evidence_anchor"
+			plan.Method = http.MethodPost
+			plan.Endpoint = "/learning/proposals/" + proposal.ID + "/apply"
+			plan.RequiresApproval = approvalMode == "enforce"
+			plan.ApprovalAction = "agent_write"
+			plan.TargetType = "claim"
+			plan.TargetID = firstNonEmpty(proposal.TargetID, payloadString(proposal.Payload, "claim_id"))
+			plan.Notes = []string{"attach same-source quote evidence to an existing claim; this does not create a new trusted claim"}
+			return plan
+		}
 		plan.Action = "review_claim_promotion"
 		plan.Method = http.MethodPost
 		plan.Endpoint = "/claims"

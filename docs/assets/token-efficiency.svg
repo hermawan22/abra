@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="620" viewBox="0 0 1280 620" role="img" aria-labelledby="title desc">
+  <title id="title">Abra token efficiency model</title>
+  <desc id="desc">A visual comparison between naive memory prompts and Abra's bounded no-LLM default recall packet.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#f8fafc"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-25%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#0f172a" flood-opacity=".12"/>
+    </filter>
+    <marker id="arrow" markerWidth="14" markerHeight="14" refX="11" refY="7" orient="auto">
+      <path d="M2 2 12 7 2 12Z" fill="#2563eb"/>
+    </marker>
+    <style>
+      .bg{fill:url(#bg)}
+      .title{font:800 32px Inter,Arial,sans-serif;fill:#0f172a}
+      .subtitle{font:15px Inter,Arial,sans-serif;fill:#475569}
+      .panel{fill:#ffffff;stroke:#d8e2ec;stroke-width:1.5;rx:26;filter:url(#shadow)}
+      .bad{fill:#fff1f2;stroke:#e11d48}
+      .good{fill:#ecfdf5;stroke:#059669}
+      .mid{fill:#eff6ff;stroke:#2563eb}
+      .label{font:800 20px Inter,Arial,sans-serif;fill:#111827}
+      .body{font:14px Inter,Arial,sans-serif;fill:#475569}
+      .metric{font:800 28px Inter,Arial,sans-serif;fill:#0f172a}
+      .tiny{font:700 12px Inter,Arial,sans-serif;fill:#64748b}
+      .barBg{fill:#e2e8f0;rx:7}
+      .barBad{fill:#e11d48;rx:7}
+      .barMid{fill:#2563eb;rx:7}
+      .barGood{fill:#059669;rx:7}
+      .line{stroke:#2563eb;stroke-width:2.7;fill:none;marker-end:url(#arrow)}
+      .chip{fill:#f8fafc;stroke:#d8e2ec;rx:15}
+    </style>
+  </defs>
+
+  <rect class="bg" width="1280" height="620"/>
+  <text class="title" x="78" y="78">Token efficiency by design</text>
+  <text class="subtitle" x="80" y="110">Abra retrieves compact evidence and gates synthesis instead of replaying the whole knowledge base into a prompt.</text>
+
+  <rect class="panel bad" x="78" y="166" width="320" height="284"/>
+  <text class="label" x="112" y="210">Naive memory prompt</text>
+  <text class="body" x="112" y="246">Large chunks, duplicated history,</text>
+  <text class="body" x="112" y="268">unverified summaries, and no</text>
+  <text class="body" x="112" y="290">source budget discipline.</text>
+  <text class="metric" x="112" y="348">High token load</text>
+  <rect class="barBg" x="112" y="382" width="230" height="18"/>
+  <rect class="barBad" x="112" y="382" width="218" height="18"/>
+  <text class="tiny" x="112" y="426">Risk: expensive, slow, harder to audit</text>
+
+  <path class="line" d="M418 308H500"/>
+
+  <rect class="panel mid" x="520" y="166" width="320" height="284"/>
+  <text class="label" x="554" y="210">Abra retrieval</text>
+  <text class="body" x="554" y="246">Hybrid lexical/vector recall,</text>
+  <text class="body" x="554" y="268">entity and graph context,</text>
+  <text class="body" x="554" y="290">freshness and anchor reasons.</text>
+  <text class="metric" x="554" y="348">Evidence first</text>
+  <rect class="barBg" x="554" y="382" width="230" height="18"/>
+  <rect class="barMid" x="554" y="382" width="132" height="18"/>
+  <text class="tiny" x="554" y="426">Default path: zero LLM calls</text>
+
+  <path class="line" d="M860 308H942"/>
+
+  <rect class="panel good" x="962" y="166" width="240" height="284"/>
+  <text class="label" x="996" y="210">Brain packet</text>
+  <text class="body" x="996" y="246">Answer, evidence, trust,</text>
+  <text class="body" x="996" y="268">gaps, conflicts, and</text>
+  <text class="body" x="996" y="290">next action.</text>
+  <text class="metric" x="996" y="348">Bounded</text>
+  <rect class="barBg" x="996" y="382" width="150" height="18"/>
+  <rect class="barGood" x="996" y="382" width="64" height="18"/>
+  <text class="tiny" x="996" y="426">Small enough for agent handoff</text>
+
+  <rect class="chip" x="260" y="504" width="760" height="48"/>
+  <text class="tiny" x="296" y="533">Measure separately: context_tokens_p95, llm_calls_default, latency_p95_ms, faithfulness, citation precision, and anchor coverage.</text>
+</svg>

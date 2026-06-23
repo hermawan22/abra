@@ -1,7 +1,7 @@
 # Abra Extensions
 
 Abra core stays provider-neutral. Extensions are adapters that bring external
-systems into Abra without adding vendor-specific logic to the main binary.
+systems into Abra without adding source-specific logic to the main binary.
 
 ## Boundary
 
@@ -10,17 +10,17 @@ Core owns:
 - normalized document validation;
 - transform, chunking, embedding, reranking, and extraction;
 - citations, graph relations, conflict checks, approvals, and decision gates;
-- CLI, HTTP, and MCP contracts.
+- MCP brain contracts, operator CLI contracts, and internal HTTP transport.
 
 Extensions own:
 
-- vendor authentication and token refresh;
+- source authentication and token refresh;
 - source-specific cursors, pagination, retries, and rate limits;
 - ACL or group mapping before content reaches Abra;
 - event subscriptions and webhook delivery;
 - organization-specific policies and deployment overlays.
 
-If a feature names a vendor, workspace policy, private approval process, or
+If a feature names a source system, workspace policy, private approval process, or
 custom business model, it belongs outside core unless it can be expressed as a
 generic contract.
 
@@ -80,7 +80,7 @@ abra connect mcp https://mcp.example.com/mcp \
 
 The MCP exporter should return documents in `structuredContent` or a JSON text
 content item. Abra stores env variable names for credentials, not literal
-vendor credentials.
+source credentials.
 
 ## Signed Webhook Producer
 
@@ -96,14 +96,16 @@ Production webhook producers must include stable source identity, event type,
 source update time, and an HMAC signature. Set webhook secrets in deployment
 environment variables.
 
-## HTTP Batch Job
+## Internal HTTP Batch Job
 
-Use this for scheduled private connectors. The connector fetches from the vendor
-API, converts records to normalized documents, and calls Abra HTTP ingestion
-with an operator-approved token or policy.
+Use this only for scheduled private connectors, gateways, or deployment
+automation. The connector fetches from the source API, converts records to
+normalized documents, and calls Abra HTTP ingestion with an operator-approved
+token or policy.
 
-This is the right shape for Jira, Confluence, Slack, Drive, Notion, internal
-knowledge bases, and private source systems.
+This is not the agent brain UX. Agents should talk to Abra through MCP. Internal
+HTTP is a transport option for internal knowledge bases and private source
+systems when MCP export or webhook push is not the better fit.
 
 ## Local Or Git Source
 

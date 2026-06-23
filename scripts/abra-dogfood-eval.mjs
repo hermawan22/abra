@@ -1,16 +1,20 @@
 import fs from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
+
+import { createMCPToolCaller } from "./lib/mcp.mjs";
 
 const baseUrl = (process.env.ABRA_BASE_URL || "http://127.0.0.1:18080").replace(/\/$/, "");
 const token = process.env.ABRA_API_TOKEN || "dev-token";
 const repoPath = path.resolve(process.env.ABRA_DOGFOOD_REPO_PATH || process.cwd());
-const sourceRoot = process.env.ABRA_DOGFOOD_SOURCE_ROOT || repoPath;
+let sourceRoot = process.env.ABRA_DOGFOOD_SOURCE_ROOT || repoPath;
 const scope = process.env.ABRA_DOGFOOD_SCOPE || "repo:abra";
 const sourceName = process.env.ABRA_DOGFOOD_SOURCE_NAME || "abra-self";
 const keepSourceActive = process.env.ABRA_DOGFOOD_KEEP_SOURCE_ACTIVE === "1";
 const timeoutMs = Number(process.env.ABRA_DOGFOOD_TIMEOUT_MS || 600000);
 const pollMs = Number(process.env.ABRA_DOGFOOD_POLL_MS || 2000);
 const requestTimeoutMs = Number(process.env.ABRA_DOGFOOD_REQUEST_TIMEOUT_MS || 30000);
+const mcpTool = createMCPToolCaller({ baseUrl, token, timeoutMs: requestTimeoutMs });
 
 requireTokenForRemoteBaseURL(baseUrl);
 
@@ -35,7 +39,55 @@ function requireRepoFile(relPath) {
   assert(fs.existsSync(fullPath), `dogfood repo path is missing ${relPath}`, { repoPath, fullPath });
 }
 
+function shouldPrepareDockerSource() {
+  if (process.env.ABRA_DOGFOOD_SOURCE_ROOT) {
+    return false;
+  }
+  if (process.env.ABRA_DOGFOOD_PREPARE_SOURCE === "0") {
+    return false;
+  }
+  const url = new URL(baseUrl);
+  return ["127.0.0.1", "localhost", "::1", "[::1]"].includes(url.hostname);
+}
+
+function prepareDockerSourceForWorker() {
+  const envFile = process.env.ABRA_ENV_FILE || ".tmp/quickstart.env";
+  const target = process.env.ABRA_DOGFOOD_CONTAINER_SOURCE_ROOT || "/tmp/abra-src";
+  const command = [
+    `docker compose --env-file ${shellQuote(envFile)} exec -T worker sh -lc ${shellQuote(`rm -rf -- ${target} && mkdir -p -- ${target}`)}`,
+    `COPYFILE_DISABLE=1 tar --exclude .tmp --exclude node_modules --exclude .git --exclude '._*' --no-xattrs -cf - . | docker compose --env-file ${shellQuote(envFile)} exec -T worker tar -C ${shellQuote(target)} -xf -`,
+    `docker compose --env-file ${shellQuote(envFile)} exec -T worker sh -lc ${shellQuote(`test -f ${target}/README.md && test -f ${target}/go.mod && find ${target} -name '._*' -delete`)}`,
+  ].join(" && ");
+  const result = spawnSync("sh", ["-lc", command], {
+    cwd: repoPath,
+    stdio: ["ignore", "pipe", "pipe"],
+    encoding: "utf8",
+  });
+  if (result.status !== 0) {
+    const error = new Error("failed to prepare dogfood source inside worker container");
+    error.details = {
+      env_file: envFile,
+      target,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      status: result.status,
+    };
+    throw error;
+  }
+  sourceRoot = target;
+}
+
+function shellQuote(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
 async function request(route, { method = "GET", body } = {}) {
+  if (method === "POST" && route === "working_memory_compose") {
+    return mcpTool("working_memory_compose", body || {});
+  }
+  if (method === "POST" && route === "brain_think") {
+    return mcpTool("brain_think", body || {});
+  }
   const headers = {
     authorization: `Bearer ${token}`,
   };
@@ -204,6 +256,10 @@ async function main() {
   requireRepoFile("go.mod");
   requireRepoFile("internal/memory/composer.go");
 
+  if (shouldPrepareDockerSource()) {
+    prepareDockerSourceForWorker();
+  }
+
   const ready = await request("/readyz");
   assert(ready.ok === true, "Abra is not ready", ready);
 
@@ -261,7 +317,7 @@ async function main() {
     assert(rebuild.documents > 0, "summary rebuild saw no documents", rebuild);
     assert(rebuild.summaries > 0, "summary rebuild wrote no summaries", rebuild);
 
-    const memory = await request("/memory/compose", {
+    const memory = await request("working_memory_compose", {
       method: "POST",
       body: {
         task: "explain Abra architecture, ingestion, graph, policy planner, working-memory composer, and production readiness",

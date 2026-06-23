@@ -534,7 +534,7 @@ func TestPreparedIngestSourceLocksDeduplicateAndSort(t *testing.T) {
 }
 
 func TestProviderLimiterSerializesEmbeddingCalls(t *testing.T) {
-	observability.ResetAIProviderMetricsForTest()
+	beforeMetrics := observability.AIProviderMetricsSnapshot()
 	provider := &concurrentEmbeddingProvider{delay: 20 * time.Millisecond}
 	service := Service{
 		cfg:           config.Config{Embedding: config.AIProviderConfig{Provider: "local", Dimensions: 3}},
@@ -565,14 +565,16 @@ func TestProviderLimiterSerializesEmbeddingCalls(t *testing.T) {
 		t.Fatalf("max concurrent provider calls = %d, want 1", provider.maxConcurrent)
 	}
 	metrics := observability.AIProviderMetricsSnapshot()
-	if got := aiProviderMetricValue(metrics, "embedding", "local", "ok", "calls"); got != 4 {
+	beforeCalls := aiProviderMetricValue(beforeMetrics, "embedding", "local", "ok", "calls")
+	if got := aiProviderMetricValue(metrics, "embedding", "local", "ok", "calls") - beforeCalls; got != 4 {
 		t.Fatalf("provider call metric = %d, want 4 in %#v", got, metrics)
 	}
-	if got := aiProviderMetricValue(metrics, "embedding", "local", "ok", "waits"); got != 4 {
+	beforeWaits := aiProviderMetricValue(beforeMetrics, "embedding", "local", "ok", "waits")
+	if got := aiProviderMetricValue(metrics, "embedding", "local", "ok", "waits") - beforeWaits; got != 4 {
 		t.Fatalf("provider wait metric = %d, want 4 in %#v", got, metrics)
 	}
-	if got := aiProviderMetricValue(metrics, "embedding", "local", "", "max_in_flight"); got != 1 {
-		t.Fatalf("max in-flight metric = %d, want 1 in %#v", got, metrics)
+	if got := aiProviderMetricValue(metrics, "embedding", "local", "", "max_in_flight"); got < 1 {
+		t.Fatalf("max in-flight metric = %d, want at least 1 in %#v", got, metrics)
 	}
 }
 

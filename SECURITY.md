@@ -11,7 +11,11 @@ Security fixes are applied to the latest published release line and the current 
 - Production startup fails without signed webhook secrets unless `ABRA_ALLOW_UNSIGNED_WEBHOOKS_IN_PRODUCTION=true` is explicitly set for deployments that do not accept webhook ingestion or verify it upstream.
 - Production startup fails when local neural embeddings are selected without `ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=true`.
 - Invalid numeric, boolean, duration, and tracing sample config values fail startup instead of falling back silently.
-- Local mode uses a self-hosted Qwen-compatible embedding endpoint by default. The built-in CLI lifecycle manages the Qwen/Qwen3-Embedding-0.6B runner for local development; production use still requires explicit local-model allowance and digest-pinned runner images. Reranking is optional and configured separately through compatible reranker provider settings.
+- Local mode uses a self-hosted compatible embedding endpoint by default. The
+  built-in CLI lifecycle can manage a local development runner; production use
+  still requires explicit local-model allowance and digest-pinned runner images.
+  Reranking is optional and configured separately through compatible reranker
+  provider settings.
 - PII redaction is enabled by default.
 - Claims retain source, scope, status, confidence, and freshness metadata.
 - `forget` deprecates claims instead of deleting audit history.

@@ -7,6 +7,12 @@ Abra releases should be reproducible from a signed Git tag and backed by CI evid
 - Use semantic versions: `vMAJOR.MINOR.PATCH`.
 - Keep `package.json`, `package-lock.json`, `deploy/helm/Chart.yaml`, chart `appVersion`, and `CHANGELOG.md` aligned before tagging.
 - Before v1.0.0, document any breaking change in `CHANGELOG.md` and the GitHub release notes.
+- Existing public tags through `v0.3.8` are historical. Do not rewrite them;
+  publish later OSS candidates with a new SemVer tag.
+- Patch releases contain compatible fixes only.
+- Minor releases may add capabilities or make documented pre-1.0 breaking
+  changes.
+- Major releases after `v1.0.0` follow standard SemVer compatibility rules.
 
 ## Pre-Release Checklist
 
@@ -14,6 +20,8 @@ Run locally before creating a tag:
 
 ```sh
 go test ./...
+go vet ./...
+go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...
 npm test
 helm lint ./deploy/helm
 helm template abra ./deploy/helm >/tmp/abra-helm-template.yaml
@@ -24,6 +32,13 @@ ABRA_RELEASE_PROFILE=full ABRA_RELEASE_MANAGE_STACK=1 npm run release:gate
 The dry-run report must list every release check without executing external
 commands. It is a cheap way to review the release evidence contract before
 running the managed full gate.
+
+The full gate is intentionally broad. It builds and boots a managed stack,
+validates MCP tools, runs smoke, quality evals, approval-enforcement probes,
+dogfood ingestion, performance checks, Helm rendering, Docker build, installer
+checks, migration checks, OSS hygiene, npm package allowlisting, Go vet, and
+static analysis. A release candidate is not ready when any check is skipped
+unexpectedly or fails.
 
 Run security checks:
 

@@ -72,6 +72,8 @@ type Config struct {
 	ComposeHealthCacheTTL              time.Duration
 	ComposeRecallConcurrency           int
 	ComposeGraphConcurrency            int
+	SynthesisEnabled                   bool
+	SynthesisMaxTokens                 int
 	GitCacheDir                        string
 	GitCloneDepth                      int
 }
@@ -81,6 +83,14 @@ func Load() (Config, error) {
 	if err := validateEnvSyntax(); err != nil {
 		return Config{}, err
 	}
+	cfg := loadFromEnv()
+	if err := validateLoadedConfig(cfg); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+func loadFromEnv() Config {
 	embeddingProvider := env("EMBEDDING_PROVIDER", "local")
 	defaultEmbeddingBaseURL := ""
 	defaultEmbeddingTimeout := 30 * time.Second
@@ -178,125 +188,171 @@ func Load() (Config, error) {
 		ComposeHealthCacheTTL:              durationEnv("ABRA_COMPOSE_HEALTH_CACHE_TTL", 2*time.Second),
 		ComposeRecallConcurrency:           intEnv("ABRA_COMPOSE_RECALL_CONCURRENCY", 1),
 		ComposeGraphConcurrency:            intEnv("ABRA_COMPOSE_GRAPH_CONCURRENCY", 4),
+		SynthesisEnabled:                   boolEnv("ABRA_SYNTHESIS_ENABLED", false),
+		SynthesisMaxTokens:                 intEnv("ABRA_SYNTHESIS_MAX_TOKENS", 700),
 		GitCacheDir:                        env("ABRA_GIT_CACHE_DIR", "/tmp/abra-git-cache"),
 		GitCloneDepth:                      intEnv("ABRA_GIT_CLONE_DEPTH", 1),
 	}
 
+	return cfg
+}
+
+func validateLoadedConfig(cfg Config) error {
+	for _, validate := range []func(Config) error{
+		validateAuthConfig,
+		validateProviderConfig,
+		validateNetworkConfig,
+		validateWorkerConfig,
+		validateRuntimeLimitsConfig,
+		validateOptionalSubsystemConfig,
+	} {
+		if err := validate(cfg); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateAuthConfig(cfg Config) error {
 	if len(cfg.APIKeys) == 0 && !cfg.AllowUnauthenticatedDev {
-		return Config{}, errors.New("ABRA_API_KEYS is required; set ABRA_UNAUTHENTICATED_DEV=1 only for isolated local development")
+		return errors.New("ABRA_API_KEYS is required; set ABRA_UNAUTHENTICATED_DEV=1 only for isolated local development")
 	}
 	if cfg.AllowUnauthenticatedDev && cfg.NodeEnv == "production" {
-		return Config{}, errors.New("ABRA_UNAUTHENTICATED_DEV is not allowed when NODE_ENV=production")
+		return errors.New("ABRA_UNAUTHENTICATED_DEV is not allowed when NODE_ENV=production")
 	}
 	if cfg.NodeEnv == "production" {
 		if err := validateProductionAPIKeys(cfg.APIKeys); err != nil {
-			return Config{}, err
+			return err
 		}
 		if len(cfg.WebhookSecrets) == 0 && !cfg.AllowUnsignedWebhooksInProduction {
-			return Config{}, errors.New("ABRA_WEBHOOK_SECRETS is required when NODE_ENV=production; set ABRA_ALLOW_UNSIGNED_WEBHOOKS_IN_PRODUCTION=true only when webhook ingestion is disabled or protected elsewhere")
+			return errors.New("ABRA_WEBHOOK_SECRETS is required when NODE_ENV=production; set ABRA_ALLOW_UNSIGNED_WEBHOOKS_IN_PRODUCTION=true only when webhook ingestion is disabled or protected elsewhere")
 		}
 		if err := validateProductionSecrets("ABRA_WEBHOOK_SECRETS", cfg.WebhookSecrets); err != nil {
-			return Config{}, err
+			return err
 		}
 	}
+	return nil
+}
+
+func validateProviderConfig(cfg Config) error {
 	if cfg.NodeEnv == "production" && isRemoteCompatibleProvider(cfg.Embedding.Provider) && !isLocalNeuralProvider(cfg.Embedding.Provider) {
 		if strings.TrimSpace(cfg.Embedding.BaseURL) == "" {
-			return Config{}, errors.New("EMBEDDING_BASE_URL is required when NODE_ENV=production and EMBEDDING_PROVIDER=compatible")
+			return errors.New("EMBEDDING_BASE_URL is required when NODE_ENV=production and EMBEDDING_PROVIDER=compatible")
 		}
 		if err := validateProductionAIProviderURL("EMBEDDING_BASE_URL", cfg.Embedding.BaseURL); err != nil {
-			return Config{}, err
+			return err
 		}
 	}
 	if cfg.NodeEnv == "production" && isLocalNeuralProvider(cfg.Embedding.Provider) && !cfg.AllowLocalEmbeddingsInProduction {
-		return Config{}, errors.New("ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=true is required when NODE_ENV=production and EMBEDDING_PROVIDER=local")
-	}
-	if port, err := strconv.Atoi(cfg.Port); err != nil || port < 1 || port > 65535 {
-		return Config{}, errors.New("PORT must be an integer between 1 and 65535")
-	}
-	if strings.TrimSpace(cfg.BindAddress) == "" {
-		return Config{}, errors.New("ABRA_BIND_ADDR must not be empty")
-	}
-	if _, err := netip.ParseAddr(cfg.BindAddress); err != nil {
-		return Config{}, errors.New("ABRA_BIND_ADDR must be an IP address such as 127.0.0.1 or 0.0.0.0")
-	}
-	if cfg.APIReadTimeout <= 0 || cfg.APIReadTimeout > 30*time.Minute {
-		return Config{}, errors.New("ABRA_API_READ_TIMEOUT must be between 1ns and 30m")
-	}
-	if cfg.MaxRequestBodyBytes < 1 || cfg.MaxRequestBodyBytes > 100<<20 {
-		return Config{}, errors.New("ABRA_MAX_REQUEST_BODY_BYTES must be between 1 and 104857600")
+		return errors.New("ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=true is required when NODE_ENV=production and EMBEDDING_PROVIDER=local")
 	}
 	if strings.TrimSpace(cfg.Reranker.Provider) != "" && isRemoteCompatibleProvider(cfg.Reranker.Provider) && strings.TrimSpace(cfg.Reranker.BaseURL) == "" {
-		return Config{}, errors.New("RERANKER_BASE_URL is required when RERANKER_PROVIDER is configured")
+		return errors.New("RERANKER_BASE_URL is required when RERANKER_PROVIDER is configured")
 	}
 	if cfg.NodeEnv == "production" && strings.TrimSpace(cfg.Reranker.Provider) != "" && isRemoteCompatibleProvider(cfg.Reranker.Provider) && !isLocalNeuralProvider(cfg.Reranker.Provider) {
 		if err := validateProductionAIProviderURL("RERANKER_BASE_URL", cfg.Reranker.BaseURL); err != nil {
-			return Config{}, err
+			return err
 		}
 	}
 	if cfg.Embedding.Dimensions < 1 {
-		return Config{}, errors.New("EMBEDDING_DIMENSIONS must be positive")
-	}
-	if cfg.WorkerLeaseTimeout <= cfg.WorkerSourceTimeout {
-		return Config{}, errors.New("WORKER_LEASE_TIMEOUT must be greater than WORKER_SOURCE_TIMEOUT")
-	}
-	if cfg.WorkerMaxSourcesPerRun < 1 || cfg.WorkerMaxSourcesPerRun > 1000 {
-		return Config{}, errors.New("WORKER_MAX_SOURCES_PER_RUN must be between 1 and 1000")
-	}
-	if cfg.WorkerConcurrency < 1 || cfg.WorkerConcurrency > 32 {
-		return Config{}, errors.New("WORKER_CONCURRENCY must be between 1 and 32")
-	}
-	if cfg.WorkerMaxChangedDocumentsPerSource < 1 {
-		return Config{}, errors.New("WORKER_MAX_CHANGED_DOCUMENTS_PER_SOURCE must be positive")
-	}
-	if cfg.AIProviderConcurrency < 1 || cfg.AIProviderConcurrency > 32 {
-		return Config{}, errors.New("ABRA_AI_PROVIDER_CONCURRENCY must be between 1 and 32")
-	}
-	if cfg.EmbeddingBatchMaxItems < 1 || cfg.EmbeddingBatchMaxItems > 128 {
-		return Config{}, errors.New("ABRA_EMBEDDING_BATCH_MAX_ITEMS must be between 1 and 128")
-	}
-	if cfg.EmbeddingBatchMaxTokens < 1 || cfg.EmbeddingBatchMaxTokens > 200000 {
-		return Config{}, errors.New("ABRA_EMBEDDING_BATCH_MAX_TOKENS must be between 1 and 200000")
+		return errors.New("EMBEDDING_DIMENSIONS must be positive")
 	}
 	if cfg.Embedding.Timeout <= 0 || cfg.Embedding.Timeout > 30*time.Minute {
-		return Config{}, errors.New("EMBEDDING_TIMEOUT must be between 1ns and 30m")
+		return errors.New("EMBEDDING_TIMEOUT must be between 1ns and 30m")
 	}
 	if cfg.Reranker.Timeout <= 0 || cfg.Reranker.Timeout > 30*time.Minute {
-		return Config{}, errors.New("RERANKER_TIMEOUT must be between 1ns and 30m")
+		return errors.New("RERANKER_TIMEOUT must be between 1ns and 30m")
 	}
 	if cfg.Extractor.Timeout <= 0 || cfg.Extractor.Timeout > 30*time.Minute {
-		return Config{}, errors.New("EXTRACTOR_TIMEOUT must be between 1ns and 30m")
+		return errors.New("EXTRACTOR_TIMEOUT must be between 1ns and 30m")
+	}
+	return nil
+}
+
+func validateNetworkConfig(cfg Config) error {
+	if port, err := strconv.Atoi(cfg.Port); err != nil || port < 1 || port > 65535 {
+		return errors.New("PORT must be an integer between 1 and 65535")
+	}
+	if strings.TrimSpace(cfg.BindAddress) == "" {
+		return errors.New("ABRA_BIND_ADDR must not be empty")
+	}
+	if _, err := netip.ParseAddr(cfg.BindAddress); err != nil {
+		return errors.New("ABRA_BIND_ADDR must be an IP address such as 127.0.0.1 or 0.0.0.0")
+	}
+	if cfg.APIReadTimeout <= 0 || cfg.APIReadTimeout > 30*time.Minute {
+		return errors.New("ABRA_API_READ_TIMEOUT must be between 1ns and 30m")
+	}
+	if cfg.MaxRequestBodyBytes < 1 || cfg.MaxRequestBodyBytes > 100<<20 {
+		return errors.New("ABRA_MAX_REQUEST_BODY_BYTES must be between 1 and 104857600")
+	}
+	return nil
+}
+
+func validateWorkerConfig(cfg Config) error {
+	if cfg.WorkerLeaseTimeout <= cfg.WorkerSourceTimeout {
+		return errors.New("WORKER_LEASE_TIMEOUT must be greater than WORKER_SOURCE_TIMEOUT")
+	}
+	if cfg.WorkerMaxSourcesPerRun < 1 || cfg.WorkerMaxSourcesPerRun > 1000 {
+		return errors.New("WORKER_MAX_SOURCES_PER_RUN must be between 1 and 1000")
+	}
+	if cfg.WorkerConcurrency < 1 || cfg.WorkerConcurrency > 32 {
+		return errors.New("WORKER_CONCURRENCY must be between 1 and 32")
+	}
+	if cfg.WorkerMaxChangedDocumentsPerSource < 1 {
+		return errors.New("WORKER_MAX_CHANGED_DOCUMENTS_PER_SOURCE must be positive")
+	}
+	return nil
+}
+
+func validateRuntimeLimitsConfig(cfg Config) error {
+	if cfg.AIProviderConcurrency < 1 || cfg.AIProviderConcurrency > 32 {
+		return errors.New("ABRA_AI_PROVIDER_CONCURRENCY must be between 1 and 32")
+	}
+	if cfg.EmbeddingBatchMaxItems < 1 || cfg.EmbeddingBatchMaxItems > 128 {
+		return errors.New("ABRA_EMBEDDING_BATCH_MAX_ITEMS must be between 1 and 128")
+	}
+	if cfg.EmbeddingBatchMaxTokens < 1 || cfg.EmbeddingBatchMaxTokens > 200000 {
+		return errors.New("ABRA_EMBEDDING_BATCH_MAX_TOKENS must be between 1 and 200000")
 	}
 	if cfg.RateLimitMax < 1 {
-		return Config{}, errors.New("RATE_LIMIT_MAX must be at least 1")
+		return errors.New("RATE_LIMIT_MAX must be at least 1")
 	}
 	if cfg.ApprovalMode != "advisory" && cfg.ApprovalMode != "enforce" {
-		return Config{}, errors.New("ABRA_APPROVAL_MODE must be advisory or enforce")
+		return errors.New("ABRA_APPROVAL_MODE must be advisory or enforce")
 	}
+	return nil
+}
+
+func validateOptionalSubsystemConfig(cfg Config) error {
 	if cfg.AuditSink.BatchSize < 1 || cfg.AuditSink.BatchSize > 1000 {
-		return Config{}, errors.New("ABRA_AUDIT_SINK_BATCH_SIZE must be between 1 and 1000")
+		return errors.New("ABRA_AUDIT_SINK_BATCH_SIZE must be between 1 and 1000")
 	}
 	if cfg.Tracing.SampleRatio < 0 || cfg.Tracing.SampleRatio > 1 {
-		return Config{}, errors.New("ABRA_TRACING_SAMPLE_RATIO must be between 0 and 1")
+		return errors.New("ABRA_TRACING_SAMPLE_RATIO must be between 0 and 1")
 	}
 	if cfg.Tracing.Enabled && cfg.Tracing.Endpoint == "" {
-		return Config{}, errors.New("ABRA_TRACING_ENABLED requires ABRA_OTEL_EXPORTER_OTLP_ENDPOINT or OTEL_EXPORTER_OTLP_ENDPOINT")
+		return errors.New("ABRA_TRACING_ENABLED requires ABRA_OTEL_EXPORTER_OTLP_ENDPOINT or OTEL_EXPORTER_OTLP_ENDPOINT")
 	}
 	if cfg.ComposeHealthCacheTTL < 0 || cfg.ComposeHealthCacheTTL > time.Minute {
-		return Config{}, errors.New("ABRA_COMPOSE_HEALTH_CACHE_TTL must be between 0s and 1m")
+		return errors.New("ABRA_COMPOSE_HEALTH_CACHE_TTL must be between 0s and 1m")
 	}
 	if cfg.ComposeRecallConcurrency < 1 || cfg.ComposeRecallConcurrency > 32 {
-		return Config{}, errors.New("ABRA_COMPOSE_RECALL_CONCURRENCY must be between 1 and 32")
+		return errors.New("ABRA_COMPOSE_RECALL_CONCURRENCY must be between 1 and 32")
 	}
 	if cfg.ComposeGraphConcurrency < 1 || cfg.ComposeGraphConcurrency > 32 {
-		return Config{}, errors.New("ABRA_COMPOSE_GRAPH_CONCURRENCY must be between 1 and 32")
+		return errors.New("ABRA_COMPOSE_GRAPH_CONCURRENCY must be between 1 and 32")
+	}
+	if cfg.SynthesisMaxTokens < 128 || cfg.SynthesisMaxTokens > 8000 {
+		return errors.New("ABRA_SYNTHESIS_MAX_TOKENS must be between 128 and 8000")
 	}
 	if strings.TrimSpace(cfg.GitCacheDir) == "" {
-		return Config{}, errors.New("ABRA_GIT_CACHE_DIR is required")
+		return errors.New("ABRA_GIT_CACHE_DIR is required")
 	}
 	if cfg.GitCloneDepth < 1 || cfg.GitCloneDepth > 1000 {
-		return Config{}, errors.New("ABRA_GIT_CLONE_DEPTH must be between 1 and 1000")
+		return errors.New("ABRA_GIT_CLONE_DEPTH must be between 1 and 1000")
 	}
-	return cfg, nil
+
+	return nil
 }
 
 func validateProductionAPIKeys(keys []string) error {
