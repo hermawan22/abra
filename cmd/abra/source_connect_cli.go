@@ -221,6 +221,9 @@ func mcpSourceIngestSpec(args cliArgs, config map[string]any) (sourceIngestSpec,
 	if docSourceType := flag(args, "document-source-type", ""); docSourceType != "" {
 		config["document_source_type"] = docSourceType
 	}
+	if boolFlag(args, "allow-private-network") {
+		config["allow_private_network"] = true
+	}
 	return sourceIngestSpec{SourceType: "mcp", SourceURL: sourceURL, ScopeHint: sourceURL, Config: config}, nil
 }
 

@@ -224,6 +224,9 @@ func applyConnectorManifest(args cliArgs) (cliArgs, error) {
 	setFlagDefault("authority", manifest.Authority)
 	setFlagDefault("schedule", manifest.Schedule)
 	setFlagDefault("verify-query", manifest.VerifyQuery)
+	if manifest.AllowPrivateNetwork {
+		args.Bools["allow-private-network"] = true
+	}
 	if manifest.AuthorityScore != nil && flag(args, "authority-score", "") == "" {
 		args.Flags["authority-score"] = strconv.FormatFloat(*manifest.AuthorityScore, 'f', -1, 64)
 	}
@@ -277,6 +280,9 @@ func listMCPConnectorTools(ctx context.Context, args cliArgs) ([]jobspkg.MCPTool
 	sourceURL := firstNonEmpty(flag(args, "mcp-url", ""), flag(args, "url", ""))
 	scope := scopeOrDefault(args, sourceURL)
 	config := map[string]any{"server_url": sourceURL}
+	if boolFlag(args, "allow-private-network") {
+		config["allow_private_network"] = true
+	}
 	if envName := flag(args, "bearer-token-env", ""); envName != "" {
 		config["bearer_token_env"] = envName
 	}

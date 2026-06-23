@@ -353,6 +353,7 @@ func TestRunnerIngestsMCPSourceDocuments(t *testing.T) {
 				"arguments": map[string]any{
 					"space": "ENG",
 				},
+				"allow_private_network": true,
 			},
 		}},
 	}
@@ -434,7 +435,7 @@ func TestRunnerBatchesChangedMCPDocuments(t *testing.T) {
 			SourceType: ingest.SourceTypeMCP,
 			Name:       "Confluence MCP",
 			BaseURL:    server.URL,
-			Config:     map[string]any{"tool": "export_documents"},
+			Config:     map[string]any{"tool": "export_documents", "allow_private_network": true},
 		}},
 	}
 	brain := &fakeIngestor{}

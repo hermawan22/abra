@@ -42,25 +42,26 @@ type cliArgs struct {
 }
 
 type connectorManifest struct {
-	ID                 string            `json:"id"`
-	Name               string            `json:"name"`
-	Scope              string            `json:"scope"`
-	MCPURL             string            `json:"mcp_url"`
-	ServerURL          string            `json:"server_url"`
-	URL                string            `json:"url"`
-	Tool               string            `json:"tool"`
-	Arguments          map[string]any    `json:"arguments"`
-	ConnectorKind      string            `json:"connector_kind"`
-	DocumentSourceType string            `json:"document_source_type"`
-	BearerTokenEnv     string            `json:"bearer_token_env"`
-	HeaderEnv          map[string]string `json:"header_env"`
-	Status             string            `json:"status"`
-	Authority          string            `json:"authority"`
-	AuthorityScore     *float64          `json:"authority_score"`
-	FreshnessSeconds   int               `json:"freshness_seconds"`
-	Schedule           string            `json:"schedule"`
-	VerifyQuery        string            `json:"verify_query"`
-	Metadata           map[string]any    `json:"metadata"`
+	ID                  string            `json:"id"`
+	Name                string            `json:"name"`
+	Scope               string            `json:"scope"`
+	MCPURL              string            `json:"mcp_url"`
+	ServerURL           string            `json:"server_url"`
+	URL                 string            `json:"url"`
+	Tool                string            `json:"tool"`
+	Arguments           map[string]any    `json:"arguments"`
+	ConnectorKind       string            `json:"connector_kind"`
+	DocumentSourceType  string            `json:"document_source_type"`
+	BearerTokenEnv      string            `json:"bearer_token_env"`
+	HeaderEnv           map[string]string `json:"header_env"`
+	Status              string            `json:"status"`
+	Authority           string            `json:"authority"`
+	AuthorityScore      *float64          `json:"authority_score"`
+	FreshnessSeconds    int               `json:"freshness_seconds"`
+	Schedule            string            `json:"schedule"`
+	VerifyQuery         string            `json:"verify_query"`
+	AllowPrivateNetwork bool              `json:"allow_private_network,omitempty"`
+	Metadata            map[string]any    `json:"metadata"`
 }
 
 type directIngestBatchLimits struct {

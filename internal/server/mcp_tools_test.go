@@ -157,6 +157,9 @@ func TestSourceConfigLifecycleMCPToolsAreDiscoverable(t *testing.T) {
 	if _, ok := validateProperties["approval_id"]; !ok {
 		t.Fatalf("validate_mcp_source missing approval_id property: %#v", validateProperties)
 	}
+	if allowPrivate, ok := validateProperties["allow_private_network"].(map[string]any); !ok || allowPrivate["type"] != "boolean" {
+		t.Fatalf("validate_mcp_source allow_private_network schema = %#v", validateProperties["allow_private_network"])
+	}
 
 	getSchema := mcpToolSchema(t, "get_source_config")
 	getRequired := requiredSet(t, getSchema)

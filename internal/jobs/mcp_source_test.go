@@ -62,8 +62,9 @@ func TestValidateMCPSourceCallsToolAndNormalizesStructuredDocuments(t *testing.T
 		BaseURL:       server.URL,
 		ConnectorKind: "confluence",
 		Config: map[string]any{
-			"tool":      "export_documents",
-			"arguments": map[string]any{"space": "ENG"},
+			"tool":                  "export_documents",
+			"arguments":             map[string]any{"space": "ENG"},
+			"allow_private_network": true,
 		},
 	})
 	if err != nil {
@@ -116,7 +117,7 @@ func TestListMCPToolsCallsUpstreamToolsList(t *testing.T) {
 		Scope:      "repo:abra",
 		SourceType: ingest.SourceTypeMCP,
 		BaseURL:    server.URL,
-		Config:     map[string]any{},
+		Config:     map[string]any{"allow_private_network": true},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -201,7 +202,7 @@ func TestValidateMCPSourceReportReturnsWarnings(t *testing.T) {
 		SourceType:    ingest.SourceTypeMCP,
 		BaseURL:       server.URL,
 		ConnectorKind: "confluence",
-		Config:        map[string]any{"tool": "export_documents"},
+		Config:        map[string]any{"tool": "export_documents", "allow_private_network": true},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -284,7 +285,7 @@ func TestValidateMCPSourceRejectsStructuredDocumentsMissingRequiredFields(t *tes
 				SourceType:    ingest.SourceTypeMCP,
 				BaseURL:       server.URL,
 				ConnectorKind: "confluence",
-				Config:        map[string]any{"tool": "export_documents"},
+				Config:        map[string]any{"tool": "export_documents", "allow_private_network": true},
 			})
 			if err == nil {
 				t.Fatal("expected validation error")
@@ -337,8 +338,9 @@ func TestValidateMCPSourceSendsConfiguredCredentialHeaders(t *testing.T) {
 		BaseURL:       server.URL,
 		ConnectorKind: "confluence",
 		Config: map[string]any{
-			"tool":             "export_documents",
-			"bearer_token_env": "CONFLUENCE_MCP_TOKEN",
+			"tool":                  "export_documents",
+			"bearer_token_env":      "CONFLUENCE_MCP_TOKEN",
+			"allow_private_network": true,
 			"header_env": map[string]any{
 				"X-Tenant-ID": "CONFLUENCE_TENANT_ID",
 			},
@@ -386,7 +388,7 @@ func TestValidateMCPSourceRejectsMissingCredentialEnv(t *testing.T) {
 				Scope:      "repo:abra",
 				SourceType: ingest.SourceTypeMCP,
 				BaseURL:    server.URL,
-				Config:     tt.config,
+				Config:     mergeMCPTestConfig(tt.config),
 			})
 			if err == nil {
 				t.Fatal("expected missing credential env error")
@@ -411,7 +413,7 @@ func TestValidateMCPSourceRejectsOversizedResponse(t *testing.T) {
 		SourceType:    ingest.SourceTypeMCP,
 		BaseURL:       server.URL,
 		ConnectorKind: "confluence",
-		Config:        map[string]any{"tool": "export_documents"},
+		Config:        map[string]any{"tool": "export_documents", "allow_private_network": true},
 	})
 	if err == nil {
 		t.Fatal("expected oversized response error")
@@ -451,7 +453,7 @@ func TestValidateMCPSourceRejectsTooManyDocuments(t *testing.T) {
 		SourceType:    ingest.SourceTypeMCP,
 		BaseURL:       server.URL,
 		ConnectorKind: "confluence",
-		Config:        map[string]any{"tool": "export_documents"},
+		Config:        map[string]any{"tool": "export_documents", "allow_private_network": true},
 	})
 	if err == nil {
 		t.Fatal("expected document limit error")
@@ -489,7 +491,7 @@ func TestValidateMCPSourceRejectsOversizedDocumentContent(t *testing.T) {
 		SourceType:    ingest.SourceTypeMCP,
 		BaseURL:       server.URL,
 		ConnectorKind: "confluence",
-		Config:        map[string]any{"tool": "export_documents"},
+		Config:        map[string]any{"tool": "export_documents", "allow_private_network": true},
 	})
 	if err == nil {
 		t.Fatal("expected content limit error")
@@ -505,4 +507,12 @@ func writeMCPTestJSON(t *testing.T, w http.ResponseWriter, value any) {
 	if err := json.NewEncoder(w).Encode(value); err != nil {
 		t.Fatalf("write json response: %v", err)
 	}
+}
+
+func mergeMCPTestConfig(config map[string]any) map[string]any {
+	merged := map[string]any{"allow_private_network": true}
+	for key, value := range config {
+		merged[key] = value
+	}
+	return merged
 }
