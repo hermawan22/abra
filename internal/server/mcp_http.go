@@ -133,5 +133,8 @@ func mcpConnectorSourceConfigFromArgs(args map[string]any, requireTool bool) sto
 	if documentSourceType := stringArg(args, "document_source_type"); documentSourceType != "" {
 		sourceConfig.Config["document_source_type"] = documentSourceType
 	}
+	if boolArg(args, "allow_private_network", false) {
+		sourceConfig.Config["allow_private_network"] = true
+	}
 	return sourceConfig
 }

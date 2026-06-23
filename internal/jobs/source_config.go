@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"path/filepath"
 	"strings"
@@ -49,14 +50,15 @@ func (s SourceConfig) ValidateIngestContract() error {
 }
 
 type MCPSourceSpec struct {
-	ID             string
-	Scope          string
-	ServerURL      string
-	Tool           string
-	Arguments      map[string]any
-	BearerTokenEnv string
-	HeaderEnv      map[string]string
-	SourceType     string
+	ID                  string
+	Scope               string
+	ServerURL           string
+	Tool                string
+	Arguments           map[string]any
+	BearerTokenEnv      string
+	HeaderEnv           map[string]string
+	SourceType          string
+	AllowPrivateNetwork bool
 }
 
 func (s SourceConfig) MCPSourceSpec() (MCPSourceSpec, error) {
@@ -65,14 +67,15 @@ func (s SourceConfig) MCPSourceSpec() (MCPSourceSpec, error) {
 		serverURL = strings.TrimSpace(s.BaseURL)
 	}
 	spec := MCPSourceSpec{
-		ID:             s.ID,
-		Scope:          strings.TrimSpace(s.Scope),
-		ServerURL:      serverURL,
-		Tool:           firstString(s.Config, "tool", "tool_name"),
-		Arguments:      mapValue(s.Config["arguments"]),
-		BearerTokenEnv: firstString(s.Config, "bearer_token_env", "token_env"),
-		HeaderEnv:      stringMapValue(s.Config["header_env"]),
-		SourceType:     firstString(s.Config, "document_source_type", "default_source_type"),
+		ID:                  s.ID,
+		Scope:               strings.TrimSpace(s.Scope),
+		ServerURL:           serverURL,
+		Tool:                firstString(s.Config, "tool", "tool_name"),
+		Arguments:           mapValue(s.Config["arguments"]),
+		BearerTokenEnv:      firstString(s.Config, "bearer_token_env", "token_env"),
+		HeaderEnv:           stringMapValue(s.Config["header_env"]),
+		SourceType:          firstString(s.Config, "document_source_type", "default_source_type"),
+		AllowPrivateNetwork: boolValue(s.Config["allow_private_network"]),
 	}
 	if spec.SourceType == "" {
 		spec.SourceType = strings.TrimSpace(s.ConnectorKind)
@@ -110,7 +113,41 @@ func (s MCPSourceSpec) ValidateServer() error {
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return fmt.Errorf("source %q mcp server_url must use http or https", s.ID)
 	}
+	if u.Host == "" {
+		return fmt.Errorf("source %q mcp server_url host is required", s.ID)
+	}
+	if u.User != nil {
+		return fmt.Errorf("source %q mcp server_url must not include user info", s.ID)
+	}
+	if !s.AllowPrivateNetwork {
+		if err := validateMCPPublicHost(s.ID, u.Hostname()); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func validateMCPPublicHost(sourceID, host string) error {
+	host = strings.TrimSpace(strings.TrimSuffix(host, "."))
+	if host == "" {
+		return fmt.Errorf("source %q mcp server_url host is required", sourceID)
+	}
+	if strings.EqualFold(host, "localhost") {
+		return fmt.Errorf("source %q mcp server_url points to private host %q; set allow_private_network=true only for trusted local connectors", sourceID, host)
+	}
+	if ip := net.ParseIP(host); ip != nil && isPrivateMCPIP(ip) {
+		return fmt.Errorf("source %q mcp server_url points to private address %q; set allow_private_network=true only for trusted local connectors", sourceID, host)
+	}
+	return nil
+}
+
+func isPrivateMCPIP(ip net.IP) bool {
+	return ip.IsLoopback() ||
+		ip.IsPrivate() ||
+		ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() ||
+		ip.IsUnspecified() ||
+		ip.IsMulticast()
 }
 
 func (s SourceConfig) IngestSpec() (ingest.SourceSpec, error) {

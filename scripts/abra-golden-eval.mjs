@@ -321,7 +321,7 @@ function createConnectorFixtureServer(connector) {
       );
     } catch (error) {
       res.writeHead(500, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+      res.end(JSON.stringify({ error: "fixture_server_error" }));
     }
   });
   return { server, calls };

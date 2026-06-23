@@ -351,6 +351,7 @@ func TestSourceMCPDryRunValidatesExportedDocuments(t *testing.T) {
 			"--mcp-url", server.URL + "/mcp",
 			"--tool", "export_documents",
 			"--document-source-type", "confluence",
+			"--allow-private-network",
 			"--dry-run",
 		})
 		if err != nil {
@@ -435,6 +436,7 @@ func TestConnectorsMCPValidateUsesSourceMCPValidation(t *testing.T) {
 			"--scope", "team:platform",
 			"--tool", "export_documents",
 			"--document-source-type", "confluence",
+			"--allow-private-network",
 		})
 		if err != nil {
 			t.Fatalf("connectors mcp validate error = %v", err)
@@ -473,6 +475,7 @@ func TestConnectorsMCPInspectListsUpstreamTools(t *testing.T) {
 		err := run(context.Background(), []string{
 			"connectors", "mcp", "inspect", server.URL + "/mcp",
 			"--scope", "team:platform",
+			"--allow-private-network",
 		})
 		if err != nil {
 			t.Fatalf("connectors mcp inspect error = %v", err)
@@ -585,6 +588,7 @@ func TestConnectorsMCPAddInspectsValidatesAndRegisters(t *testing.T) {
 			"--scope", "team:platform",
 			"--connector", "confluence",
 			"--document-source-type", "confluence",
+			"--allow-private-network",
 			"--base-url", server.URL,
 			"--token", "test-token",
 		})
@@ -596,7 +600,7 @@ func TestConnectorsMCPAddInspectsValidatesAndRegisters(t *testing.T) {
 		t.Fatalf("mcp methods = %#v", methods)
 	}
 	config, _ := sourceRequest["config"].(map[string]any)
-	if sourceRequest["connector_kind"] != "confluence" || config["tool"] != "export_documents" || config["document_source_type"] != "confluence" {
+	if sourceRequest["connector_kind"] != "confluence" || config["tool"] != "export_documents" || config["document_source_type"] != "confluence" || config["allow_private_network"] != true {
 		t.Fatalf("source request = %#v", sourceRequest)
 	}
 	if jobRequest["source_config_id"] != "source-mcp" {

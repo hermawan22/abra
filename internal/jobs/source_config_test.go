@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/hermawan22/abra/internal/ingest"
@@ -172,10 +173,11 @@ func TestSourceConfigMCPSourceSpec(t *testing.T) {
 		BaseURL:       "https://mcp.example.local/mcp",
 		ConnectorKind: "confluence",
 		Config: map[string]any{
-			"tool":             "export_documents",
-			"arguments":        map[string]any{"space": "ENG"},
-			"bearer_token_env": "CONFLUENCE_MCP_TOKEN",
-			"header_env":       map[string]any{"x-tenant": "TENANT_ID"},
+			"tool":                  "export_documents",
+			"arguments":             map[string]any{"space": "ENG"},
+			"bearer_token_env":      "CONFLUENCE_MCP_TOKEN",
+			"header_env":            map[string]any{"x-tenant": "TENANT_ID"},
+			"allow_private_network": true,
 		},
 	}
 	spec, err := source.MCPSourceSpec()
@@ -191,8 +193,40 @@ func TestSourceConfigMCPSourceSpec(t *testing.T) {
 	if spec.SourceType != "confluence" || spec.BearerTokenEnv != "CONFLUENCE_MCP_TOKEN" || spec.HeaderEnv["x-tenant"] != "TENANT_ID" {
 		t.Fatalf("spec metadata = %+v", spec)
 	}
+	if !spec.AllowPrivateNetwork {
+		t.Fatalf("allow_private_network = false, want true")
+	}
 	if spec.Arguments["space"] != "ENG" {
 		t.Fatalf("arguments = %#v", spec.Arguments)
+	}
+}
+
+func TestMCPSourceValidateServerRejectsPrivateNetworkByDefault(t *testing.T) {
+	spec := MCPSourceSpec{
+		ID:        "mcp-local",
+		Scope:     "repo:abra",
+		ServerURL: "http://127.0.0.1:8080/mcp",
+		Tool:      "export_documents",
+	}
+	err := spec.Validate()
+	if err == nil {
+		t.Fatal("expected private MCP URL to be rejected")
+	}
+	if !strings.Contains(err.Error(), "private address") {
+		t.Fatalf("error = %q, want private address", err)
+	}
+}
+
+func TestMCPSourceValidateServerAllowsPrivateNetworkWhenExplicit(t *testing.T) {
+	spec := MCPSourceSpec{
+		ID:                  "mcp-local",
+		Scope:               "repo:abra",
+		ServerURL:           "http://127.0.0.1:8080/mcp",
+		Tool:                "export_documents",
+		AllowPrivateNetwork: true,
+	}
+	if err := spec.Validate(); err != nil {
+		t.Fatal(err)
 	}
 }
 

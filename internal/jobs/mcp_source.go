@@ -3,10 +3,13 @@ package jobs
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -219,10 +222,15 @@ func callMCPJSONRPC(ctx context.Context, source SourceConfig, method string, par
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, spec.ServerURL, bytes.NewReader(payload))
+	targetURL, err := url.Parse(spec.ServerURL)
 	if err != nil {
 		return err
 	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, mcpStaticRequestURL(targetURL), bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Host = targetURL.Host
 	req.Header.Set("content-type", "application/json")
 	req.Header.Set("accept", "application/json")
 	if spec.BearerTokenEnv != "" {
@@ -239,7 +247,7 @@ func callMCPJSONRPC(ctx context.Context, source SourceConfig, method string, par
 		}
 		req.Header.Set(header, value)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := mcpHTTPClient(targetURL, spec.AllowPrivateNetwork).Do(req)
 	if err != nil {
 		return fmt.Errorf("call mcp source %q: %w", source.ID, err)
 	}
@@ -274,6 +282,71 @@ func callMCPJSONRPC(ctx context.Context, source SourceConfig, method string, par
 		return fmt.Errorf("decode mcp source %q result: %w", source.ID, err)
 	}
 	return nil
+}
+
+func mcpStaticRequestURL(target *url.URL) string {
+	path := target.Path
+	if path == "" {
+		path = "/"
+	}
+	requestURL := url.URL{
+		Scheme:   target.Scheme,
+		Host:     "abra-mcp-connector.invalid",
+		Path:     path,
+		RawPath:  target.RawPath,
+		RawQuery: target.RawQuery,
+	}
+	return requestURL.String()
+}
+
+func mcpHTTPClient(target *url.URL, allowPrivateNetwork bool) *http.Client {
+	transport := &http.Transport{
+		DialContext: mcpDialContext(target, allowPrivateNetwork),
+	}
+	if target.Scheme == "https" {
+		transport.TLSClientConfig = &tls.Config{ServerName: target.Hostname()}
+	}
+	return &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: transport,
+	}
+}
+
+func mcpDialContext(target *url.URL, allowPrivateNetwork bool) func(context.Context, string, string) (net.Conn, error) {
+	dialer := &net.Dialer{Timeout: 30 * time.Second}
+	return func(ctx context.Context, network, address string) (net.Conn, error) {
+		host := target.Hostname()
+		port := target.Port()
+		if port == "" {
+			port = "80"
+			if target.Scheme == "https" {
+				port = "443"
+			}
+		}
+		if allowPrivateNetwork {
+			return dialer.DialContext(ctx, network, net.JoinHostPort(host, port))
+		}
+		if strings.EqualFold(strings.TrimSuffix(host, "."), "localhost") {
+			return nil, fmt.Errorf("mcp source dial blocked private host %q", host)
+		}
+		if ip := net.ParseIP(host); ip != nil {
+			if isPrivateMCPIP(ip) {
+				return nil, fmt.Errorf("mcp source dial blocked private address %q", host)
+			}
+			return dialer.DialContext(ctx, network, address)
+		}
+		ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+		if err != nil {
+			return nil, err
+		}
+		for _, resolved := range ips {
+			if isPrivateMCPIP(resolved.IP) {
+				continue
+			}
+			return dialer.DialContext(ctx, network, net.JoinHostPort(resolved.IP.String(), port))
+		}
+		return nil, fmt.Errorf("mcp source dial blocked host %q because it resolved only to private addresses", host)
+	}
 }
 
 func mcpDocumentsFromResult(result mcpToolResult, source SourceConfig) ([]mcpDocument, error) {
