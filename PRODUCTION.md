@@ -12,7 +12,11 @@ Prerequisites:
 
 - Docker Engine with Compose.
 - A generated `ABRA_API_KEYS` value.
-- A local Qwen-compatible embedding endpoint, or a custom compatible embedding provider. The built-in CLI lifecycle manages Qwen/Qwen3-Embedding-0.6B for local development; production local mode requires explicit allowance and digest-pinned runner images. Reranking is optional and configured separately through compatible reranker provider settings.
+- A local embedding endpoint, or a custom compatible embedding provider. The
+  built-in CLI lifecycle can manage a local development runner; production
+  local mode requires explicit allowance and digest-pinned runner images.
+  Reranking is optional and configured separately through compatible reranker
+  provider settings.
 - Enough disk for Postgres source snippets, claims, audit events, and vectors.
 
 Create `.env.production`:
@@ -184,13 +188,13 @@ Production startup fails without `ABRA_WEBHOOK_SECRETS` unless `ABRA_ALLOW_UNSIG
 
 `EMBEDDING_PROVIDER=local` is the default self-hosted neural path. It does not need an external API key, but it does require a local embedding endpoint reachable from the Abra containers. With Docker Compose, the default URLs use `host.docker.internal` so models running on the host can be reached from the API and worker containers. If you intentionally run local embeddings in production, set `ABRA_LOCAL_EMBEDDING_IMAGE` to an operator-verified `@sha256` runner image or provide your own compatible endpoint. Set `EMBEDDING_PROVIDER=compatible` to replace the local defaults with a custom provider.
 
-The provider contract is intentionally provider-neutral. The provider must expose the configured embeddings request/response shape and must return vectors with the configured `EMBEDDING_DIMENSIONS`. API keys may be empty for self-hosted endpoints. `ABRA_EMBEDDING_BATCH_MAX_ITEMS` and `ABRA_EMBEDDING_BATCH_MAX_TOKENS` bound each embedding provider request; use smaller batches for local Qwen context-window reliability and raise them only after a compatible provider has measured capacity. The optional reranker is controlled separately with `RERANKER_PROVIDER`, `RERANKER_BASE_URL`, `RERANKER_API_KEY`, and `RERANKER_MODEL`; when unset, custom embedding providers do not keep the local Qwen reranker enabled. Abra stores embeddings and source-derived snippets; it does not send prompts for generation.
+The provider contract is intentionally provider-neutral. The provider must expose the configured embeddings request/response shape and must return vectors with the configured `EMBEDDING_DIMENSIONS`. API keys may be empty for self-hosted endpoints. `ABRA_EMBEDDING_BATCH_MAX_ITEMS` and `ABRA_EMBEDDING_BATCH_MAX_TOKENS` bound each embedding provider request; use smaller batches for local runner context-window reliability and raise them only after a compatible provider has measured capacity. The optional reranker is controlled separately with `RERANKER_PROVIDER`, `RERANKER_BASE_URL`, `RERANKER_API_KEY`, and `RERANKER_MODEL`; when unset, custom embedding providers do not keep a local reranker enabled. Abra stores embeddings and source-derived snippets; it does not send prompts for generation.
 
-`ABRA_COMPOSE_HEALTH_CACHE_TTL` controls the short-lived per-scope health snapshot cache used by `POST /memory/compose`; set it to `0s` to disable caching. Direct `GET /memory/health` remains uncached for operator checks. Track `abra_working_memory_health_lookup_total` to see whether compose traffic is using fresh lookups, cache hits, coalesced waits, disabled cache mode, or unknown/error paths.
+`ABRA_COMPOSE_HEALTH_CACHE_TTL` controls the short-lived per-scope health snapshot cache used by MCP `working_memory_compose`; set it to `0s` to disable caching. Direct `GET /memory/health` remains uncached for operator checks. Track `abra_working_memory_health_lookup_total` to see whether compose traffic is using fresh lookups, cache hits, coalesced waits, disabled cache mode, or unknown/error paths.
 
-`ABRA_COMPOSE_RECALL_CONCURRENCY` and `ABRA_COMPOSE_GRAPH_CONCURRENCY` cap per-request fan-out inside `POST /memory/compose` and MCP `working_memory_compose`. Keep the conservative defaults (`1` for recall and `4` for graph) for small installs and local embedding runners; raise them only after watching database pool usage, recall latency, embedding-provider saturation, and memory-compose p95 under realistic agent traffic. Values must be between `1` and `32`.
+`ABRA_COMPOSE_RECALL_CONCURRENCY` and `ABRA_COMPOSE_GRAPH_CONCURRENCY` cap per-request fan-out inside MCP `working_memory_compose`. Keep the conservative defaults (`1` for recall and `4` for graph) for small installs and local embedding runners; raise them only after watching database pool usage, recall latency, embedding-provider saturation, and memory-compose p95 under realistic agent traffic. Values must be between `1` and `32`.
 
-`WORKER_MAX_SOURCES_PER_RUN` caps how many queued ingestion jobs one worker cycle claims. `WORKER_CONCURRENCY` caps how many claimed jobs run at once inside one worker process. Keep `WORKER_CONCURRENCY=1` with the default local Qwen runner; raise it only after the embedding provider and database pool have measured headroom. Same-source jobs are serialized inside one worker process to avoid git-cache and source-refresh races.
+`WORKER_MAX_SOURCES_PER_RUN` caps how many queued ingestion jobs one worker cycle claims. `WORKER_CONCURRENCY` caps how many claimed jobs run at once inside one worker process. Keep `WORKER_CONCURRENCY=1` with the default local runner; raise it only after the embedding provider and database pool have measured headroom. Same-source jobs are serialized inside one worker process to avoid git-cache and source-refresh races.
 
 OpenTelemetry tracing is optional and disabled unless `OTEL_EXPORTER_OTLP_ENDPOINT` or `ABRA_OTEL_EXPORTER_OTLP_ENDPOINT` is configured. Set `ABRA_TRACING_SAMPLE_RATIO` to a value from `0` to `1` to control head sampling. Keep sampled traces out of user/task payloads: Abra spans intentionally record bounded operation metadata such as route, status, retrieval mode, counts, verdict, agent decision, and worker ingestion counts, not raw scope names, queries, task text, principals, or tokens.
 
@@ -265,7 +269,7 @@ the chart does not require a mounted service account token for normal operation.
 - Do not give autonomous agents direct `admin` or all-scope write credentials. Route connector, ACL, and backfill operations through request-only tools or a private overlay when those operations live outside OSS Abra.
 - Use `POST /acl/decision` from the identity gateway to combine external group membership with Abra scope/resource policy. Treat no-match decisions as deny.
 - Use `POST /agent/policy/decision` before risky agent actions when prompt-level rules are not enough. Stored agent-action policies can return `allow`, `deny`, or `require_review`; require-review forces an approved request even if the deployment is otherwise in advisory mode.
-- Require agents that use `POST /memory/compose` to read both `agent_policy_decisions` and `agent_decision` before calling write, challenge, forget, backfill, source authority, or policy mutation tools.
+- Require agents that use MCP `working_memory_compose` or `brain_think` to read both `agent_policy_decisions` and `agent_decision` before calling write, challenge, forget, backfill, source authority, or policy mutation tools.
 
 ## Production Approval Workflow
 
@@ -341,7 +345,7 @@ and MCP `validate_mcp_source`. Server-side validation that reads
 MCP server. Register the source only after the exported documents have stable
 `source_url`, title, content, scope, and authority semantics. Keep bearer tokens
 and custom headers in env references such as `bearer_token_env` and
-`header_env`; do not store literal vendor credentials in source configs.
+`header_env`; do not store literal source credentials in source configs.
 
 Operate registered sources through the source lifecycle commands:
 
@@ -365,11 +369,10 @@ when the source authority, authority score, scope, or connector identity
 changed. Source config upserts and pause/resume changes write audit events, so
 record the approval ID and the later operation `x-request-id` in change records.
 
-Private connector overlays still own vendor credentials, token rotation,
-source-system ACL and group normalization, event diffing, and provider-specific
-retries for systems such as Confluence, Jira, Slack, or Drive. Abra owns the
-durable memory contract after the overlay or MCP source emits normalized
-documents.
+Private connector overlays still own source credentials, token rotation,
+source-system ACL and group normalization, event diffing, and source-specific
+retries. Abra owns the durable memory contract after the overlay or MCP source
+emits normalized documents.
 
 ## Observability
 
@@ -391,8 +394,8 @@ Endpoints:
 - `GET /conflicts`
 - `POST /conflicts/:conflictId/resolve`
 - `POST /sources`
-- `POST /brain/think`
-- `POST /memory/compose`
+- MCP `brain_think`
+- MCP `working_memory_compose`
 - `GET /memory/health`
 - `POST /memory/summaries`
 - `POST /memory/summaries/rebuild`

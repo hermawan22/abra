@@ -74,8 +74,8 @@ const managedStackEnv = {
 
 const productionComposeEnv = {
   ...managedStackEnv,
-  ABRA_IMAGE: process.env.ABRA_IMAGE || "ghcr.io/hermawan22/abra@sha256:0000000000000000000000000000000000000000000000000000000000000000",
-  POSTGRES_IMAGE: process.env.POSTGRES_IMAGE || "pgvector/pgvector@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  ABRA_IMAGE: process.env.ABRA_PRODUCTION_IMAGE || "ghcr.io/hermawan22/abra@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  POSTGRES_IMAGE: process.env.POSTGRES_PRODUCTION_IMAGE || "pgvector/pgvector@sha256:0000000000000000000000000000000000000000000000000000000000000000"
 };
 
 const composeDevFiles = ["-f", "docker-compose.yml", "-f", "docker-compose.dev.yml"];
@@ -140,7 +140,7 @@ function imageRefIsDigestPinned(value) {
 function validateProductionComposeImages() {
   const invalid = [];
   for (const name of ["ABRA_IMAGE", "POSTGRES_IMAGE"]) {
-    if (process.env[name] && !imageRefIsDigestPinned(process.env[name])) {
+    if (!imageRefIsDigestPinned(productionComposeEnv[name])) {
       invalid.push(`${name} must be digest-pinned with @sha256:<64 hex>`);
     }
   }
@@ -299,6 +299,20 @@ function writeManagedEnvFile() {
 
 async function waitForReady(name) {
   const started = Date.now();
+  if (dryRun) {
+    checks.push({
+      name,
+      command: `GET ${baseUrl}/readyz`,
+      ok: true,
+      exit_code: 0,
+      duration_ms: 0,
+      dry_run: true,
+      skipped: true,
+      stdout: "dry run: readiness check was not executed",
+      stderr: ""
+    });
+    return;
+  }
   let lastError = "";
   while (Date.now() - started < readyTimeoutMs) {
     try {
@@ -473,6 +487,20 @@ async function main() {
   await runCommand("npm_pack_allowlist", "npm", ["run", "test:npm-pack"]);
   await runCommand("oss_hygiene", "npm", ["run", "check:oss"]);
   await runCommand("go_tests", "go", ["test", "./..."], {
+    env: {
+      ABRA_BASE_URL: null,
+      ABRA_API_TOKEN: null,
+      ABRA_WEBHOOK_SECRET: null
+    }
+  });
+  await runCommand("go_vet", "go", ["vet", "./..."], {
+    env: {
+      ABRA_BASE_URL: null,
+      ABRA_API_TOKEN: null,
+      ABRA_WEBHOOK_SECRET: null
+    }
+  });
+  await runCommand("staticcheck", "go", ["run", "honnef.co/go/tools/cmd/staticcheck@v0.7.0", "./..."], {
     env: {
       ABRA_BASE_URL: null,
       ABRA_API_TOKEN: null,

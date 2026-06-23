@@ -6,40 +6,42 @@ Abra's pre-OSS public surface is frozen around a small agent-first core.
 
 Abra is:
 
-- a CLI-first governed brain for AI agents;
+- an agent-first governed external brain;
+- MCP-first for agent cognition;
+- CLI-backed for install, setup, operator inspection, maintenance, and eval;
 - source, model, and agent agnostic;
 - backed by Postgres and pgvector;
-- local-first by default through Qwen embeddings;
+- local-first by default through a compatible embedding runner;
 - extensible through normalized plugin contracts.
 
 Abra is not:
 
 - a web app;
-- a vendor-specific connector bundle;
+- a source-specific connector bundle;
 - a chat UI;
 - a generic automation platform;
 - a place to encode private business logic.
 
-## Canonical CLI Surface
+## Canonical Operator CLI Surface
 
-New user-facing work must fit one of these commands:
+New operator-facing work must fit one of these commands:
 
-```text
-setup
-up
-down
-doctor
-scope
-connect
-sync
-ask
-context
-agent
-model
-brain
-govern
-plugin
-```
+- `setup`
+- `up`
+- `down`
+- `doctor`
+- `scope`
+- `connect`
+- `sync`
+- `agent`
+- `model`
+- `brain`
+- `govern`
+- `plugin`
+
+`ask` and `context` remain supported operator/script fallbacks for inspecting
+brain output, but the canonical agent path is MCP: `discover_scopes`,
+`working_memory_compose`, `brain_think`, and the brain quality tools.
 
 Compatibility commands can remain, but they should not be promoted as the main
 path in new documentation.
@@ -48,7 +50,8 @@ path in new documentation.
 
 - Reliability, security, and production hardening.
 - Better source normalization, transform, extraction, recall, and governance.
-- Provider-neutral CLI, MCP, HTTP, and plugin contract improvements.
+- Provider-neutral MCP brain, operator CLI, and plugin contract improvements.
+- HTTP transport hardening when required by MCP, CLI, gateways, or automation.
 - Tests, diagnostics, and install quality.
 - Documentation that makes the frozen surface clearer.
 
@@ -56,7 +59,7 @@ path in new documentation.
 
 Use an extension boundary for:
 
-- vendor-specific connectors;
+- source-specific connectors;
 - OAuth, ACL, workspace, or customer mapping;
 - private approval policy;
 - business-model-specific behavior;

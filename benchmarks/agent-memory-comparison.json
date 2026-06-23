@@ -1,0 +1,159 @@
+{
+  "schema": "abra.agent_memory_comparison.v1",
+  "updated": "2026-06-23",
+  "dimensions": [
+    {
+      "id": "source_cited_answers",
+      "label": "Source-cited answers",
+      "weight": 10,
+      "why": "Agents need inspectable evidence before acting."
+    },
+    {
+      "id": "same_source_anchors",
+      "label": "Same-source evidence anchors",
+      "weight": 10,
+      "why": "Quote or span anchors reduce polished unsupported answers."
+    },
+    {
+      "id": "no_llm_default_recall",
+      "label": "No-LLM default recall",
+      "weight": 10,
+      "why": "Default query path should stay fast, cheap, and deterministic."
+    },
+    {
+      "id": "temporal_context",
+      "label": "Temporal context",
+      "weight": 8,
+      "why": "Agents must distinguish current truth from historical facts."
+    },
+    {
+      "id": "entity_graph",
+      "label": "Entity and graph recall",
+      "weight": 8,
+      "why": "Memory should connect facts, entities, code areas, and decisions."
+    },
+    {
+      "id": "governed_learning",
+      "label": "Governed learning",
+      "weight": 10,
+      "why": "Agents should observe and propose, not silently promote truth."
+    },
+    {
+      "id": "conflict_gate",
+      "label": "Conflict-aware decision gate",
+      "weight": 10,
+      "why": "Conflicting memory should block unsafe autonomous action."
+    },
+    {
+      "id": "agent_handoff",
+      "label": "Agent handoff UX",
+      "weight": 8,
+      "why": "The agent needs trust, gaps, conflicts, next action, and validation."
+    },
+    {
+      "id": "token_budget",
+      "label": "Token budget control",
+      "weight": 10,
+      "why": "A brain packet should fit bounded context instead of replaying memory."
+    },
+    {
+      "id": "lean_core",
+      "label": "Lean self-hosted core",
+      "weight": 6,
+      "why": "Core should avoid unnecessary services and vendor lock-in."
+    }
+  ],
+  "systems": [
+    {
+      "id": "abra",
+      "name": "Abra",
+      "source": "local repository",
+      "scores": {
+        "source_cited_answers": "strong",
+        "same_source_anchors": "strong",
+        "no_llm_default_recall": "strong",
+        "temporal_context": "strong",
+        "entity_graph": "strong",
+        "governed_learning": "strong",
+        "conflict_gate": "strong",
+        "agent_handoff": "strong",
+        "token_budget": "strong",
+        "lean_core": "strong"
+      }
+    },
+    {
+      "id": "mem0",
+      "name": "Mem0",
+      "source": "https://docs.mem0.ai/migration/oss-v2-to-v3",
+      "scores": {
+        "source_cited_answers": "partial",
+        "same_source_anchors": "unknown",
+        "no_llm_default_recall": "partial",
+        "temporal_context": "partial",
+        "entity_graph": "strong",
+        "governed_learning": "partial",
+        "conflict_gate": "unknown",
+        "agent_handoff": "partial",
+        "token_budget": "partial",
+        "lean_core": "partial"
+      }
+    },
+    {
+      "id": "graphiti_zep",
+      "name": "Graphiti / Zep",
+      "source": "https://help.getzep.com/graphiti/getting-started/overview",
+      "scores": {
+        "source_cited_answers": "partial",
+        "same_source_anchors": "partial",
+        "no_llm_default_recall": "partial",
+        "temporal_context": "strong",
+        "entity_graph": "strong",
+        "governed_learning": "partial",
+        "conflict_gate": "partial",
+        "agent_handoff": "partial",
+        "token_budget": "partial",
+        "lean_core": "partial"
+      }
+    },
+    {
+      "id": "letta",
+      "name": "Letta",
+      "source": "https://docs.letta.com/guides/core-concepts/stateful-agents/",
+      "scores": {
+        "source_cited_answers": "partial",
+        "same_source_anchors": "unknown",
+        "no_llm_default_recall": "partial",
+        "temporal_context": "partial",
+        "entity_graph": "partial",
+        "governed_learning": "partial",
+        "conflict_gate": "unknown",
+        "agent_handoff": "strong",
+        "token_budget": "strong",
+        "lean_core": "partial"
+      }
+    },
+    {
+      "id": "cognee",
+      "name": "Cognee",
+      "source": "https://docs.cognee.ai/",
+      "scores": {
+        "source_cited_answers": "partial",
+        "same_source_anchors": "unknown",
+        "no_llm_default_recall": "partial",
+        "temporal_context": "partial",
+        "entity_graph": "strong",
+        "governed_learning": "partial",
+        "conflict_gate": "unknown",
+        "agent_handoff": "partial",
+        "token_budget": "partial",
+        "lean_core": "partial"
+      }
+    }
+  ],
+  "score_values": {
+    "strong": 1,
+    "partial": 0.5,
+    "unknown": 0
+  },
+  "reporting_rule": "Capability scores are normalized feature ratings based on public documentation. They are not latency, throughput, token-count, or accuracy claims. Publish cross-system performance numbers only with a reproducible harness, dataset, model configuration, provider configuration, and hardware."
+}

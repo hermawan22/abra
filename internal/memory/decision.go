@@ -226,38 +226,6 @@ func graphMatters(intent string) bool {
 	}
 }
 
-func reviewActions(result ComposeResult) []string {
-	actions := []string{}
-	if len(result.Verification.UnverifiedClaims) > 0 {
-		actions = append(actions, "verify_unverified_claims")
-	}
-	if len(result.Verification.StaleClaims) > 0 {
-		actions = append(actions, "refresh_stale_sources")
-	}
-	if len(result.Verification.ChallengedClaims) > 0 {
-		actions = append(actions, "resolve_challenged_claims")
-	}
-	if len(result.Verification.MissingEvidenceClaims) > 0 {
-		actions = append(actions, "attach_missing_evidence")
-	}
-	if len(result.Verification.RetrievalWarnings) > 0 {
-		actions = append(actions, "rerun_degraded_retrieval")
-	}
-	if result.Verification.RetrievalQuality.LowConfidence {
-		actions = append(actions, "rerun_with_more_specific_query")
-	}
-	if result.Verification.RetrievalQuality.LowSourceDiversity {
-		actions = append(actions, "corroborate_with_additional_source")
-	}
-	if len(result.Verification.GraphWarnings) > 0 {
-		actions = append(actions, "review_graph_warnings")
-	}
-	if len(actions) == 0 {
-		actions = append(actions, "cite_evidence_and_validate")
-	}
-	return actions
-}
-
 func appendUnique(values []string, extra ...string) []string {
 	seen := map[string]struct{}{}
 	out := make([]string, 0, len(values)+len(extra))

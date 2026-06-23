@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="title desc">
+  <title id="title">Abra system architecture</title>
+  <desc id="desc">A professional system diagram showing agents using Abra MCP tools, governed brain services, source ingestion, and Postgres with pgvector.</desc>
+  <defs>
+    <linearGradient id="surface" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f8fafc"/>
+      <stop offset="1" stop-color="#eef6f3"/>
+    </linearGradient>
+    <linearGradient id="coreFill" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#e8f4ff"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#0f172a" flood-opacity=".12"/>
+    </filter>
+    <marker id="arrow" markerWidth="14" markerHeight="14" refX="11" refY="7" orient="auto">
+      <path d="M2 2 12 7 2 12Z" fill="#2563eb"/>
+    </marker>
+    <style>
+      .bg{fill:url(#surface)}
+      .grid{stroke:#dbe5ee;stroke-width:1;opacity:.65}
+      .eyebrow{font:700 13px Inter,Arial,sans-serif;letter-spacing:.08em;fill:#0f766e}
+      .title{font:800 34px Inter,Arial,sans-serif;fill:#0f172a}
+      .subtitle{font:15px Inter,Arial,sans-serif;fill:#475569}
+      .lane{fill:#ffffff;stroke:#d8e2ec;stroke-width:1.5;rx:28;filter:url(#shadow)}
+      .laneTitle{font:800 17px Inter,Arial,sans-serif;fill:#0f172a}
+      .node{fill:#ffffff;stroke:#cbd5e1;stroke-width:1.4;rx:18}
+      .nodeCore{fill:url(#coreFill);stroke:#2563eb;stroke-width:2;rx:20}
+      .nodeStore{fill:#f0fdf4;stroke:#16a34a;stroke-width:2;rx:20}
+      .nodeOps{fill:#fff7ed;stroke:#ea580c;stroke-width:1.8;rx:18}
+      .label{font:800 16px Inter,Arial,sans-serif;fill:#111827}
+      .body{font:13px Inter,Arial,sans-serif;fill:#475569}
+      .mono{font:700 12px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#1d4ed8}
+      .pill{fill:#f8fafc;stroke:#dbe5ee;stroke-width:1;rx:13}
+      .line{stroke:#2563eb;stroke-width:2.5;fill:none;marker-end:url(#arrow)}
+      .quietLine{stroke:#94a3b8;stroke-width:1.6;fill:none;stroke-dasharray:5 7}
+    </style>
+  </defs>
+
+  <rect class="bg" width="1280" height="720"/>
+  <path class="grid" d="M80 110H1200M80 190H1200M80 270H1200M80 350H1200M80 430H1200M80 510H1200M80 590H1200M160 86V638M320 86V638M480 86V638M640 86V638M800 86V638M960 86V638M1120 86V638"/>
+
+  <text class="eyebrow" x="76" y="70">GOVERNED AGENT BRAIN</text>
+  <text class="title" x="76" y="112">Abra system architecture</text>
+  <text class="subtitle" x="78" y="143">Agents receive structured, source-cited memory packets; core governance decides what can be trusted.</text>
+
+  <rect class="lane" x="72" y="188" width="250" height="336"/>
+  <text class="laneTitle" x="104" y="228">Agent surfaces</text>
+  <rect class="node" x="104" y="258" width="186" height="74"/>
+  <text class="label" x="130" y="287">MCP clients</text>
+  <text class="body" x="130" y="311">MCP-compatible</text>
+  <text class="body" x="130" y="329">agents and tools</text>
+  <rect class="node" x="104" y="354" width="186" height="74"/>
+  <text class="label" x="130" y="383">Operator CLI</text>
+  <text class="body" x="130" y="407">setup, sync, doctor,</text>
+  <text class="body" x="130" y="425">governance, eval</text>
+  <rect class="pill" x="104" y="456" width="186" height="34"/>
+  <text class="mono" x="122" y="478">MCP is canonical</text>
+
+  <rect class="lane" x="382" y="160" width="520" height="392"/>
+  <text class="laneTitle" x="416" y="202">Abra governed core</text>
+  <rect class="nodeCore" x="416" y="232" width="208" height="118"/>
+  <text class="label" x="446" y="264">Brain tools</text>
+  <text class="body" x="446" y="292">working_memory_compose</text>
+  <text class="body" x="446" y="314">brain_think</text>
+  <text class="body" x="446" y="336">review, scorecard</text>
+  <rect class="nodeCore" x="660" y="232" width="208" height="118"/>
+  <text class="label" x="690" y="264">Cognition</text>
+  <text class="body" x="690" y="292">hybrid recall + graph</text>
+  <text class="body" x="690" y="314">freshness + conflicts</text>
+  <text class="body" x="690" y="336">evidence anchors</text>
+  <rect class="nodeCore" x="416" y="386" width="208" height="116"/>
+  <text class="label" x="446" y="418">Decision gate</text>
+  <text class="body" x="446" y="446">proceed, caution,</text>
+  <text class="body" x="446" y="468">review, blocked</text>
+  <rect class="nodeCore" x="660" y="386" width="208" height="116"/>
+  <text class="label" x="690" y="418">Learning control</text>
+  <text class="body" x="690" y="446">observe, propose,</text>
+  <text class="body" x="690" y="468">verify, promote</text>
+
+  <rect class="lane" x="962" y="188" width="246" height="336"/>
+  <text class="laneTitle" x="994" y="228">Durable memory</text>
+  <rect class="nodeStore" x="994" y="258" width="182" height="142"/>
+  <text class="label" x="1024" y="290">Postgres</text>
+  <text class="body" x="1024" y="318">pgvector embeddings</text>
+  <text class="body" x="1024" y="340">claims and chunks</text>
+  <text class="body" x="1024" y="362">entities and graph</text>
+  <text class="body" x="1024" y="384">audit and traces</text>
+  <rect class="nodeOps" x="994" y="428" width="182" height="62"/>
+  <text class="label" x="1024" y="456">Sources</text>
+  <text class="body" x="1024" y="478">files, git, MCP, webhooks</text>
+
+  <path class="line" d="M322 332C354 332 354 291 406 291"/>
+  <path class="line" d="M624 291H650"/>
+  <path class="line" d="M868 291C920 291 920 329 984 329"/>
+  <path class="line" d="M994 459C918 459 928 444 878 444"/>
+  <path class="quietLine" d="M520 350V386"/>
+  <path class="quietLine" d="M764 350V386"/>
+
+  <rect class="pill" x="430" y="590" width="420" height="44"/>
+  <text class="mono" x="458" y="617">Default recall path: zero LLM calls, bounded context, cited evidence</text>
+</svg>

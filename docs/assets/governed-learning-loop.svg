@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="560" viewBox="0 0 1280 560" role="img" aria-labelledby="title desc">
+  <title id="title">Abra governed learning loop</title>
+  <desc id="desc">A polished flow diagram showing observe, propose, verify, approve, promote, and use with governance gates.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fbfdfc"/>
+      <stop offset="1" stop-color="#edf7f3"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-30%" width="140%" height="170%">
+      <feDropShadow dx="0" dy="12" stdDeviation="16" flood-color="#0f172a" flood-opacity=".12"/>
+    </filter>
+    <marker id="arrow" markerWidth="14" markerHeight="14" refX="11" refY="7" orient="auto">
+      <path d="M2 2 12 7 2 12Z" fill="#0f766e"/>
+    </marker>
+    <style>
+      .bg{fill:url(#bg)}
+      .title{font:800 32px Inter,Arial,sans-serif;fill:#0f172a}
+      .subtitle{font:15px Inter,Arial,sans-serif;fill:#475569}
+      .step{fill:#ffffff;stroke:#cfe1da;stroke-width:1.5;rx:22;filter:url(#shadow)}
+      .gate{fill:#fffbeb;stroke:#d97706;stroke-width:2;rx:22;filter:url(#shadow)}
+      .done{fill:#ecfdf5;stroke:#059669;stroke-width:2;rx:22;filter:url(#shadow)}
+      .num{font:800 13px Inter,Arial,sans-serif;fill:#0f766e}
+      .numGate{font:800 13px Inter,Arial,sans-serif;fill:#b45309}
+      .label{font:800 20px Inter,Arial,sans-serif;fill:#111827}
+      .body{font:14px Inter,Arial,sans-serif;fill:#475569}
+      .caption{font:700 13px Inter,Arial,sans-serif;fill:#0f766e}
+      .line{stroke:#0f766e;stroke-width:3;fill:none;marker-end:url(#arrow)}
+      .rail{stroke:#cbd5e1;stroke-width:1.4;stroke-dasharray:6 8}
+      .chip{fill:#ffffff;stroke:#d8e2ec;rx:16}
+    </style>
+  </defs>
+
+  <rect class="bg" width="1280" height="560"/>
+  <text class="title" x="74" y="78">Governed learning loop</text>
+  <text class="subtitle" x="76" y="110">Abra lets memory feel alive to agents without allowing silent truth writes.</text>
+  <line class="rail" x1="122" y1="274" x2="1158" y2="274"/>
+
+  <g transform="translate(76 180)">
+    <rect class="step" width="168" height="162"/>
+    <text class="num" x="24" y="34">01</text>
+    <text class="label" x="24" y="70">Observe</text>
+    <text class="body" x="24" y="104">Capture raw outcome,</text>
+    <text class="body" x="24" y="126">correction, preference,</text>
+    <text class="body" x="24" y="148">or repeated signal.</text>
+  </g>
+  <path class="line" d="M254 261H306"/>
+
+  <g transform="translate(316 180)">
+    <rect class="step" width="168" height="162"/>
+    <text class="num" x="24" y="34">02</text>
+    <text class="label" x="24" y="70">Propose</text>
+    <text class="body" x="24" y="104">Create a reviewable</text>
+    <text class="body" x="24" y="126">candidate with source</text>
+    <text class="body" x="24" y="148">and scope context.</text>
+  </g>
+  <path class="line" d="M494 261H546"/>
+
+  <g transform="translate(556 180)">
+    <rect class="gate" width="168" height="162"/>
+    <text class="numGate" x="24" y="34">03</text>
+    <text class="label" x="24" y="70">Verify</text>
+    <text class="body" x="24" y="104">Check citations, anchors,</text>
+    <text class="body" x="24" y="126">freshness, authority,</text>
+    <text class="body" x="24" y="148">and conflicts.</text>
+  </g>
+  <path class="line" d="M734 261H786"/>
+
+  <g transform="translate(796 180)">
+    <rect class="gate" width="168" height="162"/>
+    <text class="numGate" x="24" y="34">04</text>
+    <text class="label" x="24" y="70">Approve</text>
+    <text class="body" x="24" y="104">Operator or policy</text>
+    <text class="body" x="24" y="126">accepts, rejects, or</text>
+    <text class="body" x="24" y="148">asks for more proof.</text>
+  </g>
+  <path class="line" d="M974 261H1008"/>
+
+  <g transform="translate(1036 180)">
+    <rect class="done" width="168" height="162"/>
+    <text class="num" x="24" y="34">05</text>
+    <text class="label" x="24" y="70">Promote</text>
+    <text class="body" x="24" y="104">Trusted memory becomes</text>
+    <text class="body" x="24" y="126">usable by agents with</text>
+    <text class="body" x="24" y="148">traceable evidence.</text>
+  </g>
+
+  <rect class="chip" x="308" y="406" width="664" height="48"/>
+  <text class="caption" x="338" y="436">Invariant: agents may observe, challenge, and propose; durable truth promotion stays governed.</text>
+</svg>

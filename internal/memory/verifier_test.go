@@ -91,6 +91,35 @@ func TestVerifyPacketSurfacesWeakEvidenceAnchorWithoutBlocking(t *testing.T) {
 	}
 }
 
+func TestVerifyPacketRequiresSameSourceEvidenceAnchor(t *testing.T) {
+	source := "file://source.md"
+	other := "file://other.md"
+	report := verifyPacket(
+		testSummaries(source),
+		[]store.ClaimResult{
+			{ID: "claim-1", Claim: "Frontend uses Playwright.", Status: "verified", Source: &source, Rank: 1.2, TextScore: 0.3, VectorScore: 0.2, Freshness: "fresh"},
+		},
+		[]store.DocumentResult{
+			{ID: "doc-1", Title: "Frontend", Source: source, Content: "Frontend browser testing guidance.", Rank: 1, TextScore: 0.4, VectorScore: 0.1},
+		},
+		[]store.RelationResult{
+			{FromEntity: "Frontend", ToEntity: "Playwright", Type: "uses", Confidence: 0.8, SourceURL: &source},
+		},
+		[]EvidenceItem{{SourceURL: source, Count: 2}},
+		testRetrievalPlan(1),
+		nil,
+		nil,
+		nil,
+		[]EvidenceAnchor{{Kind: "claim", ClaimID: "claim-1", SourceURL: other, Quote: "Frontend uses Playwright."}},
+	)
+	if len(report.WeakEvidenceAnchors) != 1 || report.WeakEvidenceAnchors[0] != "claim-1" {
+		t.Fatalf("cross-source anchor should not satisfy same-source evidence: %#v", report.WeakEvidenceAnchors)
+	}
+	if check, ok := findCheck(report.Checks, "evidence_anchors"); !ok || check.Status != "advisory" {
+		t.Fatalf("evidence anchor check should remain advisory: %#v ok=%v", check, ok)
+	}
+}
+
 func TestVerifyPacketReportsRerankQuality(t *testing.T) {
 	source := "file://source.md"
 	report := verifyPacket(

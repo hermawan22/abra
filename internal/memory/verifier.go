@@ -69,8 +69,17 @@ type RetrievalCoverage struct {
 	Missing  []string                `json:"missing,omitempty"`
 }
 
-func verifyPacket(summaries []store.MemorySummaryResult, facts []store.ClaimResult, docs []store.DocumentResult, graph []store.RelationResult, evidence []EvidenceItem, plan RetrievalPlan, conflicts []store.ConflictResult, retrievalWarnings []RetrievalWarning, graphWarnings []GraphWarning, healthInput ...store.MemoryHealthResult) VerificationReport {
-	health := verificationMemoryHealth(healthInput)
+func verifyPacket(summaries []store.MemorySummaryResult, facts []store.ClaimResult, docs []store.DocumentResult, graph []store.RelationResult, evidence []EvidenceItem, plan RetrievalPlan, conflicts []store.ConflictResult, retrievalWarnings []RetrievalWarning, graphWarnings []GraphWarning, options ...any) VerificationReport {
+	health := store.MemoryHealthResult{Status: "healthy", Score: 100}
+	anchors := []EvidenceAnchor{}
+	for _, option := range options {
+		switch value := option.(type) {
+		case store.MemoryHealthResult:
+			health = value
+		case []EvidenceAnchor:
+			anchors = value
+		}
+	}
 	evidenceSources := canonicalEvidenceSourceCount(docs, evidence)
 	report := VerificationReport{
 		Checks:              []VerificationCheck{},
@@ -94,7 +103,7 @@ func verifyPacket(summaries []store.MemorySummaryResult, facts []store.ClaimResu
 			report.MissingEvidenceClaims = append(report.MissingEvidenceClaims, fact.ID)
 		} else {
 			sourced++
-			if claimNeedsTextAnchor(fact) && !claimHasTextAnchor(fact, docs) {
+			if claimNeedsTextAnchor(fact) && !claimHasEvidenceAnchor(fact, anchors) {
 				report.WeakEvidenceAnchors = append(report.WeakEvidenceAnchors, fact.ID)
 			}
 		}
@@ -275,54 +284,20 @@ func claimNeedsTextAnchor(fact store.ClaimResult) bool {
 	}
 }
 
-func claimHasTextAnchor(fact store.ClaimResult, docs []store.DocumentResult) bool {
-	source := ""
-	if fact.Source != nil {
-		source = canonicalSourceID(*fact.Source)
-	}
-	if source == "" {
-		return false
-	}
-	claimText := normalizeEvidenceText(fact.Claim)
-	if claimText == "" {
-		return false
-	}
-	for _, doc := range docs {
-		if canonicalSourceID(doc.Source) != source {
+func claimHasEvidenceAnchor(fact store.ClaimResult, anchors []EvidenceAnchor) bool {
+	source := strings.TrimSpace(pointerString(fact.Source))
+	for _, anchor := range anchors {
+		if strings.TrimSpace(anchor.Kind) != "claim" {
 			continue
 		}
-		if contentAnchorsClaim(claimText, normalizeEvidenceText(doc.Content)) {
+		if strings.TrimSpace(anchor.ClaimID) != strings.TrimSpace(fact.ID) || strings.TrimSpace(anchor.Quote) == "" {
+			continue
+		}
+		if source == "" || strings.TrimSpace(anchor.SourceURL) == source {
 			return true
 		}
 	}
 	return false
-}
-
-func contentAnchorsClaim(claimText, contentText string) bool {
-	if claimText == "" || contentText == "" {
-		return false
-	}
-	if strings.Contains(contentText, claimText) {
-		return true
-	}
-	claimTokens := evidenceTokens(claimText)
-	if len(claimTokens) == 0 {
-		return false
-	}
-	contentTokens := map[string]struct{}{}
-	for _, token := range evidenceTokens(contentText) {
-		contentTokens[token] = struct{}{}
-	}
-	matched := 0
-	for _, token := range claimTokens {
-		if _, ok := contentTokens[token]; ok {
-			matched++
-		}
-	}
-	if len(claimTokens) <= 3 {
-		return matched == len(claimTokens)
-	}
-	return matched >= 4 && float64(matched)/float64(len(claimTokens)) >= 0.8
 }
 
 func normalizeEvidenceText(value string) string {
@@ -486,13 +461,6 @@ func memoryHealthCheck(health store.MemoryHealthResult) VerificationCheck {
 	}
 }
 
-func verificationMemoryHealth(values []store.MemoryHealthResult) store.MemoryHealthResult {
-	if len(values) == 0 {
-		return store.MemoryHealthResult{Status: "healthy", Score: 100}
-	}
-	return values[0]
-}
-
 func memoryHealthActionRequired(status string) bool {
 	status = strings.TrimSpace(status)
 	return status != "" && status != "healthy"
@@ -510,13 +478,6 @@ func coverageCheck(name string, coverage float64, total int, message string) Ver
 	default:
 		return VerificationCheck{Name: name, Status: "fail", Score: 0.2, Message: message}
 	}
-}
-
-func countCheck(name string, count int, message string) VerificationCheck {
-	if count > 0 {
-		return VerificationCheck{Name: name, Status: "pass", Score: 1, Message: message}
-	}
-	return VerificationCheck{Name: name, Status: "missing", Score: 0.35, Message: message}
 }
 
 func countTargetCheck(name string, count int, target int, message string) VerificationCheck {

@@ -39,6 +39,22 @@ func learningSuggestions(result ComposeResult) []LearningSuggestion {
 			},
 		})
 	}
+	for _, claimID := range result.Verification.WeakEvidenceAnchors {
+		add(LearningSuggestion{
+			ProposalType: "claim",
+			Title:        "Attach text-span evidence anchor",
+			Rationale:    "A verified claim has a source URL but no same-source quote or text-span anchor in the current packet; attach a stronger evidence span before using synthesis or autonomous actions.",
+			TargetType:   "claim",
+			TargetID:     claimID,
+			Confidence:   0.8,
+			Payload: map[string]any{
+				"task":              result.Task,
+				"verdict":           result.Verification.Verdict,
+				"recommended_flow":  "propose -> review -> apply",
+				"safe_agent_action": "propose_learning",
+			},
+		})
+	}
 	for _, claimID := range result.Verification.StaleClaims {
 		add(LearningSuggestion{
 			ProposalType: "source_refresh",

@@ -24,7 +24,7 @@ func setup(ctx context.Context, args cliArgs) error {
 		fmt.Println("Production env created.")
 		fmt.Println("Configure embeddings with:")
 		fmt.Println("  abra config model compatible --base-url https://models.example.com/v1 --model embedding-model --dimensions 1024 --env-file " + envPath(args))
-		fmt.Println("For an intentionally self-hosted local Qwen endpoint in production, also set ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=true and ABRA_LOCAL_EMBEDDING_IMAGE to a digest-pinned runner image after reviewing capacity and security.")
+		fmt.Println("For an intentionally self-hosted local embedding endpoint in production, also set ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=true and ABRA_LOCAL_EMBEDDING_IMAGE to a digest-pinned runner image after reviewing capacity and security.")
 		fmt.Println("Then start with:")
 		fmt.Println("  abra up --env-file " + envPath(args))
 		return nil
@@ -34,7 +34,7 @@ func setup(ctx context.Context, args cliArgs) error {
 	reader := bufio.NewReader(os.Stdin)
 	fmt.Println("Abra setup")
 	fmt.Println("This will check prerequisites, create the runtime env, choose the embedding provider used for retrieval, and optionally start the local stack.")
-	fmt.Println("Common paths write config through CLI commands; no manual env or Codex config editing is required.")
+	fmt.Println("Common paths write config through CLI commands; no manual env or agent-client config editing is required.")
 	fmt.Println()
 	printSetupPrerequisites()
 	fmt.Println("Env file: " + envPath(args))
@@ -63,7 +63,7 @@ func setup(ctx context.Context, args cliArgs) error {
 		startModels := "yes"
 		if interactive && !boolFlag(args, "yes") {
 			var err error
-			startModels, err = promptDefault(reader, "Start local Qwen embedding runner now?", "yes")
+			startModels, err = promptDefault(reader, "Start local embedding runner now?", "yes")
 			if err != nil {
 				return err
 			}
@@ -194,8 +194,8 @@ func setupEmbeddingConfig(args cliArgs, reader *bufio.Reader, interactive bool) 
 	if mode == "" {
 		if interactive && !boolFlag(args, "yes") {
 			fmt.Println("Embedding provider (used for retrieval, not chat/LLM answers):")
-			fmt.Println("  1. local - built-in Qwen3 embedding runner")
-			fmt.Println("  2. compatible - custom OpenAI-compatible embedding endpoint")
+			fmt.Println("  1. local - built-in local embedding runner")
+			fmt.Println("  2. compatible - custom HTTP embedding endpoint")
 			fmt.Println("  3. openai - OpenAI text-embedding-3-small convenience alias")
 			choice, err := promptDefault(reader, "Choose embedding provider [1/2/3]", "1")
 			if err != nil {
@@ -295,7 +295,7 @@ func setupLocalNeuralEmbeddings(args cliArgs, reader *bufio.Reader, interactive 
 	}
 	if interactive && !boolFlag(args, "yes") {
 		var err error
-		baseURL, err = promptDefault(reader, "Qwen3 OpenAI-compatible base URL", baseURL)
+		baseURL, err = promptDefault(reader, "Local embedding-compatible base URL", baseURL)
 		if err != nil {
 			return err
 		}
@@ -360,7 +360,7 @@ func setupLocalNeuralEmbeddings(args cliArgs, reader *bufio.Reader, interactive 
 	}); err != nil {
 		return err
 	}
-	fmt.Println("Embedding: local neural default (Qwen3-compatible)")
+	fmt.Println("Embedding: local neural default")
 	if isDisabledProviderName(rerankerProvider) {
 		fmt.Println("Reranker: disabled by default; configure a compatible reranker only when you need reranked retrieval")
 	} else {
@@ -514,22 +514,23 @@ func printSetupNext(args cliArgs) {
 	if !isLocalProviderName(provider) && provider != "" {
 		fmt.Println("  verify your " + label + " embedding endpoint is reachable from Abra")
 	}
-	fmt.Println("Codex MCP and repo onboarding:")
+	fmt.Println("Agent MCP and repo onboarding:")
 	fmt.Println("  cd /path/to/project")
 	fmt.Println("  abra scope")
-	fmt.Println("  abra agent bootstrap --agent codex   # installs Codex MCP, syncs this repo, and verifies")
-	fmt.Println("  fully quit and reopen Codex Desktop")
+	fmt.Println("  abra agent bootstrap --agent <agent>   # initializes repo guidance, syncs if needed, and verifies")
+	fmt.Println("  fully restart the agent runtime")
 	fmt.Println("  abra agent ready . --scope <scope-from-abra-scope> --json")
-	fmt.Println(`  abra ask "What should I know before changing this project?" --scope <scope-from-abra-scope>`)
+	fmt.Println("  agents use MCP working_memory_compose / brain_think with the verified scope")
+	fmt.Println(`  optional operator check: abra ask "What should I know before changing this project?" --scope <scope-from-abra-scope>`)
 	fmt.Println("Manual alternative to bootstrap:")
 	fmt.Println("  abra agent status")
-	fmt.Println("  abra agent init --agent codex")
+	fmt.Println("  abra agent init --agent <agent>")
 	fmt.Println("  abra agent verify . --scope <scope-from-abra-scope>")
 	fmt.Println("  abra sync . --code --scope <scope-from-abra-scope>   # only if verify reports missing scope or empty memory")
-	fmt.Println("  abra agent install codex")
-	fmt.Println("  fully quit and reopen Codex Desktop")
+	fmt.Println("  abra agent install <agent>   # when an automated installer is available")
+	fmt.Println("  fully restart the agent runtime")
 	fmt.Println("  abra agent ready . --scope <scope-from-abra-scope> --json")
-	fmt.Println("If Codex says Abra has no context, run `abra agent ready . --scope <scope-from-abra-scope> --json` first. Reinstall/restart MCP when server_ready=true but agent_ready=false; sync only if verify reports missing scope or empty source-backed memory.")
+	fmt.Println("If an agent says Abra has no context, run `abra agent ready . --scope <scope-from-abra-scope> --json` first. Reinstall/restart MCP when server_ready=true but agent_ready=false; sync only if verify reports missing scope or empty source-backed memory.")
 }
 
 func setupConfiguredValues(args cliArgs) map[string]string {

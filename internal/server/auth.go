@@ -55,31 +55,6 @@ func (h *handler) requireAccess(w http.ResponseWriter, r *http.Request, action a
 	return false
 }
 
-func (h *handler) requireRole(w http.ResponseWriter, r *http.Request, action authAction) bool {
-	principal := principalFromContext(r.Context())
-	if principal == nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
-		return false
-	}
-	if principal.allowsAction(action) {
-		return true
-	}
-	writeJSON(w, http.StatusForbidden, map[string]string{
-		"error":         "forbidden",
-		"required_role": string(action),
-	})
-	return false
-}
-
-func (h *handler) requireClaimWriteAccess(w http.ResponseWriter, r *http.Request, claimID string) bool {
-	scope, err := h.db.ClaimScope(r.Context(), strings.TrimSpace(claimID))
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return false
-	}
-	return h.requireAccess(w, r, authActionWrite, scope)
-}
-
 func authGate(cfg config.Config, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" || r.URL.Path == "/healthz" || r.URL.Path == "/readyz" {

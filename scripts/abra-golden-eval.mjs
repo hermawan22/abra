@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 
 import { assertHybridRetrievalMode } from "./lib/eval-contracts.mjs";
+import { createMCPToolCaller } from "./lib/mcp.mjs";
 
 const baseUrl = (process.env.ABRA_BASE_URL || "http://127.0.0.1:18080").replace(/\/$/, "");
 const token = process.env.ABRA_API_TOKEN || "dev-token";
@@ -17,6 +18,7 @@ const requestTimeoutMs = Number(process.env.ABRA_GOLDEN_REQUEST_TIMEOUT_MS || "3
 const startedAt = new Date().toISOString();
 const checks = [];
 const artifacts = { base_url: baseUrl, dataset: datasetPath };
+const mcpTool = createMCPToolCaller({ baseUrl, token, timeoutMs: requestTimeoutMs });
 
 requireTokenForRemoteBaseURL(baseUrl);
 
@@ -477,21 +479,18 @@ await runCheck("golden_cases", async () => {
     if (item.memory_task) {
       memoryCases++;
       const before = Date.now();
-      memory = await request("/memory/compose", {
-        method: "POST",
-        body: {
-          task: item.memory_task,
-          scope: item.scope,
-          hook: item.hook || "before_task",
-          agent: item.agent || "golden-eval",
-          files: item.files || [],
-          changed_files: item.changed_files || [],
-          language: item.language || "",
-          limit,
-          max_queries: Number(item.max_queries || 6),
-          token_budget: Number(item.token_budget || 900),
-          include_unverified: item.include_unverified === true
-        }
+      memory = await mcpTool("working_memory_compose", {
+        task: item.memory_task,
+        scope: item.scope,
+        hook: item.hook || "before_task",
+        agent: item.agent || "golden-eval",
+        files: item.files || [],
+        changed_files: item.changed_files || [],
+        language: item.language || "",
+        limit,
+        max_queries: Number(item.max_queries || 6),
+        token_budget: Number(item.token_budget || 900),
+        include_unverified: item.include_unverified === true
       });
       memoryLatency = Date.now() - before;
       assert(memoryLatency <= memoryMaxMs, `${item.id} memory latency ${memoryLatency}ms exceeded ${memoryMaxMs}ms`);
@@ -549,17 +548,14 @@ await runCheck("golden_cases", async () => {
     ) {
       thinkCases++;
       const before = Date.now();
-      think = await request("/brain/think", {
-        method: "POST",
-        body: {
-          question: item.think_question || item.query,
-          scope: item.scope,
-          agent: item.agent || "golden-eval",
-          limit,
-          max_queries: Number(item.max_queries || 6),
-          token_budget: Number(item.token_budget || 900),
-          include_unverified: item.include_unverified === true
-        }
+      think = await mcpTool("brain_think", {
+        question: item.think_question || item.query,
+        scope: item.scope,
+        agent: item.agent || "golden-eval",
+        limit,
+        max_queries: Number(item.max_queries || 6),
+        token_budget: Number(item.token_budget || 900),
+        include_unverified: item.include_unverified === true
       });
       thinkLatency = Date.now() - before;
       assert(thinkLatency <= memoryMaxMs, `${item.id} brain_think latency ${thinkLatency}ms exceeded ${memoryMaxMs}ms`);

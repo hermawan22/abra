@@ -1,50 +1,60 @@
 # Abra
 
-Abra is a small CLI-first governed brain for AI agents.
+Abra is an agent-first, source-cited memory control plane for AI agents.
 
-It gives Codex, Claude Code, custom agents, and MCP-capable tools a shared,
-source-cited memory layer before they change code or answer operational
-questions. Abra is not a web app, chatbot, vector database UI, or model vendor
-wrapper.
+It gives AI agents a governed external brain for project knowledge, operational
+context, and source-backed decisions before they answer questions or change
+code. Abra is intentionally not a chatbot, web dashboard, generic RAG box,
+vector database UI, or model wrapper.
+
+## What Abra Is For
+
+Use Abra when an agent needs to:
+
+- understand a project or system from source-backed memory;
+- retrieve the right context before changing code;
+- answer operational questions with citations;
+- detect stale, conflicting, or weakly supported memory;
+- turn new observations into reviewable learning proposals;
+- share one governed memory layer across agent runtimes.
+
+## Why Abra
+
+Agent memory is risky when every observation is treated as truth. Abra keeps
+memory useful without letting agents silently promote unverified facts:
+
+![Governed learning loop](docs/assets/governed-learning-loop.svg)
+
+The default path is deterministic and no-LLM. Optional synthesis can be enabled
+only when evidence, citations, verification, and same-source anchors pass.
 
 ## Product Shape
 
-Abra stays intentionally small:
+- **MCP-first for agents**: agents use `working_memory_compose`, `brain_think`,
+  `brain_review`, `brain_scorecard`, and related tools directly.
+- **CLI for operators**: install, setup, source sync, diagnostics, governance,
+  eval, and small brain status checks.
+- **HTTP as transport**: used by MCP, CLI fallbacks, gateways, and private
+  automation; not the primary product UX.
+- **Postgres + pgvector**: durable source-backed memory, vector retrieval,
+  graph relations, policies, approvals, traces, and eval history.
+- **Governance in core**: plugins can bring data in, but core owns validation,
+  chunking, embeddings, graph extraction, citations, conflicts, approvals,
+  memory health, and agent decision gates.
 
-- CLI for humans.
-- MCP and HTTP for agents and automation.
-- Postgres + pgvector for durable memory.
-- Built-in local Qwen embedding/reranker defaults.
-- Compatible provider support when teams bring their own embedding endpoint.
-- Plugin contracts for external systems, without putting vendor logic in core.
+## Architecture
 
-Core intelligence is not a plugin bypass: normalization, chunking, claim
-extraction, graph extraction, embeddings, source authority, citations, conflicts,
-approvals, memory health, and agent decision gates stay inside Abra core.
+![Abra system architecture](docs/assets/abra-system.svg)
 
-## What Abra Does
+See:
 
-Abra turns source-backed documents into governed memory:
+- [Architecture](docs/ARCHITECTURE.md)
+- [Repository layout](docs/REPOSITORY_LAYOUT.md)
+- [Cognitive architecture](docs/COGNITIVE_ARCHITECTURE.md)
+- [Benchmarks](docs/BENCHMARKS.md)
+- [Feature freeze](docs/FEATURE_FREEZE.md)
 
-```text
-source -> normalize -> transform -> embed -> extract claims/graph -> govern -> recall/context
-```
-
-Agents can then:
-
-- ask cited questions with `abra ask`;
-- compose task-specific working context with `abra context`;
-- verify exact project scope with `abra agent verify`;
-- use the same context through MCP tools such as `discover_scopes` and
-  `working_memory_compose`.
-
-Raw observations are not trusted facts. They are captured, proposed, reviewed,
-and only then promoted into trusted memory.
-
-## Install
-
-Abra is not distributed through npm. The npm files in this repository are
-maintainer scripts for release checks only.
+## Quickstart
 
 Install the latest release binary:
 
@@ -60,80 +70,116 @@ gh attestation verify --repo hermawan22/abra install.sh
 ABRA_VERSION=vX.Y.Z ABRA_VERIFY_ATTESTATION=1 sh install.sh
 ```
 
-From a source checkout, run commands with `go run ./cmd/abra ...` until a release
-binary is installed.
-
-## 3-Minute Flow
+Start the local stack:
 
 ```sh
 abra setup
 abra doctor
-
-cd /path/to/project
-abra scope
-abra agent bootstrap --agent codex
 ```
 
-Fully quit and reopen Codex Desktop after bootstrap so the active process reads
-the MCP config and token environment.
+Bootstrap a project for an AI agent:
 
-Then:
+```sh
+cd /path/to/project
+abra scope
+abra agent bootstrap --agent <agent>
+```
+
+Fully restart the agent runtime after bootstrap so the active process reads the
+MCP config and token environment. Then verify:
 
 ```sh
 abra agent ready . --scope <scope-from-abra-scope> --json
-abra ask "What should I know before changing this project?" --scope <scope-from-abra-scope>
 ```
 
-Manual equivalent:
+Agents should then use Abra MCP tools directly. Operators can run a local sanity
+check with:
 
 ```sh
-abra agent install codex
-abra agent init --agent codex
-abra agent verify . --scope <scope-from-abra-scope>
-abra sync . --code --scope <scope-from-abra-scope>   # only when verify proves memory is missing
-abra agent verify . --scope <scope-from-abra-scope>
+abra ask "What should I know before changing this project?" --scope <scope>
 ```
 
-## CLI Surface
+## Core Agent Tools
 
-Canonical human commands:
+- `discover_scopes`: find the exact memory scope.
+- `working_memory_compose`: build task-specific working memory.
+- `brain_think`: return a governed answer with evidence and an agent gate.
+- `brain_entity_dossier`: inspect one entity with claims, relations, anchors,
+  conflicts, and temporal context.
+- `brain_review`: inspect memory health and weak spots.
+- `brain_scorecard`: score evidence, anchors, retrieval, freshness, conflicts,
+  graph, learning, and eval signals.
+- `brain_anchor_backfill`: propose evidence-anchor improvements.
+- `brain_maintain`: detect stale claims, weak anchors, conflicts, duplicate
+  proposals, missing summaries, and refresh needs.
 
-```text
-abra setup
-abra connect
-abra sync
-abra ask
-abra context
-abra agent
-abra model
-abra brain
-abra govern
-abra plugin
-abra doctor
-```
+## Why Abra Is Different
 
-Compatibility commands such as `ingest`, `think`, `compose`, `agents`,
-`models`, `sources`, `connectors`, and `mcp` remain for automation and advanced
-operators. Run:
+Abra is designed as a governed agent brain, not a generic memory library:
 
-```sh
-abra help advanced
-```
+- **Evidence before prose**: answers carry citations and evidence anchors before
+  optional synthesis can render final text.
+- **No-LLM default path**: default recall, review, scorecard, and maintenance
+  use deterministic store signals, keeping latency and token cost bounded.
+- **Agent decision gate**: every brain packet can tell an agent whether to
+  proceed, proceed with caution, request review, or stop.
+- **Temporal and conflict-aware memory**: stale, expired, superseded, and
+  conflicting claims are labeled instead of being silently recalled as truth.
+- **Governed learning**: agents can observe and propose, but trusted memory is
+  promoted only through explicit governance.
+- **MCP-first UX**: agents receive structured context packets directly; the CLI
+  remains an operator console instead of becoming the product surface.
+
+![Token efficiency model](docs/assets/token-efficiency.svg)
+
+## Operator CLI
+
+The stable operator surface is intentionally small:
+
+| Command | Purpose |
+| --- | --- |
+| `abra setup` | Configure a local Abra runtime. |
+| `abra doctor` | Diagnose runtime, MCP, token, model, and memory readiness. |
+| `abra scope` | Resolve the recommended project scope. |
+| `abra agent` | Install, initialize, and verify AI-agent integrations. |
+| `abra sync` | Refresh a registered source or ingest a local path. |
+| `abra connect` | Register local, Git, MCP, or webhook sources. |
+| `abra model` | Configure and operate embedding providers. |
+| `abra brain` | Inspect and maintain governed brain quality. |
+| `abra govern` | Review and apply governed learning proposals. |
+| `abra plugin` | Inspect and validate extension contracts. |
+
+Compatibility commands such as `ask`, `context`, `think`, `compose`, `ingest`,
+`sources`, `connectors`, and `mcp` remain for scripts and focused debugging, but
+MCP is the canonical agent interface.
+
+See [CLI guide](docs/CLI.md).
+
+## Sources And Plugins
+
+Built-in source paths:
+
+- local files and repos: `abra sync . --code --scope repo:project`
+- durable local, Git, and MCP sources: `abra connect ...`
+- signed webhooks and internal HTTP ingestion for gateways or private automation
+
+Plugin contracts adapt external systems into normalized Abra documents. Source
+integrations should live as adapters, MCP exporters, signed webhook producers,
+or private overlays.
+
+Plugins must not own trust decisions. They provide source-backed evidence; Abra
+core decides what can be used.
+
+See:
+
+- [Extensions](docs/EXTENSIONS.md)
+- [Plugin authoring](docs/PLUGIN_AUTHORING.md)
+- [Connector examples](examples/connectors)
 
 ## Models
 
-The default local embedding path is:
-
-- `Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0`
-- optional `Qwen/Qwen3-Reranker-0.6B-GGUF:Q8_0`
-
-Use it with:
-
-```sh
-abra model local
-abra model up
-abra model status
-```
+Abra can run with a local embedding provider for development, or with any
+compatible embedding endpoint.
 
 Use any compatible embedding provider instead:
 
@@ -144,63 +190,68 @@ abra model compatible \
   --dimensions 1024
 ```
 
-Custom providers replace the local Qwen path. Abra is not locked to OpenAI,
-DeepSeek, Qwen, or any single ecosystem.
-
-## Sources And Plugins
-
-Built-in source paths:
-
-- local files and repos: `abra sync . --code --scope repo:project`
-- durable local/git/MCP sources: `abra connect ...`
-- signed webhooks and HTTP/MCP ingestion for external systems
-
-Plugin contracts adapt vendor systems into normalized Abra documents. A Jira,
-Confluence, Slack, Drive, Git provider, or internal system integration should
-live as an adapter, MCP exporter, webhook producer, or private overlay.
-
-Plugins must output source-backed documents. They do not own governance,
-embeddings, citations, graph extraction, or decision gates.
-
-See [docs/EXTENSIONS.md](docs/EXTENSIONS.md).
+Abra is not tied to a single model provider or hosted AI ecosystem.
 
 ## Production
 
-Production deployments must provide:
+Production deployments require:
 
 - generated API keys and webhook secrets;
 - production approval enforcement;
-- Postgres with pgvector and backups;
+- Postgres with `pgvector`, backups, and restore drills;
 - internal network exposure or a gateway;
 - digest-pinned container images;
-- a measured embedding provider capacity profile.
+- measured embedding provider capacity;
+- release artifacts verified with checksums and attestations.
 
-See [PRODUCTION.md](PRODUCTION.md).
+See [Production readiness](PRODUCTION.md) and [Release process](RELEASE.md).
 
-## Feature Freeze
+## Repository Quality
 
-Abra's pre-OSS public surface is frozen around the small CLI above. New work
-must fit one of these categories:
+The repository is structured for OSS review:
 
-- core intelligence or governance quality;
-- bug fix, security fix, or production hardening;
-- provider-neutral CLI/MCP/HTTP contract improvement;
-- external-system adapter expressed as a plugin contract, not core vendor logic.
+- Go runtime and CLI live under `cmd/` and `internal/`.
+- The database baseline and future migrations are documented under `migrations/`.
+- Public docs live under `docs/`.
+- Generic examples live under `examples/`.
+- Maintainer automation lives under `scripts/`.
 
-See [docs/FEATURE_FREEZE.md](docs/FEATURE_FREEZE.md).
+`npm` is used only as a repository task runner for QA, eval, release, and OSS
+hygiene scripts. Abra is not distributed through npm; the runtime is Go and the
+published artifacts are CLI archives plus container images.
 
 ## Development
+
+Prerequisites:
+
+- Go 1.25.11 or newer
+- Node.js 24 or newer for maintainer scripts
+- Docker or a compatible runtime for full release-gate checks
+- Postgres with `pgvector` for local integration testing
+
+Run fast checks:
 
 ```sh
 go test ./...
 npm test
 ```
 
-Full release gate:
+Run the full local release gate when Docker is available:
 
 ```sh
 ABRA_RELEASE_PROFILE=full ABRA_RELEASE_MANAGE_STACK=1 npm run release:gate
 ```
 
+See [Contributing](CONTRIBUTING.md) before opening a PR.
+
+## Security
+
 Do not commit secrets, private business context, customer data, source-system
-exports, embeddings, database dumps, or organization-specific policies.
+exports, embeddings, database dumps, or audit logs.
+
+Report vulnerabilities through GitHub private vulnerability reporting. See
+[Security](SECURITY.md).
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE).

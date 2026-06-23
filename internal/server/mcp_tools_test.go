@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -12,8 +13,84 @@ import (
 	"github.com/hermawan22/abra/internal/ai"
 	"github.com/hermawan22/abra/internal/brain"
 	"github.com/hermawan22/abra/internal/config"
+	"github.com/hermawan22/abra/internal/memory"
 	"github.com/hermawan22/abra/internal/store"
 )
+
+type brainToolTestStore struct {
+	health         store.MemoryHealthResult
+	candidates     []store.EvidenceAnchorCandidate
+	proposalInputs []store.CreateLearningProposalInput
+	auditEvents    []string
+}
+
+func (s *brainToolTestStore) Recall(context.Context, string, string, int, bool) (store.RecallResult, error) {
+	return store.RecallResult{}, nil
+}
+
+func (s *brainToolTestStore) ListMemorySummaries(context.Context, string, string, int) ([]store.MemorySummaryResult, error) {
+	return nil, nil
+}
+
+func (s *brainToolTestStore) RelatedGraph(context.Context, string, string, int) ([]store.RelationResult, error) {
+	return nil, nil
+}
+
+func (s *brainToolTestStore) ListOpenConflictsForClaims(context.Context, string, []string) ([]store.ConflictResult, error) {
+	return nil, nil
+}
+
+func (s *brainToolTestStore) ListOpenConflictsForRelations(context.Context, string, []string) ([]store.ConflictResult, error) {
+	return nil, nil
+}
+
+func (s *brainToolTestStore) EvaluateAgentActionPolicies(context.Context, []store.AgentActionDecisionInput) ([]store.AgentActionDecisionResult, error) {
+	return nil, nil
+}
+
+func (s *brainToolTestStore) MemoryHealth(context.Context, string) (store.MemoryHealthResult, error) {
+	return s.health, nil
+}
+
+func (s *brainToolTestStore) ListEvidenceAnchorCandidates(context.Context, string, int) ([]store.EvidenceAnchorCandidate, error) {
+	return append([]store.EvidenceAnchorCandidate(nil), s.candidates...), nil
+}
+
+func (s *brainToolTestStore) CountEvidenceAnchorCandidates(context.Context, string) (int, error) {
+	return len(s.candidates), nil
+}
+
+func (s *brainToolTestStore) CreateLearningProposalOnce(_ context.Context, input store.CreateLearningProposalInput) (store.LearningProposalRecord, bool, error) {
+	s.proposalInputs = append(s.proposalInputs, input)
+	id := "proposal-" + input.TargetID
+	if id == "proposal-" {
+		id = "proposal-scope"
+	}
+	return store.LearningProposalRecord{
+		ID:           id,
+		Scope:        input.Scope,
+		ProposalType: input.ProposalType,
+		Title:        input.Title,
+		Rationale:    input.Rationale,
+		Status:       "pending",
+		TargetType:   input.TargetType,
+		TargetID:     input.TargetID,
+		SourceURL:    input.SourceURL,
+		Confidence:   input.Confidence,
+		Payload:      input.Payload,
+		CreatedBy:    input.CreatedBy,
+	}, true, nil
+}
+
+func (s *brainToolTestStore) InsertAuditEvent(_ context.Context, eventType, targetType, targetID, scope, sourceURL string, metadata map[string]any) error {
+	channel, _ := metadata["channel"].(string)
+	s.auditEvents = append(s.auditEvents, eventType+":"+targetType+":"+targetID+":"+scope+":"+sourceURL+":"+channel)
+	return nil
+}
+
+func withAdmin(r *http.Request) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), authContextKey{}, anonymousAdmin()))
+}
 
 func TestUpsertSourceConfigMCPAllowsOverlaySourceTypes(t *testing.T) {
 	var tool map[string]any
@@ -181,6 +258,104 @@ func TestMCPAppliesRequestBodyLimit(t *testing.T) {
 	}
 }
 
+func TestMCPToolCallReturnsStructuredContent(t *testing.T) {
+	db := &brainToolTestStore{
+		health: store.MemoryHealthResult{
+			Status: "healthy",
+			Score:  100,
+			Claims: store.MemoryHealthClaim{Total: 1, Verified: 1, WithEvidence: 1},
+		},
+	}
+	h := handler{
+		cfg:    config.Config{MaxRequestBodyBytes: 1 << 20},
+		memory: memory.NewComposerWithOptions(db, memory.ComposerOptions{}),
+	}
+	request := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewBufferString(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"brain_review","arguments":{"scope":"repo:test","limit":5}}}`))
+	response := httptest.NewRecorder()
+
+	h.mcp(response, withAdmin(request))
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", response.Code, response.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v; body=%s", err, response.Body.String())
+	}
+	result, _ := payload["result"].(map[string]any)
+	structured, _ := result["structuredContent"].(map[string]any)
+	if structured["status"] != "healthy" || structured["score"] == nil {
+		t.Fatalf("structuredContent = %#v", structured)
+	}
+	content, _ := result["content"].([]any)
+	if len(content) != 1 {
+		t.Fatalf("content = %#v", result["content"])
+	}
+}
+
+func TestMCPBrainAnchorBackfillCreatesReviewableProposals(t *testing.T) {
+	db := &brainToolTestStore{
+		health: store.MemoryHealthResult{
+			Scope:  "repo:test",
+			Status: "needs_review",
+			Score:  85,
+			Claims: store.MemoryHealthClaim{Total: 1, Verified: 1, WithEvidence: 1},
+		},
+		candidates: []store.EvidenceAnchorCandidate{
+			{
+				ClaimID:       "claim-1",
+				Claim:         "Retry callbacks must remain idempotent.",
+				Scope:         "repo:test",
+				SourceURL:     "file://runbook.md",
+				DocumentID:    "doc-1",
+				DocumentChunk: "Operators must verify delivery. Retry callbacks must remain idempotent before replay.",
+			},
+		},
+	}
+	h := handler{
+		cfg:    config.Config{MaxRequestBodyBytes: 1 << 20},
+		memory: memory.NewComposerWithOptions(db, memory.ComposerOptions{}),
+	}
+	request := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewBufferString(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"brain_anchor_backfill","arguments":{"scope":"repo:test","limit":5,"propose":true,"dry_run":false,"agent":"codex"}}}`))
+	response := httptest.NewRecorder()
+
+	h.mcp(response, withAdmin(request))
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", response.Code, response.Body.String())
+	}
+	if len(db.proposalInputs) != 1 {
+		t.Fatalf("proposal inputs = %#v", db.proposalInputs)
+	}
+}
+
+func TestMCPBrainMaintainCreatesReviewableProposals(t *testing.T) {
+	db := &brainToolTestStore{
+		health: store.MemoryHealthResult{
+			Scope:     "repo:test",
+			Status:    "needs_review",
+			Score:     80,
+			Claims:    store.MemoryHealthClaim{Total: 2, Verified: 1, WithEvidence: 1, Stale: 1},
+			Summaries: store.MemoryHealthSummary{Total: 1},
+		},
+	}
+	h := handler{
+		cfg:    config.Config{MaxRequestBodyBytes: 1 << 20},
+		memory: memory.NewComposerWithOptions(db, memory.ComposerOptions{}),
+	}
+	request := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewBufferString(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"brain_maintain","arguments":{"scope":"repo:test","limit":5,"propose":true,"dry_run":false,"agent":"codex"}}}`))
+	response := httptest.NewRecorder()
+
+	h.mcp(response, withAdmin(request))
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", response.Code, response.Body.String())
+	}
+	if len(db.proposalInputs) == 0 {
+		t.Fatalf("expected maintenance proposal input")
+	}
+}
+
 func TestBrainThinkMCPToolIsDiscoverable(t *testing.T) {
 	schema := mcpToolSchema(t, "brain_think")
 	requiredSet := requiredSet(t, schema)
@@ -191,9 +366,160 @@ func TestBrainThinkMCPToolIsDiscoverable(t *testing.T) {
 	if !ok {
 		t.Fatalf("properties = %#v", schema["properties"])
 	}
-	for _, property := range []string{"question", "scope", "agent", "include_unverified"} {
+	for _, property := range []string{"question", "scope", "agent", "entity", "mode", "as_of", "include_historical", "include_unverified", "synthesize"} {
 		if _, ok := properties[property]; !ok {
 			t.Fatalf("brain_think missing property %q in %#v", property, properties)
+		}
+	}
+	mode, ok := properties["mode"].(map[string]any)
+	if !ok {
+		t.Fatalf("brain_think mode schema = %#v", properties["mode"])
+	}
+	enum, ok := mode["enum"].([]string)
+	if !ok || !containsString(enum, "fast") || !containsString(enum, "balanced") || !containsString(enum, "deep") {
+		t.Fatalf("brain_think mode enum = %#v", mode["enum"])
+	}
+}
+
+func TestBrainEntityDossierMCPToolIsDiscoverable(t *testing.T) {
+	schema := mcpToolSchema(t, "brain_entity_dossier")
+	requiredSet := requiredSet(t, schema)
+	if !requiredSet["entity"] || !requiredSet["scope"] {
+		t.Fatalf("brain_entity_dossier required = %#v, want entity and scope", schema["required"])
+	}
+	properties, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("properties = %#v", schema["properties"])
+	}
+	for _, property := range []string{"entity", "scope", "agent", "mode", "as_of", "include_historical", "include_unverified", "limit", "token_budget"} {
+		if _, ok := properties[property]; !ok {
+			t.Fatalf("brain_entity_dossier missing property %q in %#v", property, properties)
+		}
+	}
+	mode, ok := properties["mode"].(map[string]any)
+	if !ok {
+		t.Fatalf("brain_entity_dossier mode schema = %#v", properties["mode"])
+	}
+	enum, ok := mode["enum"].([]string)
+	if !ok || !containsString(enum, "fast") || !containsString(enum, "balanced") || !containsString(enum, "deep") {
+		t.Fatalf("brain_entity_dossier mode enum = %#v", mode["enum"])
+	}
+}
+
+func TestBrainOperationsMCPToolsAreDiscoverable(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		requiredKeys []string
+		properties   []string
+	}{
+		{name: "brain_core_memory", requiredKeys: []string{"scope"}, properties: []string{"scope", "query", "agent", "include_shared", "limit"}},
+		{name: "brain_shared_memory", requiredKeys: []string{"scope"}, properties: []string{"scope", "query", "agent", "limit"}},
+		{name: "brain_memory_edit_proposal", requiredKeys: []string{"scope", "level", "operation", "title", "rationale"}, properties: []string{"scope", "level", "operation", "key", "summary_id", "title", "summary", "rationale", "source_url", "confidence", "agent", "created_by", "dedupe", "evidence_refs", "replacement_text", "metadata"}},
+		{name: "brain_review", requiredKeys: []string{"scope"}, properties: []string{"scope", "limit"}},
+		{name: "brain_scorecard", requiredKeys: []string{"scope"}, properties: []string{"scope", "limit"}},
+		{name: "brain_anchor_backfill", requiredKeys: []string{"scope"}, properties: []string{"scope", "limit", "dry_run", "propose", "agent", "created_by"}},
+		{name: "brain_maintain", requiredKeys: []string{"scope"}, properties: []string{"scope", "limit", "dry_run", "propose", "agent", "created_by"}},
+		{name: "brain_explain", requiredKeys: []string{"trace_id"}, properties: []string{"trace_id"}},
+		{name: "brain_eval_record", requiredKeys: []string{"scope", "total", "passed", "success", "reports"}, properties: []string{"scope", "suite_name", "suite_file", "agent", "total", "passed", "success", "reports", "metadata"}},
+		{name: "brain_eval_history", requiredKeys: []string{"scope"}, properties: []string{"scope", "limit"}},
+	} {
+		schema := mcpToolSchema(t, tc.name)
+		required := requiredSet(t, schema)
+		for _, property := range tc.requiredKeys {
+			if !required[property] {
+				t.Fatalf("%s required = %#v, missing %s", tc.name, schema["required"], property)
+			}
+		}
+		properties, ok := schema["properties"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s properties = %#v", tc.name, schema["properties"])
+		}
+		for _, property := range tc.properties {
+			if _, ok := properties[property]; !ok {
+				t.Fatalf("%s missing property %q in %#v", tc.name, property, properties)
+			}
+		}
+		if mcpToolTraceName(tc.name) != tc.name {
+			t.Fatalf("trace name for %s = %q", tc.name, mcpToolTraceName(tc.name))
+		}
+	}
+}
+
+func TestMemoryEditProposalInputBuildsReviewableProposal(t *testing.T) {
+	input, err := memoryEditProposalInput(map[string]any{
+		"level":         "shared",
+		"operation":     "update",
+		"key":           "workflow",
+		"title":         "Workflow memory",
+		"summary":       "Agents coordinate through learning proposals.",
+		"rationale":     "Shared memory should reflect the reviewed workflow.",
+		"agent":         "codex",
+		"evidence_refs": []any{"summary-1", "doc-2"},
+	})
+	if err != nil {
+		t.Fatalf("memoryEditProposalInput returned error: %v", err)
+	}
+	if input.ProposalType != "other" || input.TargetType != "memory_summary" || input.TargetID != "workflow" {
+		t.Fatalf("proposal target = %#v", input)
+	}
+	if input.CreatedBy != "codex" {
+		t.Fatalf("created_by = %q, want codex", input.CreatedBy)
+	}
+	if truthWrite, _ := input.Payload["truth_write"].(bool); truthWrite {
+		t.Fatalf("memory edit proposal must not be marked as truth write: %#v", input.Payload)
+	}
+	if input.Payload["level"] != "shared" || input.Payload["operation"] != "update" {
+		t.Fatalf("payload missing memory edit fields: %#v", input.Payload)
+	}
+}
+
+func TestMemoryEditProposalInputRequiresTargetForUpdate(t *testing.T) {
+	_, err := memoryEditProposalInput(map[string]any{
+		"level":     "core",
+		"operation": "update",
+		"title":     "Core memory",
+		"rationale": "Update core memory.",
+	})
+	if !errors.Is(err, errMemoryEditTargetRequired) {
+		t.Fatalf("error = %v, want target required", err)
+	}
+}
+
+func TestEveryMCPToolHasTraceName(t *testing.T) {
+	for _, tool := range mcpTools() {
+		name, _ := tool["name"].(string)
+		if name == "" {
+			t.Fatalf("tool missing name: %#v", tool)
+		}
+		if got := mcpToolTraceName(name); got != name {
+			t.Fatalf("trace name for %s = %q", name, got)
+		}
+	}
+}
+
+func TestEveryMCPToolHasHandler(t *testing.T) {
+	for _, tool := range mcpTools() {
+		name, _ := tool["name"].(string)
+		if name == "" {
+			t.Fatalf("tool missing name: %#v", tool)
+		}
+		if mcpToolCallHandlers[name] == nil {
+			t.Fatalf("tool %s is advertised without a call handler", name)
+		}
+	}
+}
+
+func TestEveryMCPHandlerIsAdvertised(t *testing.T) {
+	advertised := map[string]struct{}{}
+	for _, tool := range mcpTools() {
+		name, _ := tool["name"].(string)
+		if name != "" {
+			advertised[name] = struct{}{}
+		}
+	}
+	for name := range mcpToolCallHandlers {
+		if _, ok := advertised[name]; !ok {
+			t.Fatalf("handler %s is callable but missing from tools/list", name)
 		}
 	}
 }
@@ -496,6 +822,19 @@ func TestWorkingMemoryComposeMCPHasReadOnlyDefaultAndPersistenceOptIn(t *testing
 	}
 	if persistLearning["type"] != "boolean" {
 		t.Fatalf("persist_learning type = %#v, want boolean", persistLearning["type"])
+	}
+	for _, property := range []string{"entity", "as_of", "include_historical"} {
+		if _, ok := properties[property]; !ok {
+			t.Fatalf("working_memory_compose missing property %q in %#v", property, properties)
+		}
+	}
+	mode, ok := properties["mode"].(map[string]any)
+	if !ok {
+		t.Fatalf("working_memory_compose missing mode property in %#v", properties)
+	}
+	enum, ok := mode["enum"].([]string)
+	if !ok || !containsString(enum, "fast") || !containsString(enum, "balanced") || !containsString(enum, "deep") {
+		t.Fatalf("working_memory_compose mode enum = %#v", mode["enum"])
 	}
 }
 

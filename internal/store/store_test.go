@@ -63,6 +63,14 @@ func (r fakeRow) Scan(dest ...any) error {
 		if target, ok := dest[i].(*string); ok {
 			*target, _ = r.values[i].(string)
 		}
+		if target, ok := dest[i].(*int); ok {
+			switch value := r.values[i].(type) {
+			case int:
+				*target = value
+			case int64:
+				*target = int(value)
+			}
+		}
 	}
 	return nil
 }
@@ -159,31 +167,34 @@ func TestConflictSelectIncludesResolutionFields(t *testing.T) {
 }
 
 func TestClaimLifecycleSQLFiltersTemporalAndSupersededClaims(t *testing.T) {
-	for name, query := range map[string]string{
-		"search":      searchClaimsSQL(),
-		"hybrid":      hybridRecallClaimsSQL(activeClaimStatusSQL("c", false), 3, false),
-		"active_only": claimEffectiveSQL("c"),
+	for name, item := range map[string]struct {
+		query string
+		at    string
+	}{
+		"search":      {query: searchClaimsSQL(), at: "now()"},
+		"hybrid":      {query: hybridRecallClaimsSQL(activeClaimStatusSQL("c", false), 3, false, false), at: "$7"},
+		"active_only": {query: claimEffectiveSQL("c"), at: "now()"},
 	} {
 		for _, fragment := range []string{
 			"valid_from IS NULL OR",
-			"valid_from <= now()",
+			"valid_from <= " + item.at,
 			"expires_at IS NULL OR",
-			"expires_at > now()",
+			"expires_at > " + item.at,
 			"supersedes_claim_id",
 		} {
-			if !strings.Contains(query, fragment) {
-				t.Fatalf("%s lifecycle SQL missing %q:\n%s", name, fragment, query)
+			if !strings.Contains(item.query, fragment) {
+				t.Fatalf("%s lifecycle SQL missing %q:\n%s", name, fragment, item.query)
 			}
 		}
 	}
 	if !strings.Contains(claimEffectiveSQL("c"), "superseding_claim.status NOT IN ('deprecated', 'expired')") {
 		t.Fatalf("general lifecycle SQL should hide claims superseded by any active replacement:\n%s", claimEffectiveSQL("c"))
 	}
-	trustedOnly := trustedClaimEffectiveSQL("c")
+	trustedOnly := claimEffectiveSQLForRecallAt("c", false, "now()")
 	if !strings.Contains(trustedOnly, "superseding_claim.status IN ('verified', 'inferred')") {
 		t.Fatalf("trusted lifecycle SQL should only hide claims superseded by trusted replacements:\n%s", trustedOnly)
 	}
-	includeUnverified := claimEffectiveSQLForRecall("c", true)
+	includeUnverified := claimEffectiveSQLForRecallAt("c", true, "now()")
 	if !strings.Contains(includeUnverified, "superseding_claim.status NOT IN ('deprecated', 'expired')") {
 		t.Fatalf("include-unverified lifecycle SQL should hide claims superseded by any active replacement:\n%s", includeUnverified)
 	}
@@ -195,6 +206,12 @@ func TestClaimLifecycleSQLFiltersTemporalAndSupersededClaims(t *testing.T) {
 
 func TestGraphLifecycleSQLFiltersTemporalEntitiesAndRelations(t *testing.T) {
 	activeRelations := compactSQL(listActiveRelationsFromEntitySQL())
+	if !strings.Contains(activeRelations, "r.status = 'active'") {
+		t.Fatalf("active relation SQL should only return active relations by default:\n%s", activeRelations)
+	}
+	if strings.Contains(activeRelations, "r.status NOT IN ('deprecated', 'expired')") {
+		t.Fatalf("active relation SQL should not allow candidate or challenged relations by default:\n%s", activeRelations)
+	}
 	for _, fragment := range []string{
 		"r.valid_from IS NULL OR r.valid_from <= now()",
 		"r.expires_at IS NULL OR r.expires_at > now()",
@@ -206,25 +223,35 @@ func TestGraphLifecycleSQLFiltersTemporalEntitiesAndRelations(t *testing.T) {
 		}
 	}
 
-	related := compactSQL(relatedGraphSQL())
+	related := compactSQL(relatedGraphSQL(false))
+	if !strings.Contains(related, "r.status = 'active'") {
+		t.Fatalf("related graph SQL should only return active relations by default:\n%s", related)
+	}
+	if strings.Contains(related, "r.status NOT IN ('deprecated', 'expired')") {
+		t.Fatalf("related graph SQL should not allow candidate or challenged relations by default:\n%s", related)
+	}
 	for _, fragment := range []string{
 		"WITH seed_entities AS",
 		"seed_edges AS",
 		"neighbor_edges AS",
-		"e.valid_from IS NULL OR e.valid_from <= now()",
-		"r.valid_from IS NULL OR r.valid_from <= now()",
-		"src.valid_from IS NULL OR src.valid_from <= now()",
-		"dst.valid_from IS NULL OR dst.valid_from <= now()",
-		"r.expires_at IS NULL OR r.expires_at > now()",
-		"src.expires_at IS NULL OR src.expires_at > now()",
-		"dst.expires_at IS NULL OR dst.expires_at > now()",
+		"e.valid_from IS NULL OR e.valid_from <= $5",
+		"r.valid_from IS NULL OR r.valid_from <= $5",
+		"src.valid_from IS NULL OR src.valid_from <= $5",
+		"dst.valid_from IS NULL OR dst.valid_from <= $5",
+		"r.expires_at IS NULL OR r.expires_at > $5",
+		"src.expires_at IS NULL OR src.expires_at > $5",
+		"dst.expires_at IS NULL OR dst.expires_at > $5",
 	} {
 		if !strings.Contains(related, fragment) {
 			t.Fatalf("related graph SQL missing %q:\n%s", fragment, related)
 		}
 	}
-	if strings.Count(related, "r.valid_from IS NULL OR r.valid_from <= now()") < 3 {
+	if strings.Count(related, "r.valid_from IS NULL OR r.valid_from <= $5") < 3 {
 		t.Fatalf("related graph SQL should filter relation lifecycle in seed, neighbor, and final select:\n%s", related)
+	}
+	historical := compactSQL(relatedGraphSQL(true))
+	if !strings.Contains(historical, "r.status NOT IN ('deprecated')") {
+		t.Fatalf("historical related graph SQL should expose non-deprecated relations as labeled context:\n%s", historical)
 	}
 }
 
@@ -503,8 +530,154 @@ func TestSearchClaimsQueryCanUseClaimSearchVector(t *testing.T) {
 	}
 }
 
+func TestMemorySummaryLevelSQLBoostsCoreMemory(t *testing.T) {
+	query := memorySummarySelectByLevelsSQL()
+	for _, fragment := range []string{
+		"level = ANY($5)",
+		"WHEN 'agent_core' THEN 0.48",
+		"WHEN 'shared' THEN 0.46",
+		"WHEN 'core' THEN 0.45",
+		"OR $1 = ''",
+	} {
+		if !strings.Contains(query, fragment) {
+			t.Fatalf("memory summary level SQL missing %q:\n%s", fragment, query)
+		}
+	}
+	if got := normalizedSummaryLevels([]string{"core", "agent_core", "shared", "bad", "core"}); len(got) != 3 || got[0] != "core" || got[1] != "agent_core" || got[2] != "shared" {
+		t.Fatalf("normalized levels = %#v", got)
+	}
+}
+
+func TestMemorySummaryLevelConstraintReadiness(t *testing.T) {
+	ready := "CHECK ((level = ANY (ARRAY['source'::text, 'repo'::text, 'core'::text, 'agent_core'::text, 'shared'::text])))"
+	if !memorySummaryLevelConstraintReady(ready) {
+		t.Fatalf("constraint with core/agent_core/shared should be ready")
+	}
+	stale := "CHECK ((level = ANY (ARRAY['source'::text, 'repo'::text, 'core'::text, 'agent_core'::text])))"
+	if memorySummaryLevelConstraintReady(stale) {
+		t.Fatalf("constraint without shared should be stale")
+	}
+	if memorySummaryLevelConstraintReady("") {
+		t.Fatalf("empty constraint should be stale")
+	}
+}
+
+func TestBrainMigrationContents(t *testing.T) {
+	content, err := os.ReadFile("../../migrations/001_init.sql")
+	if err != nil {
+		t.Fatalf("read baseline migration: %v", err)
+	}
+	query := string(content)
+	for _, tc := range []struct {
+		name      string
+		fragments []string
+	}{
+		{
+			name: "memory summary levels",
+			fragments: []string{
+				"memory_summaries_level_check",
+				"'core'",
+				"'agent_core'",
+				"'shared'",
+			},
+		},
+		{
+			name: "brain traces",
+			fragments: []string{
+				"CREATE TABLE IF NOT EXISTS brain_traces",
+				"trace_id TEXT PRIMARY KEY",
+				"expires_at TIMESTAMPTZ",
+			},
+		},
+		{
+			name: "brain eval runs",
+			fragments: []string{
+				"CREATE TABLE IF NOT EXISTS brain_eval_runs",
+				"reports JSONB NOT NULL",
+				"brain_eval_runs_scope_created_idx",
+			},
+		},
+		{
+			name: "shared memory summary level",
+			fragments: []string{
+				"memory_summaries_level_check",
+				"'core'",
+				"'agent_core'",
+				"'shared'",
+			},
+		},
+	} {
+		for _, fragment := range tc.fragments {
+			if !strings.Contains(query, fragment) {
+				t.Fatalf("baseline migration %s section missing %q:\n%s", tc.name, fragment, query)
+			}
+		}
+	}
+}
+
+func TestBrainEvalRunValidationRequiresReportArray(t *testing.T) {
+	store := &Store{runner: &fakeStoreRunner{}}
+	for _, tc := range []struct {
+		name    string
+		record  BrainEvalRunRecord
+		wantErr string
+	}{
+		{
+			name:    "object reports rejected",
+			record:  BrainEvalRunRecord{Scope: "repo:test", Total: 1, Passed: 1, Success: true, Reports: []byte(`{"ok":true}`)},
+			wantErr: "reports payload must be a json array",
+		},
+		{
+			name:    "null reports rejected",
+			record:  BrainEvalRunRecord{Scope: "repo:test", Total: 1, Passed: 1, Success: true, Reports: []byte(`null`)},
+			wantErr: "reports payload must be a json array",
+		},
+		{
+			name:    "report count must match total",
+			record:  BrainEvalRunRecord{Scope: "repo:test", Total: 2, Passed: 1, Success: false, Reports: []byte(`[{"name":"one"}]`)},
+			wantErr: "reports length must equal total",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := store.InsertBrainEvalRun(context.Background(), tc.record)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestBrainEvalRunInsertDoesNotDedupeIdenticalRuns(t *testing.T) {
+	runner := &fakeStoreRunner{}
+	store := &Store{runner: runner}
+	record := BrainEvalRunRecord{
+		Scope:   "repo:test",
+		Total:   1,
+		Passed:  1,
+		Success: true,
+		Reports: []byte(`[{"name":"canonical","passed":true}]`),
+	}
+	if _, err := store.InsertBrainEvalRun(context.Background(), record); err != nil {
+		t.Fatalf("insert eval run: %v", err)
+	}
+	if len(runner.queryRowSQL) != 1 {
+		t.Fatalf("queryRowSQL = %#v", runner.queryRowSQL)
+	}
+	query := runner.queryRowSQL[0]
+	for _, forbidden := range []string{"ON CONFLICT", "DO UPDATE"} {
+		if strings.Contains(query, forbidden) {
+			t.Fatalf("eval history insert should not dedupe with %q:\n%s", forbidden, query)
+		}
+	}
+	firstID := brainEvalRunID()
+	secondID := brainEvalRunID()
+	if firstID == secondID {
+		t.Fatalf("brain eval run ids should be unique, got %q twice", firstID)
+	}
+}
+
 func TestHybridRecallQueriesUseVectorAndTextCandidates(t *testing.T) {
-	claims := hybridRecallClaimsSQL("c.status IN ('verified', 'inferred')", 1024, false)
+	claims := hybridRecallClaimsSQL("c.status IN ('verified', 'inferred')", 1024, false, false)
 	for _, fragment := range []string{
 		"WITH text_matches AS",
 		"vector_matches AS",
@@ -550,10 +723,10 @@ func TestHybridRecallQueriesUseVectorAndTextCandidates(t *testing.T) {
 
 func TestRecallSupportSQLFiltersDeletedSourceConfigs(t *testing.T) {
 	for name, query := range map[string]string{
-		"hybrid_claims":    hybridRecallClaimsSQL("c.status IN ('verified', 'inferred')", 1024, false),
+		"hybrid_claims":    hybridRecallClaimsSQL("c.status IN ('verified', 'inferred')", 1024, false, false),
 		"hybrid_documents": hybridRecallDocumentsSQL(1024),
 		"memory_summaries": memorySummarySelectSQL(),
-		"related_graph":    relatedGraphSQL(),
+		"related_graph":    relatedGraphSQL(false),
 	} {
 		if !strings.Contains(query, "source_configs") {
 			t.Fatalf("%s SQL does not inspect source_configs:\n%s", name, query)
@@ -626,6 +799,7 @@ func TestRecallRetrievalReasonsExplainSignals(t *testing.T) {
 		Claims: []ClaimResult{
 			{ID: "claim-text", TextScore: 0.8},
 			{ID: "claim-vector", VectorScore: 0.7},
+			{ID: "claim-graph", Rank: 0.9},
 		},
 		SupportingDocuments: []DocumentResult{
 			{ID: "doc-both", TextScore: 0.4, VectorScore: 0.6},
@@ -644,6 +818,24 @@ func TestRecallRetrievalReasonsExplainSignals(t *testing.T) {
 	}
 	if !hasRetrievalReason(reasons, "graph", "entity_local", 1) {
 		t.Fatalf("graph retrieval reason missing: %#v", reasons)
+	}
+	if !hasRetrievalReason(reasons, "graph_claim", "entity_graph", 1) {
+		t.Fatalf("graph-linked claim retrieval reason missing: %#v", reasons)
+	}
+}
+
+func TestGraphLinkedClaimIDsDeduplicatesExistingClaims(t *testing.T) {
+	ids := graphLinkedClaimIDs(
+		[]ClaimResult{{ID: "claim-existing"}},
+		[]RelationResult{
+			{ID: "relation-1", ClaimID: "claim-existing"},
+			{ID: "relation-2", ClaimID: "claim-linked-b"},
+			{ID: "relation-3", ClaimID: "claim-linked-a"},
+			{ID: "relation-4", ClaimID: "claim-linked-b"},
+		},
+	)
+	if got, want := strings.Join(ids, ","), "claim-linked-a,claim-linked-b"; got != want {
+		t.Fatalf("graph linked claim ids = %q, want %q", got, want)
 	}
 }
 
@@ -721,10 +913,114 @@ func TestPendingLearningProposalQueryDeduplicatesReviewQueue(t *testing.T) {
 	}
 }
 
+func TestListEvidenceAnchorCandidatesRanksChunksByClaimText(t *testing.T) {
+	runner := &fakeStoreRunner{}
+	store := &Store{runner: runner}
+	if _, err := store.ListEvidenceAnchorCandidates(context.Background(), "repo:test", 5); err != nil {
+		t.Fatalf("list evidence anchor candidates: %v", err)
+	}
+	if len(runner.querySQL) != 1 {
+		t.Fatalf("querySQL = %#v", runner.querySQL)
+	}
+	query := runner.querySQL[0]
+	for _, fragment := range []string{
+		"LEFT JOIN LATERAL",
+		"ts_rank_cd(search_vector, plainto_tsquery('simple', c.claim_text)) DESC",
+		"chunk_index ASC",
+		"LIMIT 1",
+	} {
+		if !strings.Contains(query, fragment) {
+			t.Fatalf("anchor candidate list query missing %q:\n%s", fragment, query)
+		}
+	}
+}
+
+func TestCountEvidenceAnchorCandidatesUsesDistinctClaims(t *testing.T) {
+	runner := &fakeStoreRunner{}
+	store := &Store{runner: runner}
+	if _, err := store.CountEvidenceAnchorCandidates(context.Background(), "repo:test"); err != nil {
+		t.Fatalf("count evidence anchor candidates: %v", err)
+	}
+	if len(runner.queryRowSQL) != 1 {
+		t.Fatalf("queryRowSQL = %#v", runner.queryRowSQL)
+	}
+	query := runner.queryRowSQL[0]
+	for _, fragment := range []string{
+		"COUNT(DISTINCT c.id)::int",
+		"c.status IN ('verified', 'inferred')",
+		"COALESCE(c.source_url, '') <> ''",
+		"NOT EXISTS ( SELECT 1 FROM evidence e",
+		"sc.status = 'deleted'",
+	} {
+		if !strings.Contains(query, fragment) {
+			t.Fatalf("anchor candidate count query missing %q:\n%s", fragment, query)
+		}
+	}
+}
+
+func TestEvidenceAnchorsForClaimsRequiresSameSourceVerifiedClaims(t *testing.T) {
+	runner := &fakeStoreRunner{}
+	store := &Store{runner: runner}
+	if _, err := store.EvidenceAnchorsForClaims(context.Background(), "repo:test", []string{"claim-2", "claim-1", "claim-1"}); err != nil {
+		t.Fatalf("evidence anchors for claims: %v", err)
+	}
+	if len(runner.querySQL) != 1 {
+		t.Fatalf("querySQL = %#v", runner.querySQL)
+	}
+	query := runner.querySQL[0]
+	for _, fragment := range []string{
+		"FROM evidence e JOIN claims c ON c.id = e.claim_id",
+		"LEFT JOIN documents d ON d.id = e.document_id",
+		"COALESCE(e.start_char, 0)",
+		"COALESCE(e.end_char, 0)",
+		"c.scope = $1",
+		"e.claim_id = ANY($2::text[])",
+		"c.status IN ('verified', 'inferred')",
+		"COALESCE(e.source_url, '') = COALESCE(c.source_url, '')",
+		"length(trim(COALESCE(e.quote, ''))) > 0",
+		"ORDER BY e.claim_id ASC, e.created_at DESC",
+	} {
+		if !strings.Contains(query, fragment) {
+			t.Fatalf("evidence anchor lookup query missing %q:\n%s", fragment, query)
+		}
+	}
+}
+
+func TestAddEvidencePersistsAnchorSpanColumns(t *testing.T) {
+	runner := &fakeStoreRunner{}
+	store := &Store{runner: runner}
+	if err := store.AddEvidence(context.Background(), EvidenceRecord{
+		ClaimID:    "claim-1",
+		DocumentID: "doc-1",
+		Quote:      "Retry callbacks must remain idempotent.",
+		StartChar:  12,
+		EndChar:    52,
+		SourceURL:  "file://runbook.md",
+		SourceType: "markdown",
+	}); err != nil {
+		t.Fatalf("add evidence: %v", err)
+	}
+	if len(runner.execSQL) != 1 {
+		t.Fatalf("execSQL = %#v", runner.execSQL)
+	}
+	query := runner.execSQL[0]
+	for _, fragment := range []string{
+		"INSERT INTO evidence",
+		"start_char",
+		"end_char",
+		"$5",
+		"$6",
+	} {
+		if !strings.Contains(query, fragment) {
+			t.Fatalf("add evidence query missing %q:\n%s", fragment, query)
+		}
+	}
+}
+
 func TestLearningProposalPendingDedupMigrationAddsDatabaseGuard(t *testing.T) {
-	migration, err := os.ReadFile("../../migrations/010_learning_proposal_pending_dedup.sql")
+	migration, err := os.ReadFile("../../migrations/001_init.sql")
 	if err != nil {
-		t.Fatalf("read migration: %v", err)
+		t.Fatalf("read baseline migration: %v", err)
 	}
 	query := string(migration)
 	for _, fragment := range []string{
@@ -742,9 +1038,9 @@ func TestLearningProposalPendingDedupMigrationAddsDatabaseGuard(t *testing.T) {
 }
 
 func TestCodeDocumentClaimCleanupMigrationDeprecatesTrustedCodeClaims(t *testing.T) {
-	migration, err := os.ReadFile("../../migrations/011_deprecate_code_document_claims.sql")
+	migration, err := os.ReadFile("../../migrations/001_init.sql")
 	if err != nil {
-		t.Fatalf("read migration: %v", err)
+		t.Fatalf("read baseline migration: %v", err)
 	}
 	query := string(migration)
 	for _, fragment := range []string{
@@ -768,28 +1064,32 @@ func TestScoreMemoryHealthStatuses(t *testing.T) {
 		Graph:     MemoryHealthGraph{ActiveRelations: 2},
 		Summaries: MemoryHealthSummary{Total: 5},
 	}
-	score, status, reasons := scoreMemoryHealth(healthy)
+	assessment := assessMemoryHealth(healthy)
+	score, status, reasons := assessment.Score, assessment.Status, assessment.Reasons
 	if status != "healthy" || score != 100 {
 		t.Fatalf("healthy score/status = %d/%s reasons=%v, want 100/healthy", score, status, reasons)
 	}
 
 	review := healthy
 	review.Learning.Pending = 2
-	score, status, _ = scoreMemoryHealth(review)
+	assessment = assessMemoryHealth(review)
+	score, status = assessment.Score, assessment.Status
 	if status != "needs_review" || score >= 100 {
 		t.Fatalf("review score/status = %d/%s, want needs_review below 100", score, status)
 	}
 
 	critical := healthy
 	critical.Conflicts.Blocking = 1
-	score, status, _ = scoreMemoryHealth(critical)
+	assessment = assessMemoryHealth(critical)
+	score, status = assessment.Score, assessment.Status
 	if status != "critical" || score >= 80 {
 		t.Fatalf("critical score/status = %d/%s, want critical below 80", score, status)
 	}
 
 	codePollution := healthy
 	codePollution.Claims.TrustedFromCodeDocuments = 1
-	score, status, reasons = scoreMemoryHealth(codePollution)
+	assessment = assessMemoryHealth(codePollution)
+	status, reasons = assessment.Status, assessment.Reasons
 	if status != "critical" {
 		t.Fatalf("code pollution status = %s reasons=%v, want critical", status, reasons)
 	}
@@ -799,7 +1099,8 @@ func TestScoreMemoryHealthStatuses(t *testing.T) {
 
 	learningDuplicates := healthy
 	learningDuplicates.Learning.DuplicatePendingGroups = 1
-	score, status, reasons = scoreMemoryHealth(learningDuplicates)
+	assessment = assessMemoryHealth(learningDuplicates)
+	status, reasons = assessment.Status, assessment.Reasons
 	if status != "critical" {
 		t.Fatalf("learning duplicate status = %s reasons=%v, want critical", status, reasons)
 	}
@@ -809,7 +1110,8 @@ func TestScoreMemoryHealthStatuses(t *testing.T) {
 
 	staleRunning := healthy
 	staleRunning.Ingestion.StaleRunningJobs = 1
-	score, status, reasons = scoreMemoryHealth(staleRunning)
+	assessment = assessMemoryHealth(staleRunning)
+	status, reasons = assessment.Status, assessment.Reasons
 	if status != "critical" {
 		t.Fatalf("stale running status = %s reasons=%v, want critical", status, reasons)
 	}
@@ -819,7 +1121,8 @@ func TestScoreMemoryHealthStatuses(t *testing.T) {
 
 	retryBacklog := healthy
 	retryBacklog.Ingestion.RetryJobs = 1
-	score, status, reasons = scoreMemoryHealth(retryBacklog)
+	assessment = assessMemoryHealth(retryBacklog)
+	status, reasons = assessment.Status, assessment.Reasons
 	if status != "needs_review" {
 		t.Fatalf("retry backlog status = %s reasons=%v, want needs_review", status, reasons)
 	}
@@ -829,7 +1132,8 @@ func TestScoreMemoryHealthStatuses(t *testing.T) {
 
 	sourceDue := healthy
 	sourceDue.Sources.Due = 2
-	score, status, reasons = scoreMemoryHealth(sourceDue)
+	assessment = assessMemoryHealth(sourceDue)
+	score, status, reasons = assessment.Score, assessment.Status, assessment.Reasons
 	if status != "needs_review" {
 		t.Fatalf("source due status = %s score=%d reasons=%v, want needs_review", status, score, reasons)
 	}
@@ -839,7 +1143,8 @@ func TestScoreMemoryHealthStatuses(t *testing.T) {
 
 	sourceOverdue := healthy
 	sourceOverdue.Sources.Overdue = 1
-	score, status, reasons = scoreMemoryHealth(sourceOverdue)
+	assessment = assessMemoryHealth(sourceOverdue)
+	score, status, reasons = assessment.Score, assessment.Status, assessment.Reasons
 	if status != "critical" {
 		t.Fatalf("source overdue status = %s score=%d reasons=%v, want critical", status, score, reasons)
 	}
@@ -1008,6 +1313,7 @@ func TestMemoryHealthSourceDetailsSQLIncludesBoundedDiagnostics(t *testing.T) {
 		"COALESCE(sr.last_error, '')",
 		"COALESCE(j.retry_jobs, 0)::int",
 		"COALESCE(j.failed_jobs, 0)::int",
+		"NOT EXISTS ( SELECT 1 FROM ingestion_jobs newer WHERE newer.source_config_id = ingestion_jobs.source_config_id AND newer.status = 'succeeded' AND newer.updated_at > ingestion_jobs.updated_at )",
 		"COALESCE(j.running_jobs, 0)::int",
 		"COALESCE(j.queued_jobs, 0)::int",
 		"COALESCE(lj.status, '')",

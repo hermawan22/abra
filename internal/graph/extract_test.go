@@ -5,8 +5,8 @@ import (
 	"testing"
 )
 
-func TestExtractTextFindsBacktickedAndCapitalizedEntities(t *testing.T) {
-	got := ExtractText("The Platform Team owns `ledger-service`. Billing Service uses Kafka. Risk API depends on Postgres.")
+func TestExtractFindsBacktickedAndCapitalizedEntities(t *testing.T) {
+	got := extract([]sourceText{{Text: "The Platform Team owns `ledger-service`. Billing Service uses Kafka. Risk API depends on Postgres."}})
 
 	want := []EntityCandidate{
 		{Name: "Billing Service", Type: "service", Mentions: 2},
@@ -21,8 +21,8 @@ func TestExtractTextFindsBacktickedAndCapitalizedEntities(t *testing.T) {
 	}
 }
 
-func TestExtractTextFindsRelationPatterns(t *testing.T) {
-	got := ExtractText("Payments Service uses Kafka, Postgres, and Redis. Platform Team owns Payments Service. Risk API should use Ledger API. Billing API depends on Risk API. Frontend App must not use Cypress.")
+func TestExtractFindsRelationPatterns(t *testing.T) {
+	got := extract([]sourceText{{Text: "Payments Service uses Kafka, Postgres, and Redis. Platform Team owns Payments Service. Risk API should use Ledger API. Billing API depends on Risk API. Frontend App must not use Cypress."}})
 
 	want := []RelationCandidate{
 		{From: "Billing API", To: "Risk API", Type: "depends_on", Evidence: "Billing API depends on Risk API", Confidence: 0.7},
@@ -38,8 +38,8 @@ func TestExtractTextFindsRelationPatterns(t *testing.T) {
 	}
 }
 
-func TestExtractTextKeepsDottedTechNamesInRelations(t *testing.T) {
-	got := ExtractText("Frontend App uses Next.js. Web Team owns Frontend App.")
+func TestExtractKeepsDottedTechNamesInRelations(t *testing.T) {
+	got := extract([]sourceText{{Text: "Frontend App uses Next.js. Web Team owns Frontend App."}})
 
 	want := []RelationCandidate{
 		{From: "Frontend App", To: "Next.js", Type: "uses", Evidence: "Frontend App uses Next.js", Confidence: 0.7},
@@ -50,8 +50,8 @@ func TestExtractTextKeepsDottedTechNamesInRelations(t *testing.T) {
 	}
 }
 
-func TestExtractTextFindsLifecycleRelationPatterns(t *testing.T) {
-	got := ExtractText("Checkout API replaces Legacy Checkout API. Payment Job duplicates Billing Job. Risk Model derives from Fraud Model.")
+func TestExtractFindsLifecycleRelationPatterns(t *testing.T) {
+	got := extract([]sourceText{{Text: "Checkout API replaces Legacy Checkout API. Payment Job duplicates Billing Job. Risk Model derives from Fraud Model."}})
 
 	want := []RelationCandidate{
 		{From: "Checkout API", To: "Legacy Checkout API", Type: "supersedes", Evidence: "Checkout API replaces Legacy Checkout API", Confidence: 0.7},
@@ -63,27 +63,17 @@ func TestExtractTextFindsLifecycleRelationPatterns(t *testing.T) {
 	}
 }
 
-func TestExtractTextSkipsGenericLifecyclePhrases(t *testing.T) {
-	got := ExtractText("This derives from the Work. This duplicates Previous Guidance. Current replaces Previous.")
+func TestExtractSkipsGenericLifecyclePhrases(t *testing.T) {
+	got := extract([]sourceText{{Text: "This derives from the Work. This duplicates Previous Guidance. Current replaces Previous."}})
 	if len(got.Relations) != 0 {
 		t.Fatalf("relations = %#v, want none", got.Relations)
 	}
 }
 
-func TestExtractFromDocumentsCarriesSourceMetadataAndDedupes(t *testing.T) {
-	got := ExtractFromDocuments([]Document{
-		{
-			ID:        "doc-2",
-			Title:     "Architecture",
-			Content:   "Risk API uses Kafka.",
-			SourceURL: "file://risk.md",
-		},
-		{
-			ID:        "doc-1",
-			Title:     "Architecture",
-			Content:   "Risk API uses Kafka. Risk API uses Kafka.",
-			SourceURL: "file://risk-copy.md",
-		},
+func TestExtractCarriesSourceMetadataAndDedupes(t *testing.T) {
+	got := extract([]sourceText{
+		{ID: "doc-2", SourceURL: "file://risk.md", Text: "Architecture\nRisk API uses Kafka."},
+		{ID: "doc-1", SourceURL: "file://risk-copy.md", Text: "Architecture\nRisk API uses Kafka. Risk API uses Kafka."},
 	})
 
 	if len(got.Relations) != 1 {

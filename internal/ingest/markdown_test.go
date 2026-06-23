@@ -30,7 +30,8 @@ func TestLocalRepoMarkdownIngestor(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	docs, err := ingestor.Ingest(context.Background())
+	result, err := ingestor.IngestWithStats(context.Background())
+	docs := result.Documents
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +79,8 @@ func TestLocalRepoMarkdownIngestorAddsGitIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	docs, err := ingestor.Ingest(context.Background())
+	result, err := ingestor.IngestWithStats(context.Background())
+	docs := result.Documents
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +121,8 @@ func TestLocalRepoMarkdownIngestorCanIncludeCode(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	docs, err := ingestor.Ingest(context.Background())
+	result, err := ingestor.IngestWithStats(context.Background())
+	docs := result.Documents
 	if err != nil {
 		t.Fatal(err)
 	}

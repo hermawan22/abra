@@ -331,7 +331,7 @@ func requireLocalModelProvider(args cliArgs, action string) error {
 	if provider == "" || isLocalProviderName(provider) {
 		return nil
 	}
-	return fmt.Errorf("abra models %s manages only the built-in local Qwen runner, but EMBEDDING_PROVIDER=%s in %s. Abra will use the configured provider instead. Use `abra config` to inspect it, or pass --force only if you intentionally want to manage the unused local runner", action, provider, envPath(args))
+	return fmt.Errorf("abra models %s manages only the built-in local embedding runner, but EMBEDDING_PROVIDER=%s in %s. Abra will use the configured provider instead. Use `abra config` to inspect it, or pass --force only if you intentionally want to manage the unused local runner", action, provider, envPath(args))
 }
 
 func inactiveLocalModelNotice(args cliArgs) map[string]any {

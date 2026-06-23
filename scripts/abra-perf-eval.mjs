@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { assertHybridRetrievalMode } from "./lib/eval-contracts.mjs";
+import { createMCPToolCaller } from "./lib/mcp.mjs";
 
 const baseUrl = (process.env.ABRA_BASE_URL || "http://127.0.0.1:18080").replace(/\/$/, "");
 const token = process.env.ABRA_API_TOKEN || "dev-token";
@@ -20,6 +21,7 @@ const memoryP95MaxMs = numberEnv("ABRA_PERF_MEMORY_P95_MS", 2500);
 const memoryCapacityP95MaxMs = numberEnv("ABRA_PERF_MEMORY_CAPACITY_P95_MS", memoryP95MaxMs * 2);
 const memorySoakP95MaxMs = numberEnv("ABRA_PERF_MEMORY_SOAK_P95_MS", memoryCapacityP95MaxMs);
 const maxFailureRate = decimalEnv("ABRA_PERF_MAX_FAILURE_RATE", 0);
+const mcpTool = createMCPToolCaller({ baseUrl, token });
 
 const checks = [];
 
@@ -49,6 +51,12 @@ function decimalEnv(name, fallback) {
 }
 
 async function request(path, { method = "GET", body, expectStatus = 200 } = {}) {
+  if (method === "POST" && path === "working_memory_compose") {
+    return mcpTool("working_memory_compose", body || {});
+  }
+  if (method === "POST" && path === "brain_think") {
+    return mcpTool("brain_think", body || {});
+  }
   const response = await fetch(`${baseUrl}${path}`, {
     method,
     headers: {
@@ -297,7 +305,7 @@ await runCheck("warm_hot_paths", async () => {
         include_unverified: false
       }
     });
-    await request("/memory/compose", {
+    await request("working_memory_compose", {
       method: "POST",
       body: {
         task: `implement ${queries[index]} for module-${index}`,
@@ -350,7 +358,7 @@ await runCheck("recall_latency_gate", async () => {
 
 await runCheck("working_memory_latency_gate", async () => {
   const result = await runConcurrent(iterations, concurrency, async (index) => {
-    const response = await request("/memory/compose", {
+    const response = await request("working_memory_compose", {
       method: "POST",
       body: {
         task: `implement ${queries[index % queries.length]} for module-${index % 8}`,
@@ -414,7 +422,7 @@ await runCheck("working_memory_latency_gate", async () => {
 
 await runCheck("working_memory_capacity_probe", async () => {
   const result = await runConcurrent(capacityIterations, capacityConcurrency, async (index) => {
-    const response = await request("/memory/compose", {
+    const response = await request("working_memory_compose", {
       method: "POST",
       body: {
         task: `capacity probe ${queries[index % queries.length]} for module-${index % 8}`,
@@ -457,7 +465,7 @@ await runCheck("working_memory_capacity_probe", async () => {
 if (soakSeconds > 0) {
   await runCheck("working_memory_soak_probe", async () => {
     const result = await runTimed(soakSeconds, soakConcurrency, async (index) => {
-      const response = await request("/memory/compose", {
+      const response = await request("working_memory_compose", {
         method: "POST",
         body: {
           task: `soak probe ${queries[index % queries.length]} for module-${index % 8}`,

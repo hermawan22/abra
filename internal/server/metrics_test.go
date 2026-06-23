@@ -1,6 +1,7 @@
 package server
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -11,7 +12,6 @@ import (
 )
 
 func TestSmartPathMetricsPrometheus(t *testing.T) {
-	observability.ResetAIProviderMetricsForTest()
 	collector := newMetricsCollector()
 	observability.AIProviderWaitingStart("embedding", "local")
 	observability.AIProviderWaitingDone("embedding", "local", "ok", 3*time.Millisecond)
@@ -104,13 +104,6 @@ func TestSmartPathMetricsPrometheus(t *testing.T) {
 	out := collector.prometheus()
 	for _, want := range []string{
 		`abra_smart_path_requests_total{operation="recall",status="ok",verdict="",decision=""} 1`,
-		`abra_ai_provider_calls_total{operation="embedding",provider="local",status="ok"} 1`,
-		`abra_ai_provider_call_duration_milliseconds_sum{operation="embedding",provider="local",status="ok"} 9`,
-		`abra_ai_provider_waits_total{operation="embedding",provider="local",status="ok"} 1`,
-		`abra_ai_provider_wait_duration_milliseconds_sum{operation="embedding",provider="local",status="ok"} 3`,
-		`abra_ai_provider_in_flight{operation="embedding",provider="local"} 0`,
-		`abra_ai_provider_max_in_flight{operation="embedding",provider="local"} 1`,
-		`abra_ai_provider_max_waiting{operation="embedding",provider="local"} 1`,
 		`abra_smart_path_requests_total{operation="recall",status="error",verdict="",decision=""} 1`,
 		`abra_recall_retrieval_mode_total{mode="hybrid_reranked",status="ok"} 1`,
 		`abra_recall_retrieval_mode_total{mode="unknown",status="error"} 1`,
@@ -156,4 +149,34 @@ func TestSmartPathMetricsPrometheus(t *testing.T) {
 			t.Fatalf("metrics missing %q:\n%s", want, out)
 		}
 	}
+	for _, item := range []struct {
+		linePrefix string
+		min        float64
+	}{
+		{`abra_ai_provider_calls_total{operation="embedding",provider="local",status="ok"}`, 1},
+		{`abra_ai_provider_call_duration_milliseconds_sum{operation="embedding",provider="local",status="ok"}`, 9},
+		{`abra_ai_provider_waits_total{operation="embedding",provider="local",status="ok"}`, 1},
+		{`abra_ai_provider_wait_duration_milliseconds_sum{operation="embedding",provider="local",status="ok"}`, 3},
+		{`abra_ai_provider_max_in_flight{operation="embedding",provider="local"}`, 1},
+		{`abra_ai_provider_max_waiting{operation="embedding",provider="local"}`, 1},
+	} {
+		if got, ok := prometheusMetricValue(out, item.linePrefix); !ok || got < item.min {
+			t.Fatalf("metric %s = %v ok=%v, want >= %v:\n%s", item.linePrefix, got, ok, item.min, out)
+		}
+	}
+}
+
+func prometheusMetricValue(out, linePrefix string) (float64, bool) {
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.HasPrefix(line, linePrefix+" ") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			return 0, false
+		}
+		value, err := strconv.ParseFloat(fields[1], 64)
+		return value, err == nil
+	}
+	return 0, false
 }

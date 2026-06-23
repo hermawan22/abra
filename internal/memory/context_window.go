@@ -157,12 +157,41 @@ func contextCandidates(input ComposeInput, result ComposeResult) []contextCandid
 			Content:  retrievalReasonsContext(result.RetrievalReasons),
 		})
 	}
-	for _, summary := range result.Summaries {
+	if result.TemporalContext.EffectiveAt != "" || result.TemporalContext.AsOf != "" {
 		add(ContextBlock{
-			Type:       "summary",
+			Type:     "temporal",
+			Title:    "Temporal Context",
+			Priority: 0.965,
+			Content:  temporalContext(result.TemporalContext),
+		})
+	}
+	if len(result.EntityDossiers) > 0 {
+		add(ContextBlock{
+			Type:     "entity_dossier",
+			Title:    "Entity Dossier",
+			Priority: 0.96,
+			Content:  entityDossierContext(result.EntityDossiers),
+		})
+	}
+	for _, summary := range result.Summaries {
+		blockType := "summary"
+		priority := 0.58 + minFloat(summary.Rank, 1)*0.14 + summaryLevelBoost(summary.Level)
+		switch summary.Level {
+		case "agent_core":
+			blockType = "agent_core_memory"
+			priority = 0.955
+		case "shared":
+			blockType = "shared_memory"
+			priority = 0.952
+		case "core":
+			blockType = "core_memory"
+			priority = 0.95
+		}
+		add(ContextBlock{
+			Type:       blockType,
 			ID:         summary.ID,
 			Title:      summary.Level + ": " + summary.Title,
-			Priority:   0.58 + minFloat(summary.Rank, 1)*0.14 + summaryLevelBoost(summary.Level),
+			Priority:   priority,
 			Content:    summary.Summary,
 			SourceURLs: summary.SourceURLs,
 		})
@@ -232,6 +261,68 @@ func healthSignalCodes(signals []store.MemoryHealthSignal) string {
 		codes = append(codes, fmt.Sprintf("+%d more", len(signals)-len(codes)))
 	}
 	return strings.Join(codes, ", ")
+}
+
+func temporalContext(value TemporalContext) string {
+	lines := []string{}
+	if value.EffectiveAt != "" {
+		lines = append(lines, "Effective at: "+value.EffectiveAt)
+	}
+	if value.AsOf != "" {
+		lines = append(lines, "Requested as_of: "+value.AsOf)
+		lines = append(lines, fmt.Sprintf("as_of applied to recall: %t", value.AsOfAppliedToRecall))
+	}
+	lines = append(lines, fmt.Sprintf("include_historical: %t", value.IncludeHistorical))
+	if value.CurrentFilter != "" {
+		lines = append(lines, "Current filter: "+value.CurrentFilter)
+	}
+	if value.HistoricalUseRequirement != "" {
+		lines = append(lines, "Historical rule: "+value.HistoricalUseRequirement)
+	}
+	if len(value.Warnings) > 0 {
+		lines = append(lines, "Warnings: "+strings.Join(value.Warnings, "; "))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func entityDossierContext(values []EntityDossier) string {
+	lines := []string{}
+	for i, dossier := range values {
+		if i >= maxEntityDossiers {
+			break
+		}
+		lines = append(lines, fmt.Sprintf("- %s: trust=%s active_claims=%d historical_claims=%d active_relations=%d anchors=%d conflicts=%d next=%s",
+			dossier.Entity,
+			dossier.Trust,
+			dossier.Stats.ActiveClaims,
+			dossier.Stats.HistoricalClaims,
+			dossier.Stats.ActiveRelations,
+			dossier.Stats.Anchors,
+			dossier.Stats.Conflicts,
+			dossier.NextAction,
+		))
+		for j, claim := range dossier.ActiveClaims {
+			if j >= 2 {
+				break
+			}
+			ref := claim.CitationRef
+			if ref != "" {
+				ref = " [" + ref + "]"
+			}
+			lines = append(lines, "  claim: "+claim.Claim+ref)
+		}
+		for j, relation := range dossier.ActiveRelations {
+			if j >= 2 {
+				break
+			}
+			ref := relation.CitationRef
+			if ref != "" {
+				ref = " [" + ref + "]"
+			}
+			lines = append(lines, "  relation: "+relation.From+" --"+relation.Type+"--> "+relation.To+ref)
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func actionListOrDefault(actions []string) string {
@@ -368,6 +459,12 @@ func renderContextPrompt(window ContextWindow) string {
 
 func summaryLevelBoost(level string) float64 {
 	switch level {
+	case "agent_core":
+		return 0.14
+	case "shared":
+		return 0.13
+	case "core":
+		return 0.12
 	case "repo", "source":
 		return 0.08
 	case "module", "package":

@@ -60,14 +60,6 @@ type MCPToolInfo struct {
 	InputSchema map[string]any `json:"inputSchema,omitempty"`
 }
 
-func ValidateMCPSource(ctx context.Context, source SourceConfig) ([]MCPValidationDocument, error) {
-	report, err := ValidateMCPSourceReport(ctx, source)
-	if err != nil {
-		return nil, err
-	}
-	return report.Documents, nil
-}
-
 func ValidateMCPSourceReport(ctx context.Context, source SourceConfig) (MCPValidationReport, error) {
 	docs, err := fetchMCPDocuments(ctx, source)
 	if err != nil {
@@ -103,14 +95,6 @@ func ListMCPTools(ctx context.Context, source SourceConfig) ([]MCPToolInfo, erro
 		return nil, err
 	}
 	return decoded.Tools, nil
-}
-
-type mcpJSONRPCResponse struct {
-	Result mcpToolResult `json:"result"`
-	Error  *struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
-	} `json:"error"`
 }
 
 type mcpToolResult struct {

@@ -13,12 +13,6 @@ type JSONRepairer interface {
 	RepairJSON(ctx context.Context, raw string, schema JSONSchema) (string, error)
 }
 
-type JSONRepairerFunc func(ctx context.Context, raw string, schema JSONSchema) (string, error)
-
-func (f JSONRepairerFunc) RepairJSON(ctx context.Context, raw string, schema JSONSchema) (string, error) {
-	return f(ctx, raw, schema)
-}
-
 type DeterministicJSONRepairer struct{}
 
 func DefaultJSONRepairer() JSONRepairer {

@@ -15,6 +15,7 @@ import (
 type fakeStore struct {
 	mu                sync.Mutex
 	recalls           []string
+	recallLimits      []int
 	graphQueries      []string
 	policyResults     []store.AgentActionDecisionResult
 	conflicts         []store.ConflictResult
@@ -36,15 +37,30 @@ type fakeStore struct {
 	graphDelay        time.Duration
 	auditEvents       int
 	recallWarnings    []store.RetrievalWarning
+	recallOptions     []store.RecallOptions
+	graphOptions      []store.RecallOptions
+	coreSummaries     []store.MemorySummaryResult
+	coreSummaryCalls  int
+	resolvedEntity    store.EntityResolutionResult
+	resolveCalls      int
+	anchorDocs        []store.DocumentResult
+	anchorSources     [][]string
+	storedAnchors     []store.EvidenceAnchorResult
 }
 
 func (f *fakeStore) Recall(ctx context.Context, query, scope string, limit int, includeUnverified bool) (store.RecallResult, error) {
+	return f.RecallWithOptions(ctx, query, scope, limit, includeUnverified, store.RecallOptions{})
+}
+
+func (f *fakeStore) RecallWithOptions(ctx context.Context, query, scope string, limit int, includeUnverified bool, options store.RecallOptions) (store.RecallResult, error) {
 	f.mu.Lock()
 	f.activeRecalls++
 	if f.activeRecalls > f.maxActiveRecalls {
 		f.maxActiveRecalls = f.activeRecalls
 	}
 	f.recalls = append(f.recalls, query)
+	f.recallLimits = append(f.recallLimits, limit)
+	f.recallOptions = append(f.recallOptions, options)
 	f.mu.Unlock()
 	defer func() {
 		f.mu.Lock()
@@ -93,6 +109,100 @@ func (f *fakeStore) Recall(ctx context.Context, query, scope string, limit int, 
 	}, nil
 }
 
+func (f *fakeStore) DocumentsBySource(ctx context.Context, scope string, sourceURLs []string, limitPerSource int) ([]store.DocumentResult, error) {
+	f.mu.Lock()
+	f.anchorSources = append(f.anchorSources, append([]string(nil), sourceURLs...))
+	docs := append([]store.DocumentResult(nil), f.anchorDocs...)
+	f.mu.Unlock()
+	return docs, nil
+}
+
+func (f *fakeStore) EvidenceAnchorsForClaims(ctx context.Context, scope string, claimIDs []string) ([]store.EvidenceAnchorResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]store.EvidenceAnchorResult(nil), f.storedAnchors...), nil
+}
+
+func TestComposeHydratesClaimAnchorDocumentsBySource(t *testing.T) {
+	source := "https://example.test/repo/package.json"
+	fake := &fakeStore{
+		anchorDocs: []store.DocumentResult{
+			{
+				ID:      "anchor-doc",
+				Title:   "package ops anchor",
+				Source:  source,
+				Content: "Next.js framework uses src/server/index.js and package.json scripts.",
+				Rank:    0.35,
+			},
+		},
+	}
+	result, err := NewComposerWithOptions(fake, ComposerOptions{}).Compose(context.Background(), ComposeInput{
+		Task:  "Which runtime should agents use?",
+		Scope: "repo:test",
+		Limit: 5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.anchorSources) != 1 || len(fake.anchorSources[0]) != 1 || fake.anchorSources[0][0] != source {
+		t.Fatalf("anchor source lookup = %#v", fake.anchorSources)
+	}
+	found := false
+	for _, anchor := range result.EvidenceAnchors {
+		if anchor.Kind == "claim" && anchor.ClaimID == "claim-1" && strings.Contains(anchor.Quote, "Next.js framework uses") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("missing hydrated claim anchor: %#v", result.EvidenceAnchors)
+	}
+	for _, claimID := range result.Verification.WeakEvidenceAnchors {
+		if claimID == "claim-1" {
+			t.Fatalf("hydrated claim should not remain weak: %#v", result.Verification.WeakEvidenceAnchors)
+		}
+	}
+}
+
+func TestComposeUsesStoredEvidenceAnchorsForVerification(t *testing.T) {
+	source := "https://example.test/repo/package.json"
+	fake := &fakeStore{
+		storedAnchors: []store.EvidenceAnchorResult{
+			{
+				ClaimID:       "claim-1",
+				DocumentID:    "doc-evidence",
+				Quote:         "Next.js framework uses src/server/index.js and package.json scripts.",
+				StartChar:     88,
+				EndChar:       151,
+				SourceURL:     source,
+				DocumentTitle: "stored package evidence",
+				SourceType:    "file",
+			},
+		},
+	}
+	result, err := NewComposerWithOptions(fake, ComposerOptions{}).Compose(context.Background(), ComposeInput{
+		Task:  "Which runtime should agents use?",
+		Scope: "repo:test",
+		Limit: 5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, anchor := range result.EvidenceAnchors {
+		if anchor.Kind == "claim" && anchor.ClaimID == "claim-1" && anchor.DocumentID == "doc-evidence" && anchor.SourceURL == source && anchor.StartChar == 88 && anchor.EndChar == 151 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("missing stored claim anchor: %#v", result.EvidenceAnchors)
+	}
+	for _, claimID := range result.Verification.WeakEvidenceAnchors {
+		if claimID == "claim-1" {
+			t.Fatalf("stored anchor should satisfy verifier: %#v", result.Verification.WeakEvidenceAnchors)
+		}
+	}
+}
+
 func TestSortClaimsPrefersFreshClaimsOverStaleRank(t *testing.T) {
 	source := "file://retry-policy.md"
 	claims := sortClaims(map[string]store.ClaimResult{
@@ -120,19 +230,166 @@ func TestSortClaimsPrefersFreshClaimsOverStaleRank(t *testing.T) {
 	}
 }
 
+func TestComposeBuildsEntityDossierAndTemporalContext(t *testing.T) {
+	fake := &fakeStore{}
+	composer := NewComposerWithOptions(fake, ComposerOptions{})
+	result, err := composer.Compose(context.Background(), ComposeInput{
+		Task:              "What should change for Next.js?",
+		Scope:             "repo:test",
+		Entity:            "Next.js",
+		IncludeHistorical: true,
+		AsOf:              "2026-06-22T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("Compose returned error: %v", err)
+	}
+	if len(result.EntityDossiers) == 0 {
+		t.Fatalf("expected entity dossier in result")
+	}
+	dossier := result.EntityDossiers[0]
+	if dossier.Entity != "Next.js" || dossier.Stats.ActiveClaims == 0 || dossier.Stats.ActiveRelations == 0 {
+		t.Fatalf("unexpected dossier: %#v", dossier)
+	}
+	if dossier.Trust == "" || dossier.NextAction == "" {
+		t.Fatalf("dossier should include trust and next action: %#v", dossier)
+	}
+	if result.TemporalContext.AsOf != "2026-06-22T00:00:00Z" || !result.TemporalContext.IncludeHistorical || !result.TemporalContext.DefaultHidesHistorical {
+		t.Fatalf("unexpected temporal context: %#v", result.TemporalContext)
+	}
+	if !result.TemporalContext.AsOfAppliedToRecall {
+		t.Fatalf("expected as_of to be applied to recall: %#v", result.TemporalContext)
+	}
+	if len(fake.recallOptions) == 0 || fake.recallOptions[0].AsOf.IsZero() || !fake.recallOptions[0].IncludeHistorical {
+		t.Fatalf("recall options were not applied: %#v", fake.recallOptions)
+	}
+	if len(fake.graphOptions) == 0 || fake.graphOptions[0].AsOf.IsZero() || !fake.graphOptions[0].IncludeHistorical {
+		t.Fatalf("graph options were not applied: %#v", fake.graphOptions)
+	}
+	if !containsContextBlock(result.ContextWindow.Blocks, "entity_dossier") {
+		t.Fatalf("context window missing entity dossier block: %#v", result.ContextWindow.Blocks)
+	}
+}
+
+func TestComposeInvalidAsOfDoesNotClaimTemporalRecallApplied(t *testing.T) {
+	composer := NewComposerWithOptions(&fakeStore{}, ComposerOptions{})
+	result, err := composer.Compose(context.Background(), ComposeInput{
+		Task:  "What should change for Next.js?",
+		Scope: "repo:test",
+		AsOf:  "not-a-date",
+	})
+	if err != nil {
+		t.Fatalf("Compose returned error: %v", err)
+	}
+	if result.TemporalContext.AsOfAppliedToRecall {
+		t.Fatalf("invalid as_of should not be marked applied: %#v", result.TemporalContext)
+	}
+	if len(result.TemporalContext.Warnings) == 0 {
+		t.Fatalf("invalid as_of should produce warning: %#v", result.TemporalContext)
+	}
+}
+
+func TestTemporalContextIncludesHistoricalGraphRelations(t *testing.T) {
+	result := ComposeResult{
+		Facts: []store.ClaimResult{{ID: "claim-fresh", Freshness: "fresh"}},
+		GraphContext: []store.RelationResult{
+			{ID: "relation-challenged", Status: "challenged", Freshness: "fresh"},
+		},
+	}
+	temporal := buildTemporalContext(ComposeInput{}, result, false, "")
+	if !temporal.HistoricalIncluded {
+		t.Fatalf("challenged graph relation should be reported as historical/non-autonomous context: %#v", temporal)
+	}
+}
+
+func TestComposeIncludesCoreAgentCoreAndSharedMemory(t *testing.T) {
+	fake := &fakeStore{
+		coreSummaries: []store.MemorySummaryResult{
+			{ID: "core-1", Scope: "repo:test", Level: "core", Key: "product", Title: "Product Core", Summary: "Always preserve governed memory semantics.", Rank: 0.9},
+			{ID: "agent-core-1", Scope: "repo:test", Level: "agent_core", Key: "codex", Title: "Codex Core", Summary: "Codex should observe, propose, verify, then promote through approval.", Rank: 0.95},
+			{ID: "shared-1", Scope: "repo:test", Level: "shared", Key: "team", Title: "Shared State", Summary: "Agents should coordinate through reviewable proposals.", Rank: 0.93},
+		},
+	}
+	composer := NewComposerWithOptions(fake, ComposerOptions{})
+	result, err := composer.Compose(context.Background(), ComposeInput{
+		Task:  "Unrelated implementation task",
+		Scope: "repo:test",
+		Agent: "codex",
+	})
+	if err != nil {
+		t.Fatalf("Compose returned error: %v", err)
+	}
+	if fake.coreSummaryCalls == 0 {
+		t.Fatalf("expected core memory summary lookup")
+	}
+	if !containsContextBlock(result.ContextWindow.Blocks, "core_memory") ||
+		!containsContextBlock(result.ContextWindow.Blocks, "agent_core_memory") ||
+		!containsContextBlock(result.ContextWindow.Blocks, "shared_memory") {
+		t.Fatalf("context window missing compact memory blocks: %#v", result.ContextWindow.Blocks)
+	}
+}
+
+func TestEntityDossierUsesResolvedCanonicalEntity(t *testing.T) {
+	fake := &fakeStore{
+		resolvedEntity: store.EntityResolutionResult{
+			ID:      "entity-next",
+			Name:    "Next.js",
+			Aliases: []string{"nextjs", "next"},
+		},
+	}
+	composer := NewComposerWithOptions(fake, ComposerOptions{})
+	result, err := composer.EntityDossier(context.Background(), EntityDossierInput{
+		Entity: "nextjs",
+		Scope:  "repo:test",
+	})
+	if err != nil {
+		t.Fatalf("EntityDossier returned error: %v", err)
+	}
+	if fake.resolveCalls == 0 {
+		t.Fatalf("expected entity resolver to be called")
+	}
+	if result.Dossier.EntityKey != "entity-next" || result.Dossier.Entity != "Next.js" {
+		t.Fatalf("dossier did not use canonical entity: %#v", result.Dossier)
+	}
+	if !containsStringFold(result.Dossier.Aliases, "nextjs") {
+		t.Fatalf("dossier aliases missing resolved alias: %#v", result.Dossier.Aliases)
+	}
+}
+
 func (f *fakeStore) ListMemorySummaries(ctx context.Context, query, scope string, limit int) ([]store.MemorySummaryResult, error) {
 	return []store.MemorySummaryResult{
 		{ID: "summary-1", Scope: scope, Level: "module", Key: "src/pages", Title: "src/pages", Summary: "Pages module contains Next.js routes.", SourceCount: 3, RelationCount: 2, TokenEstimate: 12, SourceURLs: []string{"https://example.test/repo/src/pages"}, Rank: 0.7},
 	}, nil
 }
 
+func (f *fakeStore) ListMemorySummariesByLevels(ctx context.Context, query, scope string, levels []string, limit int) ([]store.MemorySummaryResult, error) {
+	f.mu.Lock()
+	f.coreSummaryCalls++
+	f.mu.Unlock()
+	if len(f.coreSummaries) > 0 {
+		return f.coreSummaries, nil
+	}
+	return nil, nil
+}
+
+func (f *fakeStore) ResolveEntity(ctx context.Context, scope, name string) (store.EntityResolutionResult, error) {
+	f.mu.Lock()
+	f.resolveCalls++
+	f.mu.Unlock()
+	return f.resolvedEntity, nil
+}
+
 func (f *fakeStore) RelatedGraph(ctx context.Context, query, scope string, limit int) ([]store.RelationResult, error) {
+	return f.RelatedGraphWithOptions(ctx, query, scope, limit, store.RecallOptions{})
+}
+
+func (f *fakeStore) RelatedGraphWithOptions(ctx context.Context, query, scope string, limit int, options store.RecallOptions) ([]store.RelationResult, error) {
 	f.mu.Lock()
 	f.activeGraphs++
 	if f.activeGraphs > f.maxActiveGraphs {
 		f.maxActiveGraphs = f.activeGraphs
 	}
 	f.graphQueries = append(f.graphQueries, query)
+	f.graphOptions = append(f.graphOptions, options)
 	f.mu.Unlock()
 	defer func() {
 		f.mu.Lock()
@@ -167,7 +424,7 @@ func TestComposeSurfacesGraphWarningsInAgentGate(t *testing.T) {
 			{FromEntity: "Frontend App", ToEntity: "Cypress", Type: "should_use", Confidence: 0.88, SourceURL: &sourceB},
 		},
 	}
-	result, err := NewComposer(db).Compose(context.Background(), ComposeInput{
+	result, err := NewComposerWithOptions(db, ComposerOptions{}).Compose(context.Background(), ComposeInput{
 		Task:     "choose frontend e2e framework",
 		Scope:    "repo:test/app",
 		Agent:    "frontend",
@@ -201,7 +458,7 @@ func TestComposeReturnsDegradedPacketWhenRetrievalBranchFails(t *testing.T) {
 		recallErrorOn: "Known failures",
 		graphErrorOn:  "next.config.js",
 	}
-	result, err := NewComposer(db).Compose(context.Background(), ComposeInput{
+	result, err := NewComposerWithOptions(db, ComposerOptions{}).Compose(context.Background(), ComposeInput{
 		Task:              "upgrade Next.js to latest",
 		Scope:             "repo:test/app",
 		Agent:             "frontend",
@@ -254,7 +511,7 @@ func TestComposeSurfacesStoreRecallWarnings(t *testing.T) {
 			{Stage: "retrieval", Operation: "rerank_claims", Query: "upgrade", Message: "reranker unavailable"},
 		},
 	}
-	result, err := NewComposer(db).Compose(context.Background(), ComposeInput{
+	result, err := NewComposerWithOptions(db, ComposerOptions{}).Compose(context.Background(), ComposeInput{
 		Task:  "upgrade Next.js safely",
 		Scope: "repo:test/app",
 		Agent: "frontend",
@@ -346,7 +603,7 @@ func (f *fakeStore) InsertAuditEvent(ctx context.Context, eventType, targetType,
 
 func TestComposeDiagnosticDoesNotWriteAuditEvent(t *testing.T) {
 	db := &fakeStore{}
-	_, err := NewComposer(db).Compose(context.Background(), ComposeInput{
+	_, err := NewComposerWithOptions(db, ComposerOptions{}).Compose(context.Background(), ComposeInput{
 		Task:       "verify agent context",
 		Scope:      "repo:test/app",
 		Agent:      "abra-agent-verify",
@@ -362,7 +619,7 @@ func TestComposeDiagnosticDoesNotWriteAuditEvent(t *testing.T) {
 
 func TestComposeWritesAuditEventByDefault(t *testing.T) {
 	db := &fakeStore{}
-	_, err := NewComposer(db).Compose(context.Background(), ComposeInput{
+	_, err := NewComposerWithOptions(db, ComposerOptions{}).Compose(context.Background(), ComposeInput{
 		Task:  "implement feature",
 		Scope: "repo:test/app",
 		Agent: "codex",
@@ -377,7 +634,7 @@ func TestComposeWritesAuditEventByDefault(t *testing.T) {
 
 func TestComposeCachesMemoryHealthByScope(t *testing.T) {
 	db := &fakeStore{}
-	composer := NewComposer(db)
+	composer := NewComposerWithOptions(db, ComposerOptions{HealthCacheTTL: time.Minute})
 	first, err := composer.Compose(context.Background(), ComposeInput{
 		Task:  "ship feature safely",
 		Scope: "repo:test/app",
@@ -445,7 +702,7 @@ func TestComposeHealthCacheCanBeDisabled(t *testing.T) {
 
 func TestComposeCoalescesConcurrentMemoryHealthLookup(t *testing.T) {
 	db := &fakeStore{healthDelay: 40 * time.Millisecond}
-	composer := NewComposer(db)
+	composer := NewComposerWithOptions(db, ComposerOptions{HealthCacheTTL: time.Minute})
 	const workers = 8
 	var wg sync.WaitGroup
 	errs := make(chan error, workers)
@@ -493,7 +750,7 @@ func TestComposeCoalescesConcurrentMemoryHealthLookup(t *testing.T) {
 
 func TestComposeBuildsMigrationWorkingMemory(t *testing.T) {
 	db := &fakeStore{}
-	result, err := NewComposer(db).Compose(context.Background(), ComposeInput{
+	result, err := NewComposerWithOptions(db, ComposerOptions{}).Compose(context.Background(), ComposeInput{
 		Task:              "upgrade Next.js to latest",
 		Scope:             "repo:test/app",
 		Agent:             "frontend",
@@ -505,6 +762,16 @@ func TestComposeBuildsMigrationWorkingMemory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	assertMigrationComposeRecallAndGraph(t, result, db)
+	assertMigrationComposeImpactAndValidation(t, result)
+	assertMigrationComposeContextAndHealth(t, result)
+	assertMigrationComposeTrace(t, result)
+	assertMigrationComposeEvidence(t, result)
+	assertMigrationComposeDecision(t, result)
+}
+
+func assertMigrationComposeRecallAndGraph(t *testing.T, result ComposeResult, db *fakeStore) {
+	t.Helper()
 	if result.Intent != "migration" {
 		t.Fatalf("intent = %q, want migration", result.Intent)
 	}
@@ -523,6 +790,19 @@ func TestComposeBuildsMigrationWorkingMemory(t *testing.T) {
 	if len(result.GraphContext) != 2 {
 		t.Fatalf("graph relations = %d, want 2", len(result.GraphContext))
 	}
+	if result.RetrievalPlan.Mode == "" || len(result.RetrievalPlan.Stages) < 4 {
+		t.Fatalf("retrieval plan not populated: %#v", result.RetrievalPlan)
+	}
+	if result.RetrievalPlan.Budget.MaxQueries != 6 || result.RetrievalPlan.Budget.Limit != 6 {
+		t.Fatalf("retrieval budget = %+v", result.RetrievalPlan.Budget)
+	}
+	if result.RetrievalPlan.Budget.ContextTokens != 1600 {
+		t.Fatalf("context token budget = %+v", result.RetrievalPlan.Budget)
+	}
+}
+
+func assertMigrationComposeImpactAndValidation(t *testing.T, result ComposeResult) {
+	t.Helper()
 	if len(result.ImpactMap) == 0 || result.Stats.ImpactItems != len(result.ImpactMap) {
 		t.Fatalf("impact map missing or stats mismatch: impact=%#v stats=%+v", result.ImpactMap, result.Stats)
 	}
@@ -541,15 +821,10 @@ func TestComposeBuildsMigrationWorkingMemory(t *testing.T) {
 	if !containsValidationType(result.ValidationPlan, "memory_gate") {
 		t.Fatalf("validation plan missing memory gate review: %#v", result.ValidationPlan)
 	}
-	if result.RetrievalPlan.Mode == "" || len(result.RetrievalPlan.Stages) < 4 {
-		t.Fatalf("retrieval plan not populated: %#v", result.RetrievalPlan)
-	}
-	if result.RetrievalPlan.Budget.MaxQueries != 6 || result.RetrievalPlan.Budget.Limit != 6 {
-		t.Fatalf("retrieval budget = %+v", result.RetrievalPlan.Budget)
-	}
-	if result.RetrievalPlan.Budget.ContextTokens != 1600 {
-		t.Fatalf("context token budget = %+v", result.RetrievalPlan.Budget)
-	}
+}
+
+func assertMigrationComposeContextAndHealth(t *testing.T, result ComposeResult) {
+	t.Helper()
 	if result.ContextWindow.MaxTokens != 1600 || result.ContextWindow.EstimatedTokens <= 0 || result.ContextWindow.EstimatedTokens > result.ContextWindow.MaxTokens {
 		t.Fatalf("context window budget not enforced: %#v", result.ContextWindow)
 	}
@@ -577,6 +852,10 @@ func TestComposeBuildsMigrationWorkingMemory(t *testing.T) {
 	if !strings.Contains(result.ContextWindow.Prompt, "Required actions:") {
 		t.Fatalf("context window did not include required actions: %s", result.ContextWindow.Prompt)
 	}
+}
+
+func assertMigrationComposeTrace(t *testing.T, result ComposeResult) {
+	t.Helper()
 	if len(result.RetrievalTrace) < 8 || result.Stats.RetrievalTraceItems != len(result.RetrievalTrace) {
 		t.Fatalf("retrieval trace missing or stats mismatch: trace=%#v stats=%+v", result.RetrievalTrace, result.Stats)
 	}
@@ -597,6 +876,10 @@ func TestComposeBuildsMigrationWorkingMemory(t *testing.T) {
 			t.Fatalf("relevant files missing %q: %#v", want, result.RelevantFiles)
 		}
 	}
+}
+
+func assertMigrationComposeEvidence(t *testing.T, result ComposeResult) {
+	t.Helper()
 	if len(result.Evidence) == 0 || result.Evidence[0].Count == 0 {
 		t.Fatalf("expected evidence counts: %#v", result.Evidence)
 	}
@@ -618,6 +901,10 @@ func TestComposeBuildsMigrationWorkingMemory(t *testing.T) {
 	if !containsRisk(result.Risks, "Unverified claims") {
 		t.Fatalf("expected unverified risk: %#v", result.Risks)
 	}
+}
+
+func assertMigrationComposeDecision(t *testing.T, result ComposeResult) {
+	t.Helper()
 	if result.Verification.Verdict != "partial" || !result.Verification.ActionRequired {
 		t.Fatalf("verification = %#v, want partial action-required", result.Verification)
 	}
@@ -656,7 +943,7 @@ func TestComposerBoundsParallelRetrievalStages(t *testing.T) {
 		{Query: "three", Scope: "repo:test", Limit: 1},
 		{Query: "four", Scope: "repo:test", Limit: 1},
 	}
-	results, warnings, err := composer.retrieveQueries(context.Background(), queries)
+	results, warnings, err := composer.retrieveQueries(context.Background(), queries, store.RecallOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -668,7 +955,7 @@ func TestComposerBoundsParallelRetrievalStages(t *testing.T) {
 	}
 
 	seeds := []string{"alpha", "beta", "gamma"}
-	graphResults, graphWarnings, err := composer.retrieveGraphSeeds(context.Background(), seeds, "repo:test", 2)
+	graphResults, graphWarnings, err := composer.retrieveGraphSeeds(context.Background(), seeds, "repo:test", 2, store.RecallOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -702,7 +989,7 @@ func TestComposeBlocksAutonomyWhenMemoryHealthCritical(t *testing.T) {
 			},
 		},
 	}
-	result, err := NewComposer(db).Compose(context.Background(), ComposeInput{
+	result, err := NewComposerWithOptions(db, ComposerOptions{}).Compose(context.Background(), ComposeInput{
 		Task:     "upgrade Next.js to latest",
 		Scope:    "repo:test/app",
 		Agent:    "frontend",
@@ -743,7 +1030,7 @@ func TestComposeAppliesStoredAgentActionPolicy(t *testing.T) {
 			{Allowed: false, Decision: "no_policy", Reason: "no matching agent action policy"},
 		},
 	}
-	result, err := NewComposer(db).Compose(context.Background(), ComposeInput{
+	result, err := NewComposerWithOptions(db, ComposerOptions{}).Compose(context.Background(), ComposeInput{
 		Task:  "implement checkout feature",
 		Scope: "repo:test/app",
 		Agent: "frontend-agent",
@@ -767,7 +1054,7 @@ func TestComposeAppliesStoredAgentActionPolicy(t *testing.T) {
 
 func TestComposeBuildsBudgetedContextWindow(t *testing.T) {
 	db := &fakeStore{}
-	result, err := NewComposer(db).Compose(context.Background(), ComposeInput{
+	result, err := NewComposerWithOptions(db, ComposerOptions{}).Compose(context.Background(), ComposeInput{
 		Task:        "upgrade Next.js to latest and explain risks",
 		Scope:       "repo:test/app",
 		Agent:       "frontend-agent",
@@ -798,6 +1085,56 @@ func TestComposeBuildsBudgetedContextWindow(t *testing.T) {
 	}
 }
 
+func TestComposeAppliesRetrievalModeBudgets(t *testing.T) {
+	fastDB := &fakeStore{}
+	fast, err := NewComposerWithOptions(fastDB, ComposerOptions{}).Compose(context.Background(), ComposeInput{
+		Task:        "fix callback retry bug",
+		Scope:       "repo:test",
+		Mode:        RetrievalModeFast,
+		Limit:       20,
+		MaxQueries:  8,
+		TokenBudget: 5000,
+		Diagnostic:  true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fast.RetrievalMode != RetrievalModeFast {
+		t.Fatalf("fast mode = %q", fast.RetrievalMode)
+	}
+	if len(fastDB.recalls) != 1 || len(fastDB.recallLimits) != 1 || fastDB.recallLimits[0] > 3 {
+		t.Fatalf("fast recall plan = queries=%v limits=%v", fastDB.recalls, fastDB.recallLimits)
+	}
+	if len(fastDB.graphQueries) > 2 {
+		t.Fatalf("fast graph fanout too high: %v", fastDB.graphQueries)
+	}
+
+	deepDB := &fakeStore{}
+	deep, err := NewComposerWithOptions(deepDB, ComposerOptions{}).Compose(context.Background(), ComposeInput{
+		Task:        "fix callback retry bug",
+		Scope:       "repo:test",
+		Mode:        RetrievalModeDeep,
+		Limit:       1,
+		MaxQueries:  1,
+		TokenBudget: 300,
+		Diagnostic:  true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deep.RetrievalMode != RetrievalModeDeep {
+		t.Fatalf("deep mode = %q", deep.RetrievalMode)
+	}
+	if len(deepDB.recalls) < 2 {
+		t.Fatalf("deep mode should expand query fanout: %v", deepDB.recalls)
+	}
+	for _, limit := range deepDB.recallLimits {
+		if limit < 10 {
+			t.Fatalf("deep mode should raise recall limit, limits=%v", deepDB.recallLimits)
+		}
+	}
+}
+
 func TestComposeContextWindowPreservesSafetyGateForLongTaskAtMinimumBudget(t *testing.T) {
 	db := &fakeStore{
 		health: store.MemoryHealthResult{
@@ -810,7 +1147,7 @@ func TestComposeContextWindowPreservesSafetyGateForLongTaskAtMinimumBudget(t *te
 		},
 	}
 	longTask := strings.Repeat("upgrade the architecture without losing safety gates ", 80)
-	result, err := NewComposer(db).Compose(context.Background(), ComposeInput{
+	result, err := NewComposerWithOptions(db, ComposerOptions{}).Compose(context.Background(), ComposeInput{
 		Task:        longTask,
 		Scope:       "repo:test/app",
 		Agent:       "frontend-agent",
@@ -838,7 +1175,7 @@ func TestComposeContextWindowPreservesSafetyGateForLongTaskAtMinimumBudget(t *te
 
 func TestComposeSuggestsLearningForLowConfidenceRetrieval(t *testing.T) {
 	db := &fakeStore{lowSignalRecall: true}
-	result, err := NewComposer(db).Compose(context.Background(), ComposeInput{
+	result, err := NewComposerWithOptions(db, ComposerOptions{}).Compose(context.Background(), ComposeInput{
 		Task:  "find obscure deployment convention",
 		Scope: "repo:test/app",
 		Agent: "frontend-agent",
@@ -898,7 +1235,7 @@ func TestComposeBlocksAutonomyWhenActiveConflictSurfaces(t *testing.T) {
 			ConflictingClaimID: "claim-2",
 		}},
 	}
-	result, err := NewComposer(db).Compose(context.Background(), ComposeInput{
+	result, err := NewComposerWithOptions(db, ComposerOptions{}).Compose(context.Background(), ComposeInput{
 		Task:              "choose frontend e2e framework",
 		Scope:             "repo:test/app",
 		Agent:             "frontend-agent",
@@ -941,7 +1278,7 @@ func TestComposeBlocksAutonomyWhenActiveRelationConflictSurfaces(t *testing.T) {
 			ConflictingRelationID: "relation-cypress",
 		}},
 	}
-	result, err := NewComposer(db).Compose(context.Background(), ComposeInput{
+	result, err := NewComposerWithOptions(db, ComposerOptions{}).Compose(context.Background(), ComposeInput{
 		Task:              "choose frontend e2e framework",
 		Scope:             "repo:test/app",
 		Agent:             "frontend-agent",
@@ -1097,6 +1434,15 @@ func containsWarning(values []RetrievalWarning, stage, operation string) bool {
 func containsContextBlock(values []ContextBlock, typ string) bool {
 	for _, value := range values {
 		if value.Type == typ && value.Title != "" && value.Content != "" && value.Tokens > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func containsStringFold(values []string, want string) bool {
+	for _, value := range values {
+		if strings.EqualFold(value, want) {
 			return true
 		}
 	}

@@ -24,8 +24,8 @@ func TestDecideLearningProposalRejectsApplyStatuses(t *testing.T) {
 	}
 }
 
-func TestLearningProposalApplyingMigrationExtendsStatusConstraint(t *testing.T) {
-	content, err := os.ReadFile("../../migrations/017_learning_proposal_applying_status.sql")
+func TestBaselineMigrationIncludesLearningProposalApplyingStatus(t *testing.T) {
+	content, err := os.ReadFile("../../migrations/001_init.sql")
 	if err != nil {
 		t.Fatal(err)
 	}

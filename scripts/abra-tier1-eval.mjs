@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { assertHybridRetrievalMode } from "./lib/eval-contracts.mjs";
+import { createMCPToolCaller } from "./lib/mcp.mjs";
 
 const baseUrl = (process.env.ABRA_BASE_URL || "http://127.0.0.1:18080").replace(/\/$/, "");
 const token = process.env.ABRA_API_TOKEN || "dev-token";
@@ -12,6 +13,7 @@ const sourceUrl = `file://abra-tier1-${suffix}.md`;
 const corroboratingSourceUrl = `file://abra-tier1-corroborating-${suffix}.md`;
 const isolatedSourceUrl = `file://abra-tier1-isolated-${suffix}.md`;
 const memoryMaxMs = Number(process.env.ABRA_TIER1_MEMORY_MAX_MS || "2500");
+const mcpTool = createMCPToolCaller({ baseUrl, token });
 
 const startedAt = new Date().toISOString();
 const checks = [];
@@ -461,20 +463,17 @@ await runCheck("graph_retrieval_expands_shared_entity_neighbors", async () => {
 
 await runCheck("working_memory_packet_is_agent_ready", async () => {
   const before = Date.now();
-  memoryPacket = await request("/memory/compose", {
-    method: "POST",
-    body: {
-      task: "implement frontend e2e coverage using Playwright and shared design system tokens",
-      scope,
-      hook: "before_code",
-      files: ["cmd/abra/main.go"],
-      changed_files: ["cmd/abra/main.go"],
-      language: "javascript",
-      agent: "abra-tier1-eval",
-      limit: 6,
-      max_queries: 6,
-      include_unverified: false
-    }
+  memoryPacket = await mcpTool("working_memory_compose", {
+    task: "implement frontend e2e coverage using Playwright and shared design system tokens",
+    scope,
+    hook: "before_code",
+    files: ["cmd/abra/main.go"],
+    changed_files: ["cmd/abra/main.go"],
+    language: "javascript",
+    agent: "abra-tier1-eval",
+    limit: 6,
+    max_queries: 6,
+    include_unverified: false
   });
   const latency = Date.now() - before;
   assert(latency <= memoryMaxMs, `working memory latency ${latency}ms exceeded ${memoryMaxMs}ms`);
@@ -531,20 +530,17 @@ await runCheck("working_memory_packet_is_agent_ready", async () => {
 });
 
 await runCheck("working_memory_does_not_leak_across_scope", async () => {
-  isolatedMemoryPacket = await request("/memory/compose", {
-    method: "POST",
-    body: {
-      task: "implement frontend e2e coverage using Playwright and shared design system tokens",
-      scope: isolatedScope,
-      hook: "before_code",
-      files: ["cmd/abra/main.go"],
-      changed_files: ["cmd/abra/main.go"],
-      language: "javascript",
-      agent: "abra-tier1-eval",
-      limit: 6,
-      max_queries: 6,
-      include_unverified: true
-    }
+  isolatedMemoryPacket = await mcpTool("working_memory_compose", {
+    task: "implement frontend e2e coverage using Playwright and shared design system tokens",
+    scope: isolatedScope,
+    hook: "before_code",
+    files: ["cmd/abra/main.go"],
+    changed_files: ["cmd/abra/main.go"],
+    language: "javascript",
+    agent: "abra-tier1-eval",
+    limit: 6,
+    max_queries: 6,
+    include_unverified: true
   });
   const retrieved = retrievedMemoryText(isolatedMemoryPacket);
   assert(!retrieved.includes("playwright"), "isolated working memory leaked Playwright context");

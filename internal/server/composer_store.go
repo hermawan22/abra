@@ -15,3 +15,7 @@ type composerStore struct {
 func (s *composerStore) Recall(ctx context.Context, query, scope string, limit int, includeUnverified bool) (store.RecallResult, error) {
 	return s.brain.Recall(ctx, query, scope, limit, includeUnverified)
 }
+
+func (s *composerStore) RecallWithOptions(ctx context.Context, query, scope string, limit int, includeUnverified bool, options store.RecallOptions) (store.RecallResult, error) {
+	return s.brain.RecallWithOptions(ctx, query, scope, limit, includeUnverified, options)
+}
