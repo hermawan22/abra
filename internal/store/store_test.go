@@ -615,6 +615,25 @@ func TestBrainMigrationContents(t *testing.T) {
 	}
 }
 
+func TestMemorySummarySourceURLIndexMigration(t *testing.T) {
+	content, err := os.ReadFile("../../migrations/002_memory_summaries_source_urls_gin_idx.sql")
+	if err != nil {
+		t.Fatalf("read summary source URL index migration: %v", err)
+	}
+	query := string(content)
+	for _, fragment := range []string{
+		"CREATE INDEX IF NOT EXISTS memory_summaries_source_urls_gin_idx",
+		"ON memory_summaries USING gin (source_urls)",
+	} {
+		if !strings.Contains(query, fragment) {
+			t.Fatalf("summary source URL index migration missing %q:\n%s", fragment, query)
+		}
+	}
+	if strings.Contains(strings.ToUpper(query), "CONCURRENTLY") {
+		t.Fatalf("migration runner wraps migrations in a transaction; index migration must not use CONCURRENTLY:\n%s", query)
+	}
+}
+
 func TestBrainEvalRunValidationRequiresReportArray(t *testing.T) {
 	store := &Store{runner: &fakeStoreRunner{}}
 	for _, tc := range []struct {

@@ -9,8 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 type fakeDocker struct {
@@ -26,10 +29,15 @@ type fakeDockerCall struct {
 }
 
 type fakeDockerState struct {
-	Exists bool              `json:"exists"`
-	Image  string            `json:"image"`
-	Labels map[string]string `json:"labels"`
-	Logs   string            `json:"logs"`
+	Exists    bool              `json:"exists"`
+	Status    string            `json:"status"`
+	Running   bool              `json:"running"`
+	ExitCode  int               `json:"exit_code"`
+	Error     string            `json:"error"`
+	OOMKilled bool              `json:"oom_killed"`
+	Image     string            `json:"image"`
+	Labels    map[string]string `json:"labels"`
+	Logs      string            `json:"logs"`
 }
 
 func newFakeDocker(t *testing.T) *fakeDocker {
@@ -62,9 +70,11 @@ func (f *fakeDocker) seedNamedContainer(name, image string, labels map[string]st
 		labels = map[string]string{}
 	}
 	writeFakeDockerState(f.t, f.state, name, fakeDockerState{
-		Exists: true,
-		Image:  image,
-		Labels: labels,
+		Exists:  true,
+		Status:  "running",
+		Running: true,
+		Image:   image,
+		Labels:  labels,
 	})
 }
 
@@ -118,6 +128,13 @@ container_exists() {
     printf 0
   fi
 }
+container_running() {
+  if [ -f "$(container_dir "$1")/running" ]; then
+    cat "$(container_dir "$1")/running"
+  else
+    container_exists "$1"
+  fi
+}
 cmd="${1:-}"
 if [ "$#" -gt 0 ]; then
   shift
@@ -157,6 +174,36 @@ case "$cmd" in
     if [ "$format" = "{{.Config.Image}}" ]; then
       cat "$dir/image"
       printf '\n'
+      exit 0
+    fi
+    if [ "$format" = "{{.State.Running}}" ]; then
+      if [ "$(container_running "$name")" = "1" ]; then
+        printf 'true\n'
+      else
+        printf 'false\n'
+      fi
+      exit 0
+    fi
+    if [ "$format" = "{{json .State}}" ]; then
+      status="$(cat "$dir/status" 2>/dev/null || true)"
+      if [ -z "$status" ]; then
+        if [ "$(container_running "$name")" = "1" ]; then
+          status="running"
+        else
+          status="exited"
+        fi
+      fi
+      running=false
+      if [ "$(container_running "$name")" = "1" ]; then
+        running=true
+      fi
+      exit_code="$(cat "$dir/exit_code" 2>/dev/null || printf 0)"
+      error="$(cat "$dir/error" 2>/dev/null || true)"
+      oom_killed=false
+      if [ "$(cat "$dir/oom_killed" 2>/dev/null || printf 0)" = "1" ]; then
+        oom_killed=true
+      fi
+      printf '{"Status":"%s","Running":%s,"ExitCode":%s,"Error":"%s","OOMKilled":%s}\n' "$status" "$running" "$exit_code" "$error" "$oom_killed"
       exit 0
     fi
     case "$format" in
@@ -216,6 +263,11 @@ case "$cmd" in
     dir="$(container_dir "$name")"
     mkdir -p "$dir"
     printf 1 > "$dir/exists"
+    printf running > "$dir/status"
+    printf 1 > "$dir/running"
+    printf 0 > "$dir/exit_code"
+    : > "$dir/error"
+    printf 0 > "$dir/oom_killed"
     cp "$labels_file" "$dir/labels"
     rm -f "$labels_file"
     printf '%s' "$image" > "$dir/image"
@@ -227,6 +279,9 @@ case "$cmd" in
     if [ "$(container_exists "$name")" != "1" ]; then
       exit 1
     fi
+    printf running > "$(container_dir "$name")/status"
+    printf 1 > "$(container_dir "$name")/running"
+    printf 0 > "$(container_dir "$name")/exit_code"
     printf '%s\n' "$name"
     ;;
   rm)
@@ -239,6 +294,8 @@ case "$cmd" in
       dir="$(container_dir "$name")"
       mkdir -p "$dir"
       printf 0 > "$dir/exists"
+      printf removed > "$dir/status"
+      printf 0 > "$dir/running"
     fi
     printf '%s\n' "$name"
     ;;
@@ -280,13 +337,36 @@ func readFakeDockerState(t *testing.T, path string) fakeDockerState {
 func loadFakeDockerState(path, name string) (fakeDockerState, error) {
 	containerPath := filepath.Join(path, "containers", name)
 	exists, _ := os.ReadFile(filepath.Join(containerPath, "exists"))
+	status, _ := os.ReadFile(filepath.Join(containerPath, "status"))
+	running, _ := os.ReadFile(filepath.Join(containerPath, "running"))
+	exitCode, _ := os.ReadFile(filepath.Join(containerPath, "exit_code"))
+	stateErr, _ := os.ReadFile(filepath.Join(containerPath, "error"))
+	oomKilled, _ := os.ReadFile(filepath.Join(containerPath, "oom_killed"))
 	image, _ := os.ReadFile(filepath.Join(containerPath, "image"))
 	logs, _ := os.ReadFile(filepath.Join(containerPath, "logs"))
+	existsValue := strings.TrimSpace(string(exists)) == "1"
+	runningValue := strings.TrimSpace(string(running)) == "1"
+	if len(running) == 0 {
+		runningValue = existsValue
+	}
+	statusValue := strings.TrimSpace(string(status))
+	if statusValue == "" {
+		if runningValue {
+			statusValue = "running"
+		} else if existsValue {
+			statusValue = "exited"
+		}
+	}
 	state := fakeDockerState{
-		Exists: strings.TrimSpace(string(exists)) == "1",
-		Image:  strings.TrimSpace(string(image)),
-		Logs:   string(logs),
-		Labels: map[string]string{},
+		Exists:    existsValue,
+		Status:    statusValue,
+		Running:   runningValue,
+		ExitCode:  intFromString(strings.TrimSpace(string(exitCode)), 0),
+		Error:     strings.TrimSpace(string(stateErr)),
+		OOMKilled: strings.TrimSpace(string(oomKilled)) == "1",
+		Image:     strings.TrimSpace(string(image)),
+		Logs:      string(logs),
+		Labels:    map[string]string{},
 	}
 	rawLabels, _ := os.ReadFile(filepath.Join(containerPath, "labels"))
 	for _, line := range strings.Split(string(rawLabels), "\n") {
@@ -321,6 +401,39 @@ func saveFakeDockerState(path, name string, state fakeDockerState) error {
 		exists = "1"
 	}
 	if err := os.WriteFile(filepath.Join(containerPath, "exists"), []byte(exists), 0o644); err != nil {
+		return err
+	}
+	status := strings.TrimSpace(state.Status)
+	if status == "" {
+		if state.Running {
+			status = "running"
+		} else if state.Exists {
+			status = "exited"
+		} else {
+			status = "removed"
+		}
+	}
+	if err := os.WriteFile(filepath.Join(containerPath, "status"), []byte(status), 0o644); err != nil {
+		return err
+	}
+	running := "0"
+	if state.Running {
+		running = "1"
+	}
+	if err := os.WriteFile(filepath.Join(containerPath, "running"), []byte(running), 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(containerPath, "exit_code"), []byte(strconv.Itoa(state.ExitCode)), 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(containerPath, "error"), []byte(state.Error), 0o644); err != nil {
+		return err
+	}
+	oomKilled := "0"
+	if state.OOMKilled {
+		oomKilled = "1"
+	}
+	if err := os.WriteFile(filepath.Join(containerPath, "oom_killed"), []byte(oomKilled), 0o644); err != nil {
 		return err
 	}
 	if err := os.WriteFile(filepath.Join(containerPath, "image"), []byte(state.Image), 0o644); err != nil {
@@ -361,6 +474,183 @@ func newEmbeddingServer(t *testing.T) *httptest.Server {
 			t.Fatalf("model request = %s %s", r.Method, r.URL.Path)
 		}
 	}))
+}
+
+func TestWaitLocalRunnersReadyChecksEmbeddingAndRerankerConcurrently(t *testing.T) {
+	embeddingStarted := make(chan struct{})
+	rerankerStarted := make(chan struct{})
+	var embeddingOnce sync.Once
+	var rerankerOnce sync.Once
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/embeddings":
+			embeddingOnce.Do(func() { close(embeddingStarted) })
+			select {
+			case <-rerankerStarted:
+				writeTestJSON(t, w, map[string]any{"data": []map[string]any{{"embedding": []float64{0.1}}}})
+			case <-time.After(500 * time.Millisecond):
+				http.Error(w, "reranker readiness did not run concurrently", http.StatusServiceUnavailable)
+			}
+		case "/v1/rerank":
+			rerankerOnce.Do(func() { close(rerankerStarted) })
+			select {
+			case <-embeddingStarted:
+				writeTestJSON(t, w, map[string]any{"results": []map[string]any{{"index": 0, "score": 1.0}}})
+			case <-time.After(500 * time.Millisecond):
+				http.Error(w, "embedding readiness did not run concurrently", http.StatusServiceUnavailable)
+			}
+		default:
+			t.Fatalf("model request = %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	output := captureStdout(t, func() {
+		err := waitLocalRunnersReady(context.Background(), []embeddingRunnerConfig{
+			{Kind: "embedding", Model: defaultServedModelName, BaseURL: server.URL + "/v1", Dims: 1024, ReadinessTimeout: time.Second},
+			{Kind: "reranker", Model: defaultRerankerServedModelName, BaseURL: server.URL + "/v1", ReadinessTimeout: time.Second},
+		}, 2*time.Second)
+		if err != nil {
+			t.Fatalf("waitLocalRunnersReady error = %v", err)
+		}
+	})
+	for _, want := range []string{"Waiting for embedding endpoint", "Waiting for reranker endpoint", "Local embedding ready", "Local reranker ready"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestWaitLocalRunnerReadyStopsOnContextCancel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "not ready", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	started := time.Now()
+	err := waitLocalRunnerReady(ctx, embeddingRunnerConfig{
+		Kind:             "embedding",
+		Model:            defaultServedModelName,
+		BaseURL:          server.URL + "/v1",
+		Dims:             1024,
+		ReadinessTimeout: 100 * time.Millisecond,
+	}, time.Minute)
+	if err == nil || !strings.Contains(err.Error(), "readiness canceled") {
+		t.Fatalf("waitLocalRunnerReady error = %v, want canceled", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("waitLocalRunnerReady ignored canceled context, elapsed=%s", elapsed)
+	}
+}
+
+func TestWaitLocalRunnerReadyReturnsWhenContainerExited(t *testing.T) {
+	docker := newFakeDocker(t)
+	writeFakeDockerState(t, docker.state, defaultEmbeddingContainer, fakeDockerState{
+		Exists:   true,
+		Status:   "exited",
+		Running:  false,
+		ExitCode: 42,
+		Image:    defaultTEIImage(),
+		Labels:   map[string]string{localRunnerHashLabel: "test"},
+		Logs:     "model failed to load\n",
+	})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "not ready", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	started := time.Now()
+	err := waitLocalRunnerReady(context.Background(), embeddingRunnerConfig{
+		Kind:             "embedding",
+		Container:        defaultEmbeddingContainer,
+		Model:            defaultServedModelName,
+		BaseURL:          server.URL + "/v1",
+		Dims:             1024,
+		ReadinessTimeout: 100 * time.Millisecond,
+	}, time.Minute)
+	if err == nil || !strings.Contains(err.Error(), "container exited before readiness") || !strings.Contains(err.Error(), "exit_code=42") || !strings.Contains(err.Error(), "abra model logs --tail 120") {
+		t.Fatalf("waitLocalRunnerReady error = %v, want container exited", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("waitLocalRunnerReady should fail fast for exited container, elapsed=%s", elapsed)
+	}
+}
+
+func TestWaitLocalRunnerReadyDoesNotTreatCreatedContainerAsExited(t *testing.T) {
+	docker := newFakeDocker(t)
+	writeFakeDockerState(t, docker.state, defaultEmbeddingContainer, fakeDockerState{
+		Exists:  true,
+		Status:  "created",
+		Running: false,
+		Image:   defaultTEIImage(),
+		Labels:  map[string]string{localRunnerHashLabel: "test"},
+	})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "not ready", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	err := waitLocalRunnerReady(context.Background(), embeddingRunnerConfig{
+		Kind:             "embedding",
+		Container:        defaultEmbeddingContainer,
+		Model:            defaultServedModelName,
+		BaseURL:          server.URL + "/v1",
+		Dims:             1024,
+		ReadinessTimeout: 50 * time.Millisecond,
+	}, 50*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "did not become ready") {
+		t.Fatalf("waitLocalRunnerReady error = %v, want normal readiness timeout", err)
+	}
+	if strings.Contains(err.Error(), "container exited before readiness") {
+		t.Fatalf("created container should not be reported as exited: %v", err)
+	}
+}
+
+func TestWaitLocalRunnersReadyPrefersCausalErrorOverCanceledPeer(t *testing.T) {
+	docker := newFakeDocker(t)
+	writeFakeDockerState(t, docker.state, defaultRerankerContainer, fakeDockerState{
+		Exists:   true,
+		Status:   "exited",
+		Running:  false,
+		ExitCode: 42,
+		Image:    defaultTEIImage(),
+		Labels:   map[string]string{localRerankerRunnerHashLabel: "test"},
+		Logs:     "reranker failed to load\n",
+	})
+	_ = docker
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		http.Error(w, "not ready", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	err := waitLocalRunnersReady(context.Background(), []embeddingRunnerConfig{
+		{
+			Kind:             "embedding",
+			Model:            defaultServedModelName,
+			BaseURL:          server.URL + "/v1",
+			Dims:             1024,
+			ReadinessTimeout: time.Second,
+		},
+		{
+			Kind:             "reranker",
+			Container:        defaultRerankerContainer,
+			Model:            defaultRerankerServedModelName,
+			BaseURL:          server.URL + "/v1",
+			ReadinessTimeout: time.Second,
+		},
+	}, 2*time.Second)
+	if err == nil {
+		t.Fatal("waitLocalRunnersReady error = nil, want causal reranker error")
+	}
+	if !strings.Contains(err.Error(), "local reranker container exited before readiness") || !strings.Contains(err.Error(), "exit_code=42") {
+		t.Fatalf("waitLocalRunnersReady error = %v, want reranker exit", err)
+	}
+	if strings.Contains(err.Error(), "readiness canceled") {
+		t.Fatalf("waitLocalRunnersReady returned canceled peer instead of causal error: %v", err)
+	}
 }
 
 func setupModelsLifecycleTest(t *testing.T) (string, *httptest.Server, *fakeDocker) {
@@ -546,6 +836,9 @@ func TestModelsStatusJSONIncludesDockerConfigMatch(t *testing.T) {
 	if status["ready"] != true || status["config_matches"] != true {
 		t.Fatalf("status = %#v", status)
 	}
+	if status["container_state"] != "running" || status["container_running"] != true || intValue(status["container_exit_code"]) != 0 {
+		t.Fatalf("status missing container state: %#v", status)
+	}
 	rerankerStatus, ok := status["reranker"].(map[string]any)
 	if !ok || rerankerStatus["ready"] != true || rerankerStatus["config_matches"] != true {
 		t.Fatalf("reranker status = %#v", status["reranker"])
@@ -555,6 +848,41 @@ func TestModelsStatusJSONIncludesDockerConfigMatch(t *testing.T) {
 	}
 	if hasFakeDockerCall(docker.calls(), "run") || hasFakeDockerCall(docker.calls(), "rm") {
 		t.Fatalf("status should not mutate docker: %#v", docker.calls())
+	}
+}
+
+func TestModelsStatusJSONPrioritizesExitedContainerState(t *testing.T) {
+	_, server, docker := setupModelsLifecycleTest(t)
+	args := parseArgs([]string{"models", "status", "--json", "--base-url", server.URL + "/v1", "--reranker-provider", "none"})
+	cfg := embeddingRunner(args)
+	writeFakeDockerState(t, docker.state, cfg.Container, fakeDockerState{
+		Exists:    true,
+		Status:    "exited",
+		Running:   false,
+		ExitCode:  137,
+		OOMKilled: true,
+		Image:     cfg.Image,
+		Labels:    map[string]string{localRunnerHashLabel: localRunnerConfigHash(cfg)},
+		Logs:      "out of memory\n",
+	})
+
+	var statusErr error
+	output := captureStdout(t, func() {
+		statusErr = modelsStatus(context.Background(), args)
+	})
+	if statusErr != nil {
+		t.Fatalf("models status error = %v", statusErr)
+	}
+	var status map[string]any
+	if err := json.Unmarshal([]byte(output), &status); err != nil {
+		t.Fatalf("decode status json: %v\n%s", err, output)
+	}
+	if status["ready"] != false || status["container_state"] != "exited" || intValue(status["container_exit_code"]) != 137 || status["container_oom_killed"] != true {
+		t.Fatalf("status missing exited state: %#v", status)
+	}
+	errorText := stringValue(status["error"], "")
+	if !strings.Contains(errorText, "container exited before readiness") || !strings.Contains(errorText, "oom_killed=true") {
+		t.Fatalf("status error = %q", status["error"])
 	}
 }
 

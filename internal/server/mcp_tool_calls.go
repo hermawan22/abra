@@ -307,7 +307,7 @@ func (h *handler) mcpDiscoverScopesToolCall(w http.ResponseWriter, r *http.Reque
 		"candidate_limit":     candidateLimit,
 		"candidate_truncated": len(scopes) >= candidateLimit,
 		"filtered_by_token":   !principal.allScopes,
-		"hint":                "Use one exact scope value with brain_think, recall, policy_plan, and working_memory_compose. When you already know the project scope from `abra scope`, call discover_scopes with expected_scope set to that exact value. If an AI client says Abra has no context, run `abra agents verify . --scope <scope> --agent <agent>` first; repair MCP/token/client readiness when server_ready is true but agent_ready is false, and ingest only when verify proves the exact scope or source-backed memory is missing.",
+		"hint":                "Use one exact scope value with brain_think, recall, policy_plan, and working_memory_compose. When you already know the project scope from `abra scope`, call discover_scopes with expected_scope set to that exact value. If an AI client says Abra has no context, run `abra agent verify . --scope <scope> --agent <agent>` first; repair MCP/token/client readiness when server_ready is true but agent_ready is false, and ingest only when verify proves the exact scope or source-backed memory is missing.",
 	}
 	return result, true, err
 }
@@ -999,7 +999,7 @@ func (h *handler) mcpProposeLearningToolCall(w http.ResponseWriter, r *http.Requ
 	if created {
 		h.auditLearningProposed(r.Context(), proposal, "mcp")
 	}
-	result = proposal
+	result = learningProposalMCPResult(proposal, created, nil)
 	return result, true, err
 }
 
@@ -1010,8 +1010,28 @@ func (h *handler) mcpListLearningProposalsToolCall(w http.ResponseWriter, r *htt
 	if !h.requireAccess(w, r, authActionRead, scope) {
 		return nil, true, nil
 	}
-	result, err = h.db.ListLearningProposals(r.Context(), scope, stringArg(args, "status"), intArg(args, "limit", 50))
+	var proposals any
+	proposals, err = h.db.ListLearningProposals(r.Context(), scope, stringArg(args, "status"), intArg(args, "limit", 50))
+	if err == nil {
+		result = learningProposalsMCPResult(proposals)
+	}
 	return result, true, err
+}
+
+func learningProposalsMCPResult(proposals any) map[string]any {
+	return map[string]any{"learning_proposals": proposals}
+}
+
+func learningProposalMCPResult(proposal store.LearningProposalRecord, created bool, extras map[string]any) map[string]any {
+	result := map[string]any{
+		"learning_proposal": proposal,
+		"proposal":          proposal,
+		"created":           created,
+	}
+	for key, value := range extras {
+		result[key] = value
+	}
+	return result
 }
 
 func (h *handler) mcpDecideLearningProposalToolCall(w http.ResponseWriter, r *http.Request, name string, args map[string]any) (any, bool, error) {
@@ -1038,7 +1058,7 @@ func (h *handler) mcpDecideLearningProposalToolCall(w http.ResponseWriter, r *ht
 		return result, true, err
 	}
 	h.auditLearningDecided(r.Context(), decided, "mcp")
-	result = map[string]any{"learning_proposal": decided, "apply_plan": buildLearningApplyPlan(decided, h.cfg.ApprovalMode)}
+	result = learningProposalMCPResult(decided, false, map[string]any{"apply_plan": buildLearningApplyPlan(decided, h.cfg.ApprovalMode)})
 	return result, true, err
 }
 
@@ -1093,7 +1113,7 @@ func (h *handler) mcpApplyLearningProposalToolCall(w http.ResponseWriter, r *htt
 		return result, true, err
 	}
 	h.auditLearningApplied(r.Context(), applied, "mcp", applyResult)
-	result = map[string]any{"learning_proposal": applied, "apply_plan": buildLearningApplyPlan(applied, h.cfg.ApprovalMode), "apply_result": applyResult}
+	result = learningProposalMCPResult(applied, false, map[string]any{"apply_plan": buildLearningApplyPlan(applied, h.cfg.ApprovalMode), "apply_result": applyResult})
 	return result, true, err
 }
 

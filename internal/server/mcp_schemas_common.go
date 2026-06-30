@@ -159,3 +159,10 @@ func objectSchema(required []string, properties map[string]any) map[string]any {
 func stringSchema() map[string]any {
 	return map[string]any{"type": "string"}
 }
+
+func temporalAsOfSchema() map[string]any {
+	return map[string]any{
+		"type":        "string",
+		"description": "Point-in-time recall timestamp. Accepts RFC3339 or date-only YYYY-MM-DD, normalized to UTC by the server.",
+	}
+}

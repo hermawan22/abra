@@ -798,14 +798,33 @@ func requiredMCPToolNames() []string {
 		"discover_scopes",
 		"working_memory_compose",
 		"brain_think",
+		"brain_entity_dossier",
 		"brain_review",
 		"brain_scorecard",
 		"brain_anchor_backfill",
 		"brain_maintain",
+		"capture_observation",
+		"capture_task_outcome",
+		"propose_learning",
+		"list_learning_proposals",
+		"decide_learning_proposal",
+		"apply_learning_proposal",
 	}
 }
 
 func callMCPTool(ctx context.Context, args cliArgs, name string, arguments map[string]any) (map[string]any, error) {
+	decoded, err := callMCPToolRaw(ctx, args, name, arguments)
+	if err != nil {
+		return nil, err
+	}
+	result, ok := decoded.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("decode MCP %s response: expected JSON object, got %T", name, decoded)
+	}
+	return result, nil
+}
+
+func callMCPToolRaw(ctx context.Context, args cliArgs, name string, arguments map[string]any) (any, error) {
 	result, err := postJSON(ctx, args, "/mcp", map[string]any{
 		"jsonrpc": "2.0",
 		"id":      1,
@@ -832,7 +851,7 @@ func callMCPTool(ctx context.Context, args cliArgs, name string, arguments map[s
 		if text == "" {
 			continue
 		}
-		var decoded map[string]any
+		var decoded any
 		if err := json.Unmarshal([]byte(text), &decoded); err != nil {
 			return nil, fmt.Errorf("decode MCP %s response: %w", name, err)
 		}

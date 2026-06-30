@@ -85,7 +85,7 @@ func TestConfigAndMCPHelpShowAgentFirstOnboardingPath(t *testing.T) {
 		"abra setup",
 		"abra doctor",
 		"abra agent bootstrap --agent codex",
-		"abra agent ready . --scope <scope-from-abra-scope> --json",
+		"abra agent verify . --scope <scope-from-abra-scope> --json",
 		"full model/API/MCP preflight",
 	} {
 		if !strings.Contains(mcpHelp, want) {
@@ -102,7 +102,7 @@ func TestTopLevelHelpShowsAgentOnboardingStatusFlow(t *testing.T) {
 		"abra scope",
 		"abra agent bootstrap --agent <agent>",
 		"fully restart the agent runtime",
-		"abra agent ready . --scope <scope-from-abra-scope> --json",
+		"abra agent verify . --scope <scope-from-abra-scope> --json",
 		"agents use MCP working_memory_compose / brain_think with the verified scope",
 	} {
 		if !strings.Contains(help, want) {

@@ -519,7 +519,7 @@ func printSetupNext(args cliArgs) {
 	fmt.Println("  abra scope")
 	fmt.Println("  abra agent bootstrap --agent <agent>   # initializes repo guidance, syncs if needed, and verifies")
 	fmt.Println("  fully restart the agent runtime")
-	fmt.Println("  abra agent ready . --scope <scope-from-abra-scope> --json")
+	fmt.Println("  abra agent verify . --scope <scope-from-abra-scope> --json")
 	fmt.Println("  agents use MCP working_memory_compose / brain_think with the verified scope")
 	fmt.Println(`  optional operator check: abra ask "What should I know before changing this project?" --scope <scope-from-abra-scope>`)
 	fmt.Println("Manual alternative to bootstrap:")
@@ -529,8 +529,8 @@ func printSetupNext(args cliArgs) {
 	fmt.Println("  abra sync . --code --scope <scope-from-abra-scope>   # only if verify reports missing scope or empty memory")
 	fmt.Println("  abra agent install <agent>   # when an automated installer is available")
 	fmt.Println("  fully restart the agent runtime")
-	fmt.Println("  abra agent ready . --scope <scope-from-abra-scope> --json")
-	fmt.Println("If an agent says Abra has no context, run `abra agent ready . --scope <scope-from-abra-scope> --json` first. Reinstall/restart MCP when server_ready=true but agent_ready=false; sync only if verify reports missing scope or empty source-backed memory.")
+	fmt.Println("  abra agent verify . --scope <scope-from-abra-scope> --json")
+	fmt.Println("If an agent says Abra has no context, run `abra agent verify . --scope <scope-from-abra-scope> --json` first. Reinstall/restart MCP when server_ready=true but agent_ready=false; sync only if verify reports missing scope or empty source-backed memory.")
 }
 
 func setupConfiguredValues(args cliArgs) map[string]string {

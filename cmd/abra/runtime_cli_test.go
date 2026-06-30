@@ -90,6 +90,33 @@ func TestModelConfigCheckExplainsLocalModel(t *testing.T) {
 	}
 }
 
+func TestModelConfigCheckRejectsProductionLocalWithoutApproval(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+	mustWrite(t, filepath.Join(home, "quickstart.env"), strings.Join([]string{
+		"NODE_ENV=production",
+		"EMBEDDING_PROVIDER=local",
+		"EMBEDDING_BASE_URL=http://host.docker.internal:8080/v1",
+		"EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0",
+		"EMBEDDING_DIMENSIONS=1024",
+		"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=false",
+		"",
+	}, "\n"))
+
+	check := modelConfigCheck(parseArgs([]string{"doctor"}))
+	if check["ok"] != false {
+		t.Fatalf("check = %#v", check)
+	}
+	if !strings.Contains(stringValue(check["detail"], ""), "ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=true") {
+		t.Fatalf("detail = %q", check["detail"])
+	}
+	if !strings.Contains(stringValue(check["hint"], ""), "abra config model compatible") {
+		t.Fatalf("hint = %q", check["hint"])
+	}
+}
+
 func TestDockerDaemonCheckReportsReachability(t *testing.T) {
 	bin := t.TempDir()
 	dockerPath := filepath.Join(bin, "docker")

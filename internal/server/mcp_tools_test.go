@@ -21,6 +21,7 @@ type brainToolTestStore struct {
 	health         store.MemoryHealthResult
 	candidates     []store.EvidenceAnchorCandidate
 	proposalInputs []store.CreateLearningProposalInput
+	proposals      []store.LearningProposalRecord
 	auditEvents    []string
 }
 
@@ -80,6 +81,10 @@ func (s *brainToolTestStore) CreateLearningProposalOnce(_ context.Context, input
 		Payload:      input.Payload,
 		CreatedBy:    input.CreatedBy,
 	}, true, nil
+}
+
+func (s *brainToolTestStore) ListLearningProposals(context.Context, string, string, int) ([]store.LearningProposalRecord, error) {
+	return append([]store.LearningProposalRecord(nil), s.proposals...), nil
 }
 
 func (s *brainToolTestStore) InsertAuditEvent(_ context.Context, eventType, targetType, targetID, scope, sourceURL string, metadata map[string]any) error {
@@ -359,6 +364,16 @@ func TestMCPBrainMaintainCreatesReviewableProposals(t *testing.T) {
 	}
 }
 
+func TestLearningProposalsMCPResultReturnsNamedObject(t *testing.T) {
+	result := learningProposalsMCPResult([]store.LearningProposalRecord{
+		{ID: "proposal-1", Scope: "repo:test", ProposalType: "claim", Title: "Remember setup rule", Status: "pending"},
+	})
+	items, _ := result["learning_proposals"].([]store.LearningProposalRecord)
+	if len(items) != 1 {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
 func TestBrainThinkMCPToolIsDiscoverable(t *testing.T) {
 	schema := mcpToolSchema(t, "brain_think")
 	requiredSet := requiredSet(t, schema)
@@ -373,6 +388,11 @@ func TestBrainThinkMCPToolIsDiscoverable(t *testing.T) {
 		if _, ok := properties[property]; !ok {
 			t.Fatalf("brain_think missing property %q in %#v", property, properties)
 		}
+	}
+	asOf, _ := properties["as_of"].(map[string]any)
+	asOfDescription, _ := asOf["description"].(string)
+	if !strings.Contains(asOfDescription, "YYYY-MM-DD") {
+		t.Fatalf("brain_think as_of schema = %#v", asOf)
 	}
 	mode, ok := properties["mode"].(map[string]any)
 	if !ok {
@@ -578,10 +598,8 @@ func TestObservationMCPToolsAreDiscoverable(t *testing.T) {
 func TestProposeLearningMCPSupportsObservationTargets(t *testing.T) {
 	schema := mcpToolSchema(t, "propose_learning")
 	required := requiredSet(t, schema)
-	for _, property := range []string{"scope", "proposal_type", "title", "rationale"} {
-		if !required[property] {
-			t.Fatalf("propose_learning required = %#v, missing %s", schema["required"], property)
-		}
+	if !required["scope"] || required["proposal_type"] || required["title"] || required["rationale"] {
+		t.Fatalf("propose_learning required = %#v, want only scope mandatory", schema["required"])
 	}
 	properties, ok := schema["properties"].(map[string]any)
 	if !ok {
@@ -830,6 +848,11 @@ func TestWorkingMemoryComposeMCPHasReadOnlyDefaultAndPersistenceOptIn(t *testing
 		if _, ok := properties[property]; !ok {
 			t.Fatalf("working_memory_compose missing property %q in %#v", property, properties)
 		}
+	}
+	asOf, _ := properties["as_of"].(map[string]any)
+	asOfDescription, _ := asOf["description"].(string)
+	if !strings.Contains(asOfDescription, "YYYY-MM-DD") {
+		t.Fatalf("working_memory_compose as_of schema = %#v", asOf)
 	}
 	mode, ok := properties["mode"].(map[string]any)
 	if !ok {

@@ -181,7 +181,7 @@ func TestSetupYesNoStartDefaultsLocalQwen(t *testing.T) {
 		"cd /path/to/project",
 		"abra agent bootstrap --agent <agent>   # initializes repo guidance, syncs if needed, and verifies",
 		"fully restart the agent runtime",
-		"abra agent ready . --scope <scope-from-abra-scope> --json",
+		"abra agent verify . --scope <scope-from-abra-scope> --json",
 		"agents use MCP working_memory_compose / brain_think with the verified scope",
 		"optional operator check: abra ask",
 		"abra agent status",
@@ -202,7 +202,7 @@ func TestSetupYesNoStartDefaultsLocalQwen(t *testing.T) {
 	if verifyIndex < 0 || syncIndex < 0 || verifyIndex > syncIndex {
 		t.Fatalf("setup manual path should verify before conditional sync:\n%s", output)
 	}
-	for _, want := range []string{"run `abra agent ready . --scope <scope-from-abra-scope> --json` first", "server_ready=true but agent_ready=false", "sync only if verify reports missing scope or empty source-backed memory"} {
+	for _, want := range []string{"run `abra agent verify . --scope <scope-from-abra-scope> --json` first", "server_ready=true but agent_ready=false", "sync only if verify reports missing scope or empty source-backed memory"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("setup recovery guidance missing %q:\n%s", want, output)
 		}
@@ -378,6 +378,23 @@ func TestUpAutoStartsLocalModelsOnlyForLocalProvider(t *testing.T) {
 	if shouldStartLocalModelsForUp(parseArgs([]string{"up"})) {
 		t.Fatal("up should not auto-start local models in production without explicit local-embedding override")
 	}
+	if !productionLocalModelDisallowed(parseArgs([]string{"up"}), map[string]string{
+		"NODE_ENV":                             "production",
+		"EMBEDDING_PROVIDER":                   "local",
+		"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION": "false",
+	}) {
+		t.Fatal("production local model config should be disallowed without explicit approval")
+	}
+	if productionLocalModelDisallowed(parseArgs([]string{"up", "--allow-production-local-embeddings"}), map[string]string{
+		"NODE_ENV":                             "production",
+		"EMBEDDING_PROVIDER":                   "local",
+		"ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION": "false",
+	}) {
+		t.Fatal("production local model config should respect explicit approval flag")
+	}
+	if !shouldStartLocalModelsForUp(parseArgs([]string{"up", "--allow-production-local-embeddings"})) {
+		t.Fatal("up should start local models when production local embeddings are explicitly approved")
+	}
 	mustWrite(t, localEnv, "NODE_ENV=production\nEMBEDDING_PROVIDER=local\nALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=true\n")
 	if !shouldStartLocalModelsForUp(parseArgs([]string{"up"})) {
 		t.Fatal("up should auto-start local models in production when local embeddings are explicitly allowed")
@@ -403,7 +420,7 @@ func TestModelsCommandsRespectActiveCompatibleProvider(t *testing.T) {
 		"Local embeddings: inactive",
 		"provider: compatible",
 		"abra config",
-		"models status --force",
+		"model status --force",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("models status output missing %q:\n%s", want, output)
@@ -1430,7 +1447,7 @@ func TestFriendlyProviderErrorAddsModelsHint(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if !strings.Contains(err.Error(), "abra models up") {
+	if !strings.Contains(err.Error(), "abra model up") {
 		t.Fatalf("error = %v", err)
 	}
 }

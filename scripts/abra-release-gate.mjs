@@ -480,10 +480,12 @@ async function main() {
   }
   validateProductionComposeImages();
 
-  await runCommand("agent_context_files", "go", ["run", "./cmd/abra", "agents", "verify", ".", "--scope", "repo:abra", "--files-only", "--strict"]);
+  await runCommand("agent_context_files", "go", ["run", "./cmd/abra", "agent", "verify", ".", "--scope", "repo:abra", "--files-only", "--strict"]);
   await runCommand("script_checks", "npm", ["run", "check:scripts"]);
   await runCommand("eval_contracts", "npm", ["run", "test:eval-contracts"]);
   await runCommand("installer_fail_closed", "npm", ["run", "test:installer"]);
+  await runCommand("migration_check", "npm", ["run", "test:migrations"]);
+  await runCommand("maintainability_check", "npm", ["run", "test:maintainability"]);
   await runCommand("npm_pack_allowlist", "npm", ["run", "test:npm-pack"]);
   await runCommand("oss_hygiene", "npm", ["run", "check:oss"]);
   await runCommand("go_tests", "go", ["test", "./..."], {
@@ -521,7 +523,7 @@ async function main() {
     const stackCheckStart = checks.length;
     if (usesManagedLocalQwenEmbeddings()) {
       writeManagedEnvFile();
-      await runCommand("managed_local_models_up", "go", ["run", "./cmd/abra", "models", "up", "--env-file", managedEnvFile, "--startup-timeout", process.env.ABRA_RELEASE_MODEL_STARTUP_TIMEOUT || "10m"], {
+      await runCommand("managed_local_models_up", "go", ["run", "./cmd/abra", "model", "up", "--env-file", managedEnvFile, "--startup-timeout", process.env.ABRA_RELEASE_MODEL_STARTUP_TIMEOUT || "10m"], {
         env: managedStackEnv
       });
     }

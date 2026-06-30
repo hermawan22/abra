@@ -179,6 +179,18 @@ func ensureProjectDir(ctx context.Context, args cliArgs) (string, error) {
 		return "", err
 	}
 	if hasLocalCompose(dir) {
+		if isManagedRuntimeDir(dir) && !runtimeSourceCacheValid(dir) {
+			if err := os.RemoveAll(dir); err != nil {
+				return "", err
+			}
+		} else {
+			if err := prepareRuntimeProjectDir(dir); err != nil {
+				return "", err
+			}
+			return dir, nil
+		}
+	}
+	if hasLocalCompose(dir) {
 		if err := prepareRuntimeProjectDir(dir); err != nil {
 			return "", err
 		}
@@ -223,23 +235,6 @@ func prepareRuntimeProjectDir(dir string) error {
 	return nil
 }
 
-func runtimeVersion() string {
-	if strings.TrimSpace(version) != "" && version != "dev" {
-		return strings.TrimSpace(version)
-	}
-	return "main"
-}
-
-func runtimeSourceURL() string {
-	if value := strings.TrimSpace(os.Getenv("ABRA_SOURCE_URL")); value != "" {
-		return value
-	}
-	if runtimeVersion() == "main" {
-		return "https://github.com/hermawan22/abra/archive/refs/heads/main.tar.gz"
-	}
-	return runtimeReleaseAssetURL(runtimeBundleAssetName())
-}
-
 func runtimeReleaseTag() string {
 	value := strings.TrimSpace(runtimeVersion())
 	if value == "" || value == "main" {
@@ -274,6 +269,9 @@ func abraRepository() string {
 }
 
 func downloadRuntimeSource(ctx context.Context, targetDir string) error {
+	if err := validateRuntimeSourceDownloadPolicy(); err != nil {
+		return err
+	}
 	url := runtimeSourceURL()
 	fmt.Println("Downloading Abra runtime: " + url)
 	tmpDir := targetDir + ".tmp-" + timestamp()
@@ -289,6 +287,10 @@ func downloadRuntimeSource(ctx context.Context, targetDir string) error {
 		return err
 	}
 	if err := extractTarGz(bytes.NewReader(archive), tmpDir); err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return err
+	}
+	if err := writeRuntimeSourceProvenance(tmpDir); err != nil {
 		_ = os.RemoveAll(tmpDir)
 		return err
 	}

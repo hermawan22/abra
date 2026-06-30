@@ -19,6 +19,12 @@ abra doctor
 embedding path is local-first; no hosted AI provider, npm package install, or
 cloud account is required.
 
+Release-installed CLIs use the published runtime bundle for the installed
+version. Source checkouts should run commands from the repo root so Abra uses
+local Compose files. Custom runtime archives require both `ABRA_SOURCE_URL` and
+`ABRA_SOURCE_SHA256`; mutable or unverified source downloads are local
+development escape hatches only.
+
 For a project:
 
 ```sh
@@ -31,7 +37,7 @@ Fully quit and reopen the AI client after bootstrap if it installed MCP config.
 Then verify the exact scope:
 
 ```sh
-abra agent ready . --scope <scope-from-abra-scope> --json
+abra agent verify . --scope <scope-from-abra-scope> --json
 ```
 
 Ask Abra from the operator console:
@@ -54,7 +60,7 @@ abra ask "What should I know before changing this project?" --scope <scope-from-
 | `abra agent` | Install, initialize, and verify AI-agent integrations. |
 | `abra model` | Configure and operate embedding providers. |
 | `abra brain` | Inspect and maintain source-backed brain quality. |
-| `abra govern` | Inspect approvals, observations, and decision gates. |
+| `abra govern` | Inspect approvals, observations, and governed learning proposals. |
 | `abra plugin` | Inspect extension contracts. |
 
 `abra ask` and `abra context` remain available for operators and scripts, but
@@ -132,7 +138,9 @@ and fully restart the client.
 
 ## Model Flow
 
-Use the built-in local embedding runner:
+Use the built-in local Qwen3 embedding runner. The OSS defaults are
+`Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0` and optional
+`Qwen/Qwen3-Reranker-0.6B-GGUF:Q8_0`:
 
 ```sh
 abra model local
@@ -164,6 +172,12 @@ Agents should use MCP as the brain interface:
 - `brain_scorecard`
 - `brain_anchor_backfill`
 - `brain_maintain`
+- `capture_observation`
+- `capture_task_outcome`
+- `propose_learning`
+- `list_learning_proposals`
+- `decide_learning_proposal`
+- `apply_learning_proposal`
 
 The usual agent loop is to discover the scope, compose working memory, act with
 citations, observe the outcome, and propose learning through the governed path.
@@ -176,6 +190,7 @@ receive:
 ```sh
 abra context "Implement the payment retry fix" --scope <scope> --prompt
 abra context "Implement the payment retry fix" --scope <scope> --agent-output
+abra context "Implement the payment retry fix" --scope <scope> --entity Payment --changed-file src/payment.go --language go
 ```
 
 It returns scope-aware memory, citations, conflicts, impact map, validation
@@ -190,6 +205,7 @@ implementation work.
 abra ask "Which files explain deployment?" --scope <scope>
 abra ask "Which files explain deployment?" --scope <scope> --brief
 abra ask "Which files explain deployment?" --scope <scope> --agent-output
+abra ask "Which files explain deployment?" --scope <scope> --entity Deployment --as-of 2026-06-30 --include-historical
 abra ask "Which files explain deployment?" --scope <scope> --synthesize
 ```
 
@@ -209,13 +225,24 @@ Brain responses include `evidence_anchors` when source chunks contain
 same-source quotes or text spans for recalled claims. These anchors strengthen
 citations and are required by the optional synthesis gate.
 
-Inspect and maintain brain quality without an LLM call through MCP:
+Inspect and maintain brain quality without an LLM call through MCP or the small
+operator CLI wrappers:
 
 - `brain_review`
 - `brain_scorecard`
 - `brain_anchor_backfill`
 - `brain_maintain`
 
+```sh
+abra brain dossier Abra --scope <scope>
+abra brain review --scope <scope>
+abra brain scorecard --scope <scope>
+abra brain anchor-backfill --scope <scope> --dry-run
+abra brain maintain --scope <scope> --dry-run
+```
+
+`brain_entity_dossier` / `abra brain dossier` inspects one entity with cited
+claims, relations, anchors, trust, conflicts, and next action.
 `brain_review` returns memory health, weak anchors, stale or expired claims,
 conflicts, source freshness, duplicate proposals, metrics, and next actions.
 `brain_scorecard` breaks quality into evidence, anchors, retrieval, freshness,
@@ -223,9 +250,20 @@ conflicts, graph, learning, and eval readiness. Anchor backfill and maintain
 default to dry-run/proposal-safe behavior and never promote trusted memory
 directly.
 
-The CLI intentionally does not mirror those maintenance tools as first-class
-commands. Use `abra brain status`, `abra doctor`, and `abra agent ready` for
-operator checks; agents should call the MCP tools directly.
+`--propose` on anchor backfill or maintain creates reviewable learning proposals
+only; it does not write trusted memory. Agents should still prefer the MCP tools
+directly because MCP preserves the exact agent context and access policy.
+
+Review and apply governed learning from the operator CLI:
+
+```sh
+abra govern learning list --scope <scope> --status pending
+abra govern learning accept <proposal-id> --reason "source-backed"
+abra govern learning apply <proposal-id> --approval-id <approval-id>
+```
+
+Accepting a proposal records review only. Applying an accepted proposal calls the
+first-party executor and still respects approval requirements.
 
 Run answer-quality suites with:
 

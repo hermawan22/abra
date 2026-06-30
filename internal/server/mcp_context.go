@@ -65,7 +65,7 @@ func (h *handler) mcpReadResource(r *http.Request, uri string) (map[string]any, 
 		return mcpTextResource(uri, "text/markdown", strings.TrimSpace(`
 # Abra Agent Workflow
 
-1. If the task scope is known from `+"`abra scope`"+`, call `+"`discover_scopes`"+` with `+"`expected_scope`"+` set to that exact value. If the task scope is missing or uncertain, call `+"`discover_scopes`"+` with a project `+"`query`"+` and use an exact returned scope. If an AI client says Abra has no context, ask the operator to run `+"`abra agents verify . --scope <scope> --agent <agent>`"+` first; repair MCP/token/client readiness when `+"`server_ready=true`"+` but `+"`agent_ready=false`"+`, and ingest only when verify proves the exact scope or source-backed memory is missing.
+1. If the task scope is known from `+"`abra scope`"+`, call `+"`discover_scopes`"+` with `+"`expected_scope`"+` set to that exact value. If the task scope is missing or uncertain, call `+"`discover_scopes`"+` with a project `+"`query`"+` and use an exact returned scope. If an AI client says Abra has no context, ask the operator to run `+"`abra agent verify . --scope <scope> --agent <agent>`"+` first; repair MCP/token/client readiness when `+"`server_ready=true`"+` but `+"`agent_ready=false`"+`, and ingest only when verify proves the exact scope or source-backed memory is missing.
 2. Use `+"`policy_plan`"+` before task, before code, or after task to get scoped recall queries.
 3. Use `+"`working_memory_compose`"+` before implementation to get source-backed facts, summaries, graph context, risks, validation steps, memory health, and the agent decision gate.
 4. Obey `+"`agent_decision`"+`. If it returns `+"`blocked`"+` or `+"`needs_review`"+`, use the allowed next actions instead of bypassing the gate.

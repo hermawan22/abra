@@ -183,6 +183,47 @@ func TestRunnerBatchesChangedSourceDocuments(t *testing.T) {
 	}
 }
 
+func TestRunnerSplitsChangedDocumentsIntoIngestBatches(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 51; i++ {
+		writeTestFile(t, root, fmt.Sprintf("doc-%02d.md", i), fmt.Sprintf("# Doc %02d\n\nDocument %02d should be ingested.", i, i))
+	}
+
+	store := &fakeStore{
+		sources: []SourceConfig{{
+			ID:         "docs",
+			Scope:      "repo:batch",
+			SourceType: ingest.SourceTypeMarkdown,
+			Name:       "Docs",
+			Config:     map[string]any{"root": root},
+		}},
+		states: map[string]DocumentState{},
+	}
+	brain := &fakeIngestor{}
+	runner := NewRunner(store, brain, Options{
+		MaxSourcesPerRun:             10,
+		MaxChangedDocumentsPerSource: 51,
+		SourceTimeout:                time.Second,
+	})
+
+	stats, err := runner.RunOnce(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.DocumentsSeen != 51 || stats.DocumentsChanged != 51 || stats.DocumentsDeferred != 0 || stats.ChunksWritten != 102 || stats.ClaimsWritten != 51 {
+		t.Fatalf("stats = %+v", stats)
+	}
+	if len(brain.batchInputs) != 2 {
+		t.Fatalf("batch count = %d, want 2: %+v", len(brain.batchInputs), brain.batchInputs)
+	}
+	if len(brain.batchInputs[0]) != DefaultWorkerIngestBatchSize || len(brain.batchInputs[1]) != 1 {
+		t.Fatalf("batch sizes = [%d %d], want [%d 1]", len(brain.batchInputs[0]), len(brain.batchInputs[1]), DefaultWorkerIngestBatchSize)
+	}
+	if !store.success || store.successStats.DocumentsChanged != 51 || store.successStats.DocumentsDeferred != 0 {
+		t.Fatalf("source success stats = %+v success=%v", store.successStats, store.success)
+	}
+}
+
 func TestRunnerFallsBackToSingleDocumentStateLookup(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, root, "a.md", "# A\n\nA should be ingested.")

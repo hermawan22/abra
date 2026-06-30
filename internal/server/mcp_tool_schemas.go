@@ -269,7 +269,7 @@ func mcpTools() []map[string]any {
 				"agent":              stringSchema(),
 				"entity":             stringSchema(),
 				"mode":               map[string]any{"type": "string", "enum": []string{"fast", "balanced", "deep"}, "description": "Retrieval depth. Defaults to balanced. Fast caps fanout; deep expands evidence without enabling synthesis."},
-				"as_of":              stringSchema(),
+				"as_of":              temporalAsOfSchema(),
 				"include_historical": map[string]any{"type": "boolean", "description": "Include labeled stale or historical context when available. Historical context is never autonomous truth."},
 				"limit":              map[string]any{"type": "integer", "minimum": 1, "maximum": 20},
 				"max_queries":        map[string]any{"type": "integer", "minimum": 1, "maximum": 12},
@@ -286,7 +286,7 @@ func mcpTools() []map[string]any {
 				"scope":              stringSchema(),
 				"agent":              stringSchema(),
 				"mode":               map[string]any{"type": "string", "enum": []string{"fast", "balanced", "deep"}, "description": "Retrieval depth. Defaults to balanced."},
-				"as_of":              stringSchema(),
+				"as_of":              temporalAsOfSchema(),
 				"include_historical": map[string]any{"type": "boolean", "description": "Include labeled stale or historical context when available. Historical context is never autonomous truth."},
 				"include_unverified": map[string]any{"type": "boolean"},
 				"limit":              map[string]any{"type": "integer", "minimum": 1, "maximum": 20},
@@ -340,7 +340,7 @@ func mcpTools() []map[string]any {
 				"changed_files":      map[string]any{"type": "array", "items": stringSchema()},
 				"language":           stringSchema(),
 				"mode":               map[string]any{"type": "string", "enum": []string{"fast", "balanced", "deep"}, "description": "Retrieval depth. Defaults to balanced. Fast caps fanout; deep expands evidence without enabling synthesis."},
-				"as_of":              stringSchema(),
+				"as_of":              temporalAsOfSchema(),
 				"include_historical": map[string]any{"type": "boolean", "description": "Include labeled stale or historical context when available. Historical context is never autonomous truth."},
 				"limit":              map[string]any{"type": "integer", "minimum": 1, "maximum": 20},
 				"max_queries":        map[string]any{"type": "integer", "minimum": 1, "maximum": 12},
@@ -576,8 +576,8 @@ func mcpTools() []map[string]any {
 		},
 		{
 			"name":        "propose_learning",
-			"description": "Create a reviewable learning proposal without promoting it to trusted memory.",
-			"inputSchema": objectSchema([]string{"scope", "proposal_type", "title", "rationale"}, map[string]any{
+			"description": "Create a reviewable learning proposal without promoting it to trusted memory. For target_type=observation, proposal_type, title, rationale, and source_url can be derived from the observation; other proposal targets should provide proposal_type, title, and rationale explicitly.",
+			"inputSchema": objectSchema([]string{"scope"}, map[string]any{
 				"scope":         stringSchema(),
 				"proposal_type": map[string]any{"type": "string", "enum": []string{"claim", "challenge", "source_refresh", "summary_rebuild", "ingestion", "policy", "graph", "other"}},
 				"title":         stringSchema(),

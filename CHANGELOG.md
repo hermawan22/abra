@@ -6,6 +6,38 @@ Abra uses semantic versioning for public releases. Before `v1.0.0`, minor
 versions may include breaking changes when they are documented in this file and
 in the release notes.
 
+## 0.5.0 - 2026-06-30
+
+### Added
+
+- Brain operator CLI commands for source-backed review, scorecards,
+  maintenance dry-runs/proposals, anchor backfill, and entity dossiers.
+- Governed learning proposal review commands for listing, accepting, rejecting,
+  canceling, and applying proposals through MCP-backed CLI flows.
+- Date-only CLI `--as-of YYYY-MM-DD` support for temporal recall; the CLI
+  normalizes it to RFC3339 before calling MCP.
+- A GIN index migration for memory summary source URL containment lookups.
+
+### Changed
+
+- Local model setup defaults remain self-hosted Qwen3 embedding and optional
+  Qwen3 reranker, while custom compatible providers fully replace the local
+  runner path.
+- Local model startup now waits for embedding and reranker readiness
+  concurrently and prioritizes container exit/OOM diagnostics over generic HTTP
+  readiness errors.
+- `abra up` now fails fast when production config selects local embeddings
+  without explicit operator approval, matching runtime config validation.
+- Worker source ingestion now splits changed documents into bounded sub-batches
+  to reduce timeout and payload risk on large repositories.
+- Release gate now runs migration and maintainability checks as explicit
+  release evidence.
+
+### Security
+
+- Runtime source hydration now rejects mutable `main` source downloads unless
+  an explicit source URL/checksum or local developer opt-in is provided.
+
 ## 0.4.0 - 2026-06-23
 
 OSS release of Abra as an MCP-first governed agent brain.

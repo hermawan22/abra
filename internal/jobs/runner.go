@@ -17,6 +17,7 @@ import (
 const (
 	DefaultMaxSourcesPerRun             = 25
 	DefaultMaxChangedDocumentsPerSource = 100
+	DefaultWorkerIngestBatchSize        = 50
 	DefaultWorkerConcurrency            = 1
 	MaxWorkerConcurrency                = 32
 	DefaultSourceTimeout                = 2 * time.Minute
@@ -574,7 +575,7 @@ func (r *Runner) runSource(ctx context.Context, source SourceConfig, jobID strin
 		}
 		changedInputs = append(changedInputs, documentInput(source, doc, jobID))
 	}
-	results, err := r.ingestDocumentBatch(sourceCtx, changedInputs)
+	results, err := r.ingestDocumentBatches(sourceCtx, jobID, changedInputs, DefaultWorkerIngestBatchSize)
 	if err != nil {
 		if heartbeatErr := heartbeatLoopErr(heartbeatErrs); heartbeatErr != nil {
 			runErr = heartbeatErr
@@ -584,12 +585,6 @@ func (r *Runner) runSource(ctx context.Context, source SourceConfig, jobID strin
 		return stats, err
 	}
 	accumulateResults(&stats, results)
-	if len(results) > 0 {
-		if err := r.heartbeatJob(sourceCtx, jobID); err != nil {
-			runErr = err
-			return stats, err
-		}
-	}
 	if heartbeatErr := heartbeatLoopErr(heartbeatErrs); heartbeatErr != nil {
 		runErr = heartbeatErr
 		return stats, heartbeatErr
@@ -637,6 +632,28 @@ func sourceDocumentRefs(docs []ingest.Document) []SourceDocumentRef {
 		refs = append(refs, ref)
 	}
 	return refs
+}
+
+func (r *Runner) ingestDocumentBatches(ctx context.Context, jobID string, inputs []IngestDocumentInput, batchSize int) ([]IngestDocumentResult, error) {
+	if len(inputs) == 0 {
+		return []IngestDocumentResult{}, nil
+	}
+	if batchSize <= 0 {
+		batchSize = DefaultWorkerIngestBatchSize
+	}
+	results := make([]IngestDocumentResult, 0, len(inputs))
+	for start := 0; start < len(inputs); start += batchSize {
+		end := minInt(start+batchSize, len(inputs))
+		batchResults, err := r.ingestDocumentBatch(ctx, inputs[start:end])
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, batchResults...)
+		if err := r.heartbeatJob(ctx, jobID); err != nil {
+			return nil, err
+		}
+	}
+	return results, nil
 }
 
 func (r *Runner) ingestDocumentBatch(ctx context.Context, inputs []IngestDocumentInput) ([]IngestDocumentResult, error) {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	memorypkg "github.com/hermawan22/abra/internal/memory"
 )
@@ -28,17 +29,23 @@ func think(ctx context.Context, args cliArgs) error {
 	if err != nil {
 		return err
 	}
-	result, err := callMCPTool(ctx, args, "brain_think", map[string]any{
+	payload := map[string]any{
 		"question":           question,
 		"scope":              scope,
 		"agent":              flag(args, "agent", ""),
 		"mode":               mode,
+		"entity":             flag(args, "entity", ""),
+		"as_of":              normalizedAsOfFlag(args),
+		"include_historical": boolFlag(args, "include-historical"),
 		"synthesize":         boolFlag(args, "synthesize"),
 		"limit":              intFlag(args, "limit", 5),
 		"max_queries":        intFlag(args, "max-queries", 4),
-		"token_budget":       intFlag(args, "token-budget", 0),
 		"include_unverified": boolFlag(args, "include-unverified"),
-	})
+	}
+	if hasFlag(args, "token-budget") {
+		payload["token_budget"] = intFlag(args, "token-budget", 0)
+	}
+	result, err := callMCPTool(ctx, args, "brain_think", payload)
 	if err != nil {
 		return err
 	}
@@ -99,18 +106,27 @@ func composeMemory(ctx context.Context, args cliArgs) error {
 	if err != nil {
 		return err
 	}
-	result, err := callMCPTool(ctx, args, "working_memory_compose", map[string]any{
+	payload := map[string]any{
 		"task":               task,
 		"scope":              scope,
 		"hook":               flag(args, "hook", "before_task"),
 		"agent":              flag(args, "agent", ""),
 		"mode":               mode,
+		"entity":             flag(args, "entity", ""),
+		"files":              stringListFlag(args, "files", "file"),
+		"changed_files":      stringListFlag(args, "changed-files", "changed-file"),
+		"language":           flag(args, "language", ""),
+		"as_of":              normalizedAsOfFlag(args),
+		"include_historical": boolFlag(args, "include-historical"),
 		"limit":              intFlag(args, "limit", 5),
 		"max_queries":        intFlag(args, "max-queries", 4),
-		"token_budget":       intFlag(args, "token-budget", 1200),
 		"include_unverified": boolFlag(args, "include-unverified"),
 		"persist_learning":   boolFlag(args, "persist-learning"),
-	})
+	}
+	if hasFlag(args, "token-budget") {
+		payload["token_budget"] = intFlag(args, "token-budget", 0)
+	}
+	result, err := callMCPTool(ctx, args, "working_memory_compose", payload)
 	if err != nil {
 		return err
 	}
@@ -347,6 +363,8 @@ func governCommand(ctx context.Context, args cliArgs) error {
 		return memoryStatus(ctx, args, true)
 	case "approvals", "approval":
 		return approvalsCommand(ctx, args)
+	case "learning", "proposal", "proposals":
+		return governLearningCommand(ctx, args)
 	case "observe":
 		return observe(ctx, args)
 	case "observations", "episodes":
@@ -974,6 +992,38 @@ func thinkNeedsRecovery(result map[string]any) bool {
 		return true
 	}
 	return false
+}
+
+func stringListFlag(args cliArgs, names ...string) []string {
+	values := []string{}
+	for _, name := range names {
+		raw := flag(args, name, "")
+		for _, part := range strings.Split(raw, ",") {
+			part = strings.TrimSpace(part)
+			if part != "" {
+				values = append(values, part)
+			}
+		}
+	}
+	return values
+}
+
+func normalizedAsOfFlag(args cliArgs) string {
+	return normalizeAsOfInput(flag(args, "as-of", ""))
+}
+
+func normalizeAsOfInput(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+	if parsed, err := time.Parse(time.RFC3339, value); err == nil {
+		return parsed.UTC().Format(time.RFC3339)
+	}
+	if parsed, err := time.Parse("2006-01-02", value); err == nil {
+		return parsed.UTC().Format(time.RFC3339)
+	}
+	return value
 }
 
 func printThinkRecovery(scope string) {

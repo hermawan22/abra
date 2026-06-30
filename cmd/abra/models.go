@@ -52,6 +52,14 @@ type embeddingRunnerConfig struct {
 	ReadinessTimeout time.Duration
 }
 
+type dockerContainerRuntimeState struct {
+	Status    string `json:"Status"`
+	Running   bool   `json:"Running"`
+	ExitCode  int    `json:"ExitCode"`
+	Error     string `json:"Error"`
+	OOMKilled bool   `json:"OOMKilled"`
+}
+
 func models(ctx context.Context, args cliArgs) error {
 	action := "status"
 	if len(args.Rest) > 0 {
@@ -100,12 +108,8 @@ func modelsUp(ctx context.Context, args cliArgs) error {
 	}
 	fmt.Println("First run may download model weights; this can take several minutes.")
 	startupTimeout := localRunnerStartupTimeout(args)
-	for _, cfg := range cfgs {
-		fmt.Println("Waiting for " + cfg.Kind + " endpoint: " + localRunnerReadyURL(cfg))
-		if err := waitLocalRunnerReady(ctx, cfg, startupTimeout); err != nil {
-			return fmt.Errorf("%w\nRun: abra models logs\nRun: abra models status", err)
-		}
-		fmt.Println("Local " + cfg.Kind + " ready")
+	if err := waitLocalRunnersReady(ctx, cfgs, startupTimeout); err != nil {
+		return fmt.Errorf("%w\nRun: abra model logs\nRun: abra model status", err)
 	}
 	fmt.Println("Next: abra up")
 	return nil
@@ -218,7 +222,7 @@ func modelsStatus(ctx context.Context, args cliArgs) error {
 	}
 	if firstErr != nil {
 		status["error"] = firstErr.Error()
-		status["hint"] = "run: abra models up"
+		status["hint"] = "run: abra model up"
 	}
 	if boolFlag(args, "json") {
 		return printJSON(status)
@@ -230,8 +234,16 @@ func modelsStatus(ctx context.Context, args cliArgs) error {
 			if errText := stringValue(runnerStatus["error"], ""); errText != "" {
 				fmt.Println("error:    " + errText)
 			}
+			if state := stringValue(runnerStatus["container_state"], ""); state != "" {
+				fmt.Printf("state:    %s running=%t exit_code=%d oom_killed=%t\n",
+					state,
+					boolValue(runnerStatus["container_running"], false),
+					intValue(runnerStatus["container_exit_code"]),
+					boolValue(runnerStatus["container_oom_killed"], false),
+				)
+			}
 		}
-		fmt.Println("hint:     abra models up")
+		fmt.Println("hint:     abra model up")
 		fmt.Println("timeout:  " + cfgs[0].ReadinessTimeout.String())
 		return nil
 	}
@@ -245,7 +257,10 @@ func modelsStatus(ctx context.Context, args cliArgs) error {
 }
 
 func localRunnerStatus(ctx context.Context, cfg embeddingRunnerConfig) map[string]any {
-	err := checkLocalRunnerReady(ctx, cfg)
+	err := localRunnerContainerExitError(cfg)
+	if err == nil {
+		err = checkLocalRunnerReady(ctx, cfg)
+	}
 	status := map[string]any{
 		"kind":              cfg.Kind,
 		"container":         cfg.Container,
@@ -265,9 +280,18 @@ func localRunnerStatus(ctx context.Context, cfg embeddingRunnerConfig) map[strin
 		status["container_config_hash"] = dockerContainerLabel(cfg.Container, localRunnerHashLabelFor(cfg))
 		status["config_matches"] = !localRunnerNeedsRecreate(cfg)
 	}
+	if state, ok := dockerContainerState(cfg.Container); ok {
+		status["container_state"] = state.Status
+		status["container_running"] = state.Running
+		status["container_exit_code"] = state.ExitCode
+		status["container_oom_killed"] = state.OOMKilled
+		if strings.TrimSpace(state.Error) != "" {
+			status["container_error"] = strings.TrimSpace(state.Error)
+		}
+	}
 	if err != nil {
 		status["error"] = err.Error()
-		status["hint"] = "run: abra models up"
+		status["hint"] = "run: abra model up"
 	}
 	return status
 }
@@ -306,7 +330,7 @@ func modelsLogs(args cliArgs) error {
 		}
 	}
 	if present == 0 {
-		return errors.New("local model containers are not present; run: abra models up")
+		return errors.New("local model containers are not present; run: abra model up")
 	}
 	lines := flag(args, "tail", "120")
 	for _, cfg := range cfgs {
@@ -331,7 +355,7 @@ func requireLocalModelProvider(args cliArgs, action string) error {
 	if provider == "" || isLocalProviderName(provider) {
 		return nil
 	}
-	return fmt.Errorf("abra models %s manages only the built-in local embedding runner, but EMBEDDING_PROVIDER=%s in %s. Abra will use the configured provider instead. Use `abra config` to inspect it, or pass --force only if you intentionally want to manage the unused local runner", action, provider, envPath(args))
+	return fmt.Errorf("abra model %s manages only the built-in local embedding runner, but EMBEDDING_PROVIDER=%s in %s. Abra will use the configured provider instead. Use `abra config` to inspect it, or pass --force only if you intentionally want to manage the unused local runner", action, provider, envPath(args))
 }
 
 func inactiveLocalModelNotice(args cliArgs) map[string]any {
@@ -348,7 +372,7 @@ func inactiveLocalModelNotice(args cliArgs) map[string]any {
 		"active":    false,
 		"provider":  provider,
 		"detail":    "Abra is configured to use EMBEDDING_PROVIDER=" + provider + ", so the built-in local runner is not part of the active path.",
-		"hint":      "run `abra config` to inspect the active provider; use `abra models status --force` only to inspect the unused local runner",
+		"hint":      "run `abra config` to inspect the active provider; use `abra model status --force` only to inspect the unused local runner",
 	}
 }
 
@@ -527,6 +551,38 @@ func dockerContainerLabel(name, label string) string {
 	return value
 }
 
+func dockerContainerState(name string) (dockerContainerRuntimeState, bool) {
+	if strings.TrimSpace(name) == "" {
+		return dockerContainerRuntimeState{}, false
+	}
+	out, err := commandOutput("docker", "container", "inspect", "--format", "{{json .State}}", name)
+	if err != nil {
+		return dockerContainerRuntimeState{}, false
+	}
+	var state dockerContainerRuntimeState
+	if err := json.Unmarshal([]byte(out), &state); err != nil {
+		return dockerContainerRuntimeState{}, false
+	}
+	return state, true
+}
+
+func localRunnerContainerExitError(cfg embeddingRunnerConfig) error {
+	state, ok := dockerContainerState(cfg.Container)
+	if !ok {
+		return nil
+	}
+	status := strings.ToLower(strings.TrimSpace(state.Status))
+	if status != "exited" && status != "dead" {
+		return nil
+	}
+	message := fmt.Sprintf("local %s container exited before readiness: %s status=%s exit_code=%d oom_killed=%t", cfg.Kind, cfg.Container, state.Status, state.ExitCode, state.OOMKilled)
+	if strings.TrimSpace(state.Error) != "" {
+		message += " error=" + strings.TrimSpace(state.Error)
+	}
+	message += "; run: abra model logs --tail 120"
+	return errors.New(message)
+}
+
 func localRunnerNeedsRecreate(cfg embeddingRunnerConfig) bool {
 	hash := dockerContainerLabel(cfg.Container, localRunnerHashLabelFor(cfg))
 	if hash == "" {
@@ -701,14 +757,96 @@ func syncLocalRunnerEnv(args cliArgs) error {
 func waitLocalRunnerReady(ctx context.Context, cfg embeddingRunnerConfig, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	var lastErr error
-	for time.Now().Before(deadline) {
+	delay := 500 * time.Millisecond
+	for {
+		if err := localRunnerContainerExitError(cfg); err != nil {
+			return err
+		}
 		lastErr = checkLocalRunnerReady(ctx, cfg)
 		if lastErr == nil {
+			if err := localRunnerContainerExitError(cfg); err != nil {
+				return err
+			}
 			return nil
 		}
-		time.Sleep(2 * time.Second)
+		if err := localRunnerContainerExitError(cfg); err != nil {
+			return err
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return fmt.Errorf("local %s model did not become ready: %v", cfg.Kind, lastErr)
+		}
+		if delay > remaining {
+			delay = remaining
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return fmt.Errorf("local %s model readiness canceled: %w", cfg.Kind, ctx.Err())
+		case <-timer.C:
+		}
+		if delay < 2*time.Second {
+			delay *= 2
+			if delay > 2*time.Second {
+				delay = 2 * time.Second
+			}
+		}
 	}
-	return fmt.Errorf("local %s model did not become ready: %v", cfg.Kind, lastErr)
+}
+
+func waitLocalRunnersReady(ctx context.Context, cfgs []embeddingRunnerConfig, timeout time.Duration) error {
+	for _, cfg := range cfgs {
+		fmt.Println("Waiting for " + cfg.Kind + " endpoint: " + localRunnerReadyURL(cfg))
+	}
+	if len(cfgs) == 0 {
+		return nil
+	}
+	if len(cfgs) == 1 {
+		if err := waitLocalRunnerReady(ctx, cfgs[0], timeout); err != nil {
+			return err
+		}
+		fmt.Println("Local " + cfgs[0].Kind + " ready")
+		return nil
+	}
+	readyCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	type runnerReadyResult struct {
+		Index int
+		Err   error
+	}
+	results := make(chan runnerReadyResult, len(cfgs))
+	for i, cfg := range cfgs {
+		go func(index int, runner embeddingRunnerConfig) {
+			err := waitLocalRunnerReady(readyCtx, runner, timeout)
+			if err != nil {
+				cancel()
+			}
+			results <- runnerReadyResult{Index: index, Err: err}
+		}(i, cfg)
+	}
+	errs := make([]error, len(cfgs))
+	for range cfgs {
+		result := <-results
+		errs[result.Index] = result.Err
+	}
+	var canceledErr error
+	for i, err := range errs {
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				if canceledErr == nil {
+					canceledErr = err
+				}
+				continue
+			}
+			return err
+		}
+		fmt.Println("Local " + cfgs[i].Kind + " ready")
+	}
+	if canceledErr != nil {
+		return canceledErr
+	}
+	return nil
 }
 
 func checkLocalRunnerReady(ctx context.Context, cfg embeddingRunnerConfig) error {
@@ -799,7 +937,7 @@ func localEmbeddingCheck(ctx context.Context, args cliArgs) map[string]any {
 			"name":  "local_embeddings",
 			"ok":    false,
 			"error": err.Error(),
-			"hint":  "run: abra models up",
+			"hint":  "run: abra model up",
 		}
 	}
 	return map[string]any{"name": "local_embeddings", "ok": true, "endpoint": cfg.BaseURL + "/embeddings"}
@@ -822,7 +960,7 @@ func friendlyProviderError(err error) error {
 	localProvider := isLocalProviderName(provider)
 	defaultHint := compatibleProviderRecoveryHint()
 	if localProvider {
-		defaultHint = "Run `abra models status`; if it is not ready, run `abra models up`, then retry ingest."
+		defaultHint = "Run `abra model status`; if it is not ready, run `abra model up`, then retry ingest."
 	}
 	var statusErr *httpStatusError
 	if errors.As(err, &statusErr) {
@@ -842,7 +980,7 @@ func friendlyProviderError(err error) error {
 				hint = "Abra retries smaller embedding batches automatically. If it still fails, lower ABRA_EMBEDDING_BATCH_MAX_ITEMS/ABRA_EMBEDDING_BATCH_MAX_TOKENS or split very large files before ingest."
 			case "provider_timeout":
 				if localProvider {
-					hint = "Run `abra models status`; if the model is healthy, retry with a longer ABRA_CLI_TIMEOUT or lower ABRA_EMBEDDING_BATCH_MAX_ITEMS/ABRA_EMBEDDING_BATCH_MAX_TOKENS."
+					hint = "Run `abra model status`; if the model is healthy, retry with a longer ABRA_CLI_TIMEOUT or lower ABRA_EMBEDDING_BATCH_MAX_ITEMS/ABRA_EMBEDDING_BATCH_MAX_TOKENS."
 				} else {
 					hint = "Check your compatible embedding endpoint capacity, raise EMBEDDING_TIMEOUT/ABRA_CLI_TIMEOUT, or lower ABRA_EMBEDDING_BATCH_MAX_ITEMS/ABRA_EMBEDDING_BATCH_MAX_TOKENS."
 				}
@@ -853,13 +991,13 @@ func friendlyProviderError(err error) error {
 	text := strings.ToLower(err.Error())
 	if strings.Contains(text, "context deadline exceeded") || strings.Contains(text, "client.timeout exceeded") {
 		if localProvider {
-			return fmt.Errorf("embedding request timed out. Run `abra models status`; if the local model is healthy, retry with a longer ABRA_CLI_TIMEOUT or lower ABRA_EMBEDDING_BATCH_MAX_ITEMS/ABRA_EMBEDDING_BATCH_MAX_TOKENS. Original error: %w", err)
+			return fmt.Errorf("embedding request timed out. Run `abra model status`; if the local model is healthy, retry with a longer ABRA_CLI_TIMEOUT or lower ABRA_EMBEDDING_BATCH_MAX_ITEMS/ABRA_EMBEDDING_BATCH_MAX_TOKENS. Original error: %w", err)
 		}
 		return fmt.Errorf("embedding request timed out. %s Original error: %w", compatibleProviderRecoveryHint(), err)
 	}
 	if strings.Contains(text, "/embeddings") || strings.Contains(text, "embedding") || strings.Contains(text, "host.docker.internal:8080") || strings.Contains(text, "connection refused") {
 		if localProvider {
-			return fmt.Errorf("embedding provider is not ready. Run `abra models status`; if it is not ready, run `abra models up`, then retry ingest. If the stack is down, run `abra up`. Original error: %w", err)
+			return fmt.Errorf("embedding provider is not ready. Run `abra model status`; if it is not ready, run `abra model up`, then retry ingest. If the stack is down, run `abra up`. Original error: %w", err)
 		}
 		return fmt.Errorf("embedding provider is not ready. %s Original error: %w", compatibleProviderRecoveryHint(), err)
 	}

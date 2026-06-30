@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/hermawan22/abra/internal/policy"
 	"github.com/hermawan22/abra/internal/store"
@@ -60,7 +61,7 @@ func normalizeInput(input ComposeInput) ComposeInput {
 	input.Scope = strings.TrimSpace(input.Scope)
 	input.Hook = strings.TrimSpace(input.Hook)
 	input.Entity = strings.Join(strings.Fields(input.Entity), " ")
-	input.AsOf = strings.TrimSpace(input.AsOf)
+	input.AsOf = normalizeAsOfInput(input.AsOf)
 	input.Mode = NormalizeRetrievalMode(string(input.Mode))
 	if input.Hook == "" {
 		input.Hook = string(policy.HookBeforeTask)
@@ -110,6 +111,20 @@ func applyRetrievalMode(input ComposeInput) ComposeInput {
 		}
 	}
 	return input
+}
+
+func normalizeAsOfInput(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+	if parsed, err := time.Parse(time.RFC3339, value); err == nil {
+		return parsed.UTC().Format(time.RFC3339)
+	}
+	if parsed, err := time.Parse("2006-01-02", value); err == nil {
+		return parsed.UTC().Format(time.RFC3339)
+	}
+	return value
 }
 
 func classifyIntent(input ComposeInput) string {

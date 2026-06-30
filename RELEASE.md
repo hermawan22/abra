@@ -7,7 +7,7 @@ Abra releases should be reproducible from a signed Git tag and backed by CI evid
 - Use semantic versions: `vMAJOR.MINOR.PATCH`.
 - Keep `package.json`, `package-lock.json`, `deploy/helm/Chart.yaml`, chart `appVersion`, and `CHANGELOG.md` aligned before tagging.
 - Before v1.0.0, document any breaking change in `CHANGELOG.md` and the GitHub release notes.
-- Existing public tags through `v0.3.8` are historical. Do not rewrite them;
+- Existing public tags through `v0.4.0` are historical. Do not rewrite them;
   publish later OSS candidates with a new SemVer tag.
 - Patch releases contain compatible fixes only.
 - Minor releases may add capabilities or make documented pre-1.0 breaking

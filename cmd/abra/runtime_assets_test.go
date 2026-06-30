@@ -274,6 +274,41 @@ func TestEnsureProjectDirRejectsUnverifiedRuntimeSourceURL(t *testing.T) {
 	}
 }
 
+func TestEnsureProjectDirRejectsMutableMainRuntimeSource(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+	oldVersion := version
+	version = "dev"
+	t.Cleanup(func() { version = oldVersion })
+
+	_, err := ensureProjectDir(context.Background(), cliArgs{Flags: map[string]string{}, Bools: map[string]bool{}})
+	if err == nil || !strings.Contains(err.Error(), "refusing to download mutable main-branch runtime source") {
+		t.Fatalf("ensureProjectDir error = %v, want mutable source refusal", err)
+	}
+}
+
+func TestRuntimeSourcePolicyAllowsExplicitMutableMainOptIn(t *testing.T) {
+	oldVersion := version
+	version = "dev"
+	t.Cleanup(func() { version = oldVersion })
+	t.Setenv("ABRA_ALLOW_MUTABLE_RUNTIME_SOURCE", "1")
+
+	if err := validateRuntimeSourceDownloadPolicy(); err != nil {
+		t.Fatalf("validateRuntimeSourceDownloadPolicy error = %v", err)
+	}
+}
+
+func TestRuntimeSourcePolicyRejectsMutableSourceURLWithoutOptIn(t *testing.T) {
+	t.Setenv("ABRA_SOURCE_URL", "https://github.com/hermawan22/abra/archive/refs/heads/main.tar.gz")
+	t.Setenv("ABRA_ALLOW_UNVERIFIED_SOURCE_URL", "1")
+
+	if err := validateRuntimeSourceDownloadPolicy(); err == nil || !strings.Contains(err.Error(), "mutable runtime source URL") {
+		t.Fatalf("validateRuntimeSourceDownloadPolicy error = %v, want mutable source URL refusal", err)
+	}
+}
+
 func TestEnsureProjectDirAllowsExplicitUnverifiedRuntimeSourceURLOptOut(t *testing.T) {
 	root := t.TempDir()
 	home := t.TempDir()
@@ -294,6 +329,71 @@ func TestEnsureProjectDirAllowsExplicitUnverifiedRuntimeSourceURLOptOut(t *testi
 	}
 	if !fileExists(filepath.Join(dir, "docker-compose.yml")) {
 		t.Fatalf("runtime docker-compose.yml was not extracted into %s", dir)
+	}
+}
+
+func TestEnsureProjectDirRehydratesWhenRuntimeSourceProvenanceChanges(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Setenv("ABRA_VERIFY_RUNTIME_ATTESTATION", "0")
+	t.Chdir(root)
+	oldVersion := version
+	version = "v9.9.9"
+	t.Cleanup(func() { version = oldVersion })
+
+	customArchive := runtimeArchive(t)
+	customSum := sha256.Sum256(customArchive)
+	customRequests := 0
+	customServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		customRequests++
+		_, _ = w.Write(customArchive)
+	}))
+	defer customServer.Close()
+	t.Setenv("ABRA_SOURCE_URL", customServer.URL+"/custom.tar.gz")
+	t.Setenv("ABRA_SOURCE_SHA256", fmt.Sprintf("%x", customSum))
+
+	dir, err := ensureProjectDir(context.Background(), cliArgs{Flags: map[string]string{}, Bools: map[string]bool{}})
+	if err != nil {
+		t.Fatalf("custom ensureProjectDir error = %v", err)
+	}
+	if customRequests != 1 {
+		t.Fatalf("custom requests = %d, want 1", customRequests)
+	}
+	if !runtimeSourceCacheValid(dir) {
+		t.Fatalf("custom runtime cache should be valid for custom source")
+	}
+
+	os.Unsetenv("ABRA_SOURCE_URL")
+	os.Unsetenv("ABRA_SOURCE_SHA256")
+	releaseArchive := runtimeArchive(t)
+	asset := runtimeBundleAssetName()
+	releaseSum := sha256.Sum256(releaseArchive)
+	sums := fmt.Sprintf("%x  %s\n", releaseSum, asset)
+	releaseRequests := map[string]int{}
+	releaseServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		releaseRequests[r.URL.Path]++
+		switch r.URL.Path {
+		case "/" + asset:
+			_, _ = w.Write(releaseArchive)
+		case "/SHA256SUMS":
+			_, _ = w.Write([]byte(sums))
+		default:
+			t.Fatalf("unexpected runtime download path %s", r.URL.Path)
+		}
+	}))
+	defer releaseServer.Close()
+	t.Setenv("ABRA_RELEASE_BASE_URL", releaseServer.URL)
+
+	dir, err = ensureProjectDir(context.Background(), cliArgs{Flags: map[string]string{}, Bools: map[string]bool{}})
+	if err != nil {
+		t.Fatalf("release ensureProjectDir error = %v", err)
+	}
+	if releaseRequests["/"+asset] != 1 || releaseRequests["/SHA256SUMS"] != 1 {
+		t.Fatalf("release requests = %#v, want official rehydrate", releaseRequests)
+	}
+	if !runtimeSourceCacheValid(dir) {
+		t.Fatalf("release runtime cache should be valid after rehydrate")
 	}
 }
 

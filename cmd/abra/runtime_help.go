@@ -43,7 +43,7 @@ First run:
   abra scope
   abra agent bootstrap --agent <agent>
   fully restart the agent runtime
-  abra agent ready . --scope <scope-from-abra-scope> --json
+  abra agent verify . --scope <scope-from-abra-scope> --json
   agents use MCP working_memory_compose / brain_think with the verified scope
 
 Abra is MCP-first for agents. CLI is for install, setup, source sync, operator
@@ -109,7 +109,7 @@ a source id queues an existing source config through the worker.
 `
 	case "ask":
 		return `Usage:
-  abra ask "question" --scope repo:demo [--agent codex] [--mode fast|balanced|deep] [--brief] [--agent-output] [--synthesize] [--json]
+  abra ask "question" --scope repo:demo [--agent codex] [--entity Name] [--as-of YYYY-MM-DD] [--include-historical] [--mode fast|balanced|deep] [--limit n] [--max-queries n] [--token-budget n] [--include-unverified] [--brief] [--agent-output] [--synthesize] [--json]
 
 Asks the governed brain layer. Returns a cited answer, verification, gaps,
 memory health, graph context, and an agent decision gate. Use --brief for a
@@ -121,7 +121,7 @@ deep for wider evidence without enabling synthesis.
 `
 	case "context":
 		return `Usage:
-  abra context "task" --scope repo:demo [--agent codex] [--mode fast|balanced|deep] [--hook before_task] [--brief] [--agent-output] [--prompt] [--persist-learning] [--json]
+  abra context "task" --scope repo:demo [--agent codex] [--entity Name] [--file path] [--changed-file path] [--language go] [--as-of YYYY-MM-DD] [--include-historical] [--mode fast|balanced|deep] [--limit n] [--max-queries n] [--token-budget n] [--include-unverified] [--hook before_task] [--brief] [--agent-output] [--prompt] [--persist-learning] [--json]
 
 Builds task-specific working memory for AI agents. Human output includes the
 decision gate, retrieval quality, health signals, validation plan, allowed next
@@ -134,13 +134,13 @@ view or --agent-output for a handoff-shaped packet.
   abra agent bootstrap [path] [--agent <agent>] [--scope repo:project] [--force] [--no-mcp]
   abra agent init [path] [--agent <agent>] [--scope repo:project] [--force] [--dry-run] [--json]
   abra agent verify [path] --scope repo:project [--agent <agent>] [--files-only] [--strict] [--json]
-  abra agent ready [path] --scope repo:project [--agent <agent>] [--files-only] [--strict] [--json]
   abra agent install codex
   abra agent status
 
 Agent commands wire AI clients to the same source-backed Abra scope. Some
 clients have automated install helpers; other clients use abra mcp JSON or the
-HTTP MCP URL.
+HTTP MCP URL. ` + "`abra agent ready`" + ` remains a non-mutating compatibility alias
+for ` + "`abra agent verify`" + `.
 `
 	case "model":
 		return `Usage:
@@ -155,18 +155,26 @@ HTTP MCP URL.
 
 Model commands configure or operate Abra's embedding and reranker providers.
 Abra defaults to a self-hosted local embedding runner, and any compatible
-embedding provider can replace it when configured.
+embedding provider can replace it when configured. The OSS local default is
+Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0 with optional Qwen/Qwen3-Reranker-0.6B-GGUF:Q8_0.
 `
 	case "brain":
 		return `Usage:
   abra brain [--scope repo:demo]
   abra brain status --scope repo:demo
   abra brain doctor --scope repo:demo
+  abra brain review --scope repo:demo [--limit 50] [--json]
+  abra brain scorecard --scope repo:demo [--limit 50] [--json]
+  abra brain anchor-backfill --scope repo:demo [--dry-run|--propose] [--json]
+  abra brain maintain --scope repo:demo [--dry-run|--propose] [--json]
+  abra brain dossier <entity> --scope repo:demo [--mode fast|balanced|deep] [--json]
   abra brain explain <trace-id>
 
-Brain CLI is intentionally thin: setup/status, health checks, and persisted
-trace explanation. Agents should use MCP tools directly: working_memory_compose,
-brain_think, brain_review, brain_scorecard, brain_anchor_backfill, brain_maintain.
+Brain CLI is a small operator surface over the same governed MCP tools used by
+agents. Review and scorecard are read-only. Anchor backfill and maintain default
+to dry-run; --propose creates reviewable learning proposals and never promotes
+trusted memory directly. Dossier inspects one entity with claims, relations,
+anchors, trust, and next action.
 Compatibility top-level commands such as ask, context, recall, and compose remain
 available for automation, but they call MCP tools instead of private REST brain paths.
 `
@@ -178,6 +186,10 @@ available for automation, but they call MCP tools instead of private REST brain 
   abra govern approvals request --scope repo:demo --action agent_write --reason "..."
   abra govern approvals approve <approval-id>
   abra govern observe "operator note" --scope repo:demo --propose
+  abra govern learning list --scope repo:demo [--status pending]
+  abra govern learning accept <proposal-id> [--reason "..."]
+  abra govern learning reject <proposal-id> [--reason "..."]
+  abra govern learning apply <proposal-id> [--approval-id <approval-id>]
 
 Governance commands handle health, approvals, observations, and learning review.
 They do not bypass source authority, approval gates, or evidence requirements.
@@ -266,13 +278,14 @@ After changing embedding providers, sync important sources again for reliable ve
 `
 	case "models":
 		return `Usage:
-  abra models up [--recreate] [--port 8080] [--pull-policy missing] [--startup-timeout 10m] [--allow-production-local-embeddings] [--model-id <repo>] [--model <served-name>]
-  abra models status [--json] [--force]
-  abra models logs [--force]
-  abra models down [--force]
+  abra model up [--recreate] [--port 8080] [--pull-policy missing] [--startup-timeout 10m] [--allow-production-local-embeddings] [--model-id <repo>] [--model <served-name>]
+  abra model status [--json] [--force]
+  abra model logs [--force]
+  abra model down [--force]
 
-Starts and manages the built-in local embedding runner for the default local
-setup. Optional rerankers are configured separately through compatible
+` + "`abra models`" + ` is a compatibility alias for ` + "`abra model`" + `.
+Starts and manages the built-in local Qwen3 embedding runner for the default
+local setup. Optional rerankers are configured separately through compatible
 reranker provider settings. Abra keeps the binary lightweight: model weights stay in Docker's
 model cache, while the CLI owns startup, health checks, and lifecycle.
 
@@ -408,7 +421,7 @@ through POST /learning/proposals/:proposalId/apply or MCP apply_learning_proposa
 `
 	case "think":
 		return `Usage:
-  abra think "question" --scope repo:demo [--agent codex] [--mode fast|balanced|deep] [--brief] [--agent-output] [--synthesize] [--json]
+  abra think "question" --scope repo:demo [--agent codex] [--entity Name] [--as-of YYYY-MM-DD] [--include-historical] [--mode fast|balanced|deep] [--limit n] [--max-queries n] [--token-budget n] [--include-unverified] [--brief] [--agent-output] [--synthesize] [--json]
 
 Asks the governed brain layer. Returns a cited answer, verification, gaps,
 memory health, and an agent decision gate. Use --brief for a compact answer
@@ -420,11 +433,11 @@ evidence without enabling synthesis.
 
 If the answer has no context, run:
   abra scope
-  abra ingest . --code --scope <scope-from-abra-scope>
-  abra think "question" --scope <scope-from-abra-scope>
+  abra sync . --code --scope <scope-from-abra-scope>
+  abra ask "question" --scope <scope-from-abra-scope>
 
 For AI-client readiness, run:
-  abra agents verify . --scope <scope-from-abra-scope> --agent codex
+  abra agent verify . --scope <scope-from-abra-scope> --agent codex
   abra doctor
 `
 	case "eval":
@@ -443,7 +456,7 @@ Runs hybrid lexical/vector retrieval over source-backed memory.
 `
 	case "compose":
 		return `Usage:
-  abra compose "task" --scope repo:demo [--agent codex] [--mode fast|balanced|deep] [--hook before_task] [--brief] [--agent-output] [--prompt] [--persist-learning] [--json]
+  abra compose "task" --scope repo:demo [--agent codex] [--entity Name] [--file path] [--changed-file path] [--language go] [--as-of YYYY-MM-DD] [--include-historical] [--mode fast|balanced|deep] [--limit n] [--max-queries n] [--token-budget n] [--include-unverified] [--hook before_task] [--brief] [--agent-output] [--prompt] [--persist-learning] [--json]
 
 Builds a task-specific working-memory packet for AI coding agents. Human output
 includes the decision gate, retrieval quality, health signals, validation plan,
@@ -476,28 +489,28 @@ run sync when verify proves the exact scope or source-backed memory is missing.
 `
 	case "agents":
 		return `Usage:
-  abra agents bootstrap [path] [--agent codex] [--scope repo:project] [--force] [--no-mcp]
-  abra agents init [path] [--agent codex] [--scope repo:project] [--force] [--dry-run] [--json]
-  abra agents verify [path] --scope repo:project [--agent codex] [--files-only] [--strict] [--json]
-  abra agents ready [path] --scope repo:project [--agent codex] [--files-only] [--strict] [--json]
+  abra agent bootstrap [path] [--agent codex] [--scope repo:project] [--force] [--no-mcp]
+  abra agent init [path] [--agent codex] [--scope repo:project] [--force] [--dry-run] [--json]
+  abra agent verify [path] --scope repo:project [--agent codex] [--files-only] [--strict] [--json]
 
+` + "`abra agents`" + ` is a compatibility alias for ` + "`abra agent`" + `.
 Writes repo-local AI agent instruction files that point every client at the
 same Abra scope. It creates AGENTS.md for agent-neutral instructions and
 CLAUDE.md importing AGENTS.md so Claude Code reads the same guidance without
 duplicating content. Existing files are skipped unless --force is set.
 
-` + "`abra agents bootstrap`" + ` is the one-command Codex-ready path: it writes
+` + "`abra agent bootstrap`" + ` is the one-command Codex-ready path: it writes
 agent instructions, ingests the repo with the exact scope and --code, installs
 the Abra MCP endpoint into Codex, and verifies source-backed working memory
 unless --no-mcp is set.
 
-` + "`abra agents verify`" + ` checks AGENTS.md, CLAUDE.md, the MCP endpoint, required
+` + "`abra agent verify`" + ` checks AGENTS.md, CLAUDE.md, the MCP endpoint, required
 agent tools, discover_scopes for the exact project scope, and a lightweight
 working_memory_compose packet with source-backed context. Use it when an AI
 client says Abra has no context. Use --files-only for CI checks that should not
 contact a live Abra MCP server. Use --strict when warning-level compatibility
-checks should fail the command. ` + "`abra agents ready`" + ` is a non-mutating alias for
-verify.
+checks should fail the command. ` + "`abra agent ready`" + ` and ` + "`abra agents ready`" + `
+remain non-mutating compatibility aliases for verify.
 `
 	case "mcp", "mcp-config":
 		return `Usage:
@@ -522,7 +535,7 @@ Common Codex path:
   cd /path/to/project
   abra agent bootstrap --agent codex
   fully quit and reopen Codex Desktop
-  abra agent ready . --scope <scope-from-abra-scope> --json
+  abra agent verify . --scope <scope-from-abra-scope> --json
 
 Run abra mcp status when Codex cannot see Abra; it checks API/MCP readiness,
 Codex registration, token env, and launch environment. Run abra doctor for the
@@ -552,7 +565,7 @@ preflight checks that should exit non-zero when any check is not ok.
 Guided first-run onboarding. It checks prerequisites, creates the runtime env,
 chooses the embedding provider used for retrieval/vector search, and can start
 the local stack. This does not configure a chat model or LLM answer model. The
-default local provider uses the built-in local embedding runner, which abra up
+default local provider uses the built-in Qwen3 embedding runner, which abra up
 starts automatically and abra model up/status manages directly.
 Common local and compatible embedding paths are configured with
 CLI commands only; no manual env file editing is required.
@@ -561,6 +574,13 @@ If setup writes config but later commands cannot embed, run abra doctor first.
 For the default local provider, abra up starts the model runner automatically;
 use abra model status and abra model up when you want to inspect or repair it
 directly.
+
+Runtime source:
+  - release-installed CLIs use the published runtime bundle for that version
+  - source checkouts use local Compose files when commands run from the checkout
+  - custom runtime archives require ABRA_SOURCE_URL and ABRA_SOURCE_SHA256
+  - ABRA_ALLOW_MUTABLE_RUNTIME_SOURCE=1 is only for local development tests of
+    mutable main-branch source downloads
 
 Common setup flags:
   --embedding-base-url  embedding provider base URL

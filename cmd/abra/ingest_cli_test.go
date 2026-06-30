@@ -1569,7 +1569,7 @@ func TestLocalPathIngestContinueOnErrorReportsFailures(t *testing.T) {
 		"Ingested files: 2",
 		"Failed files: 1",
 		"b-fail.md",
-		"abra models up",
+		"abra model up",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output missing %q:\n%s", want, output)

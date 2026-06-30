@@ -33,7 +33,7 @@ only when evidence, citations, verification, and same-source anchors pass.
 - **MCP-first for agents**: agents use `working_memory_compose`, `brain_think`,
   `brain_review`, `brain_scorecard`, and related tools directly.
 - **CLI for operators**: install, setup, source sync, diagnostics, governance,
-  eval, and small brain status checks.
+  eval, brain review, scorecards, maintenance, and entity dossiers.
 - **HTTP as transport**: used by MCP, CLI fallbacks, gateways, and private
   automation; not the primary product UX.
 - **Postgres + pgvector**: durable source-backed memory, vector retrieval,
@@ -77,6 +77,13 @@ abra setup
 abra doctor
 ```
 
+For release-installed CLIs, `abra up` uses the published runtime bundle for the
+installed version. For development from a source checkout, run commands from the
+checkout so Abra uses local Compose files. If you intentionally test a custom
+runtime archive, set both `ABRA_SOURCE_URL` and `ABRA_SOURCE_SHA256`. Mutable
+`main`-branch runtime downloads are refused by default; `ABRA_ALLOW_MUTABLE_RUNTIME_SOURCE=1`
+is a local-development escape hatch only, not a production install path.
+
 Bootstrap a project for an AI agent:
 
 ```sh
@@ -89,7 +96,7 @@ Fully restart the agent runtime after bootstrap so the active process reads the
 MCP config and token environment. Then verify:
 
 ```sh
-abra agent ready . --scope <scope-from-abra-scope> --json
+abra agent verify . --scope <scope-from-abra-scope> --json
 ```
 
 Agents should then use Abra MCP tools directly. Operators can run a local sanity
@@ -112,6 +119,11 @@ abra ask "What should I know before changing this project?" --scope <scope>
 - `brain_anchor_backfill`: propose evidence-anchor improvements.
 - `brain_maintain`: detect stale claims, weak anchors, conflicts, duplicate
   proposals, missing summaries, and refresh needs.
+- `capture_observation` and `capture_task_outcome`: record reviewable raw
+  learning signals from agent work.
+- `propose_learning`, `list_learning_proposals`, `decide_learning_proposal`,
+  and `apply_learning_proposal`: govern promotion from observation to trusted
+  memory.
 
 ## Why Abra Is Different
 
@@ -178,8 +190,18 @@ See:
 
 ## Models
 
-Abra can run with a local embedding provider for development, or with any
-compatible embedding endpoint.
+Abra can run with the default local Qwen3 embedding provider, or with any
+compatible embedding endpoint. The local OSS defaults are
+`Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0` and optional
+`Qwen/Qwen3-Reranker-0.6B-GGUF:Q8_0`.
+
+Use the local provider:
+
+```sh
+abra model local
+abra model up
+abra model status
+```
 
 Use any compatible embedding provider instead:
 

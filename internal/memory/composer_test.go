@@ -288,6 +288,28 @@ func TestComposeInvalidAsOfDoesNotClaimTemporalRecallApplied(t *testing.T) {
 	}
 }
 
+func TestComposeDateOnlyAsOfNormalizesToRFC3339(t *testing.T) {
+	fake := &fakeStore{}
+	composer := NewComposerWithOptions(fake, ComposerOptions{})
+	result, err := composer.Compose(context.Background(), ComposeInput{
+		Task:  "What should change for Next.js?",
+		Scope: "repo:test",
+		AsOf:  "2026-06-22",
+	})
+	if err != nil {
+		t.Fatalf("Compose returned error: %v", err)
+	}
+	if result.TemporalContext.AsOf != "2026-06-22T00:00:00Z" || !result.TemporalContext.AsOfAppliedToRecall {
+		t.Fatalf("date-only as_of should normalize and apply: %#v", result.TemporalContext)
+	}
+	if len(result.TemporalContext.Warnings) > 0 {
+		t.Fatalf("date-only as_of should not warn: %#v", result.TemporalContext.Warnings)
+	}
+	if len(fake.recallOptions) == 0 || fake.recallOptions[0].AsOf.IsZero() {
+		t.Fatalf("recall options were not applied: %#v", fake.recallOptions)
+	}
+}
+
 func TestTemporalContextIncludesHistoricalGraphRelations(t *testing.T) {
 	result := ComposeResult{
 		Facts: []store.ClaimResult{{ID: "claim-fresh", Freshness: "fresh"}},

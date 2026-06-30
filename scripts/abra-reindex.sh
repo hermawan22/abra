@@ -66,6 +66,7 @@ DEFAULT_INDEXES=(
   agent_profiles_allowed_scopes_gin_idx
   agent_profiles_permissions_gin_idx
   agent_profiles_metadata_gin_idx
+  memory_summaries_source_urls_gin_idx
   policies_scope_type_status_idx
   policies_agent_priority_idx
   policies_subject_idx

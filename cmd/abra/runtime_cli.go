@@ -23,6 +23,9 @@ func up(ctx context.Context, args cliArgs) error {
 	if err := ensureEnv(args); err != nil {
 		return err
 	}
+	if err := validateProductionLocalModelConfigForUp(args); err != nil {
+		return err
+	}
 	if err := ensureRuntimeImageDigest(args); err != nil {
 		return err
 	}
@@ -68,10 +71,31 @@ func shouldStartLocalModelsForUp(args cliArgs) bool {
 	if !isLocalProviderName(values["EMBEDDING_PROVIDER"]) {
 		return false
 	}
-	if strings.EqualFold(strings.TrimSpace(values["NODE_ENV"]), "production") && !yesish(values["ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION"]) {
+	if strings.EqualFold(strings.TrimSpace(values["NODE_ENV"]), "production") && !localEmbeddingsAllowedInProduction(args, values) {
 		return false
 	}
 	return true
+}
+
+func validateProductionLocalModelConfigForUp(args cliArgs) error {
+	values, err := readEnvValues(envPath(args))
+	if err != nil {
+		return nil
+	}
+	if !productionLocalModelDisallowed(args, values) {
+		return nil
+	}
+	return productionLocalModelDisallowedError()
+}
+
+func productionLocalModelDisallowed(args cliArgs, values map[string]string) bool {
+	return strings.EqualFold(strings.TrimSpace(values["NODE_ENV"]), "production") &&
+		isLocalProviderName(values["EMBEDDING_PROVIDER"]) &&
+		!localEmbeddingsAllowedInProduction(args, values)
+}
+
+func productionLocalModelDisallowedError() error {
+	return errors.New("ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=true is required when NODE_ENV=production and EMBEDDING_PROVIDER=local. Use EMBEDDING_PROVIDER=compatible for a managed/self-hosted production endpoint, or explicitly allow local embeddings only after reviewing capacity and security")
 }
 
 func activeEmbeddingProvider(args cliArgs) string {
@@ -410,6 +434,14 @@ func modelConfigCheck(args cliArgs) map[string]any {
 			"ok":     false,
 			"detail": "embedding provider=" + provider + " base_url=" + valueOr(baseURL, "<empty>") + " model=" + valueOr(model, "<empty>"),
 			"hint":   "run: abra config model local, or abra config model compatible --base-url <url> --model <model> --dimensions <n>",
+		}
+	}
+	if productionLocalModelDisallowed(args, values) {
+		return map[string]any{
+			"name":   "model_config",
+			"ok":     false,
+			"detail": productionLocalModelDisallowedError().Error(),
+			"hint":   "run: abra config model compatible --base-url <url> --model <model> --dimensions <n>, or set ALLOW_LOCAL_EMBEDDINGS_IN_PRODUCTION=true with digest-pinned local runner images after review",
 		}
 	}
 	detail := "provider=" + provider + " model=" + model + " base_url=" + baseURL
@@ -867,7 +899,7 @@ func printReady(args cliArgs) {
 	fmt.Println("Token env: ABRA_API_TOKEN (configured; value not printed)")
 	fmt.Println("Next:      cd /path/to/project && abra agent bootstrap --agent <agent>")
 	fmt.Println("Restart:   fully restart the agent runtime after bootstrap")
-	fmt.Println("Then:      abra agent ready . --scope <scope> --agent <agent> --json")
+	fmt.Println("Then:      abra agent verify . --scope <scope> --agent <agent> --json")
 	fmt.Println("Agent:     use MCP working_memory_compose / brain_think with the verified scope")
 	fmt.Println("Manual:    abra agent install <agent> && abra agent init --agent <agent> && abra agent verify . --scope <scope>")
 	fmt.Println("Sync:      abra sync . --code --scope <scope>   # only if verify reports missing scope or empty memory")

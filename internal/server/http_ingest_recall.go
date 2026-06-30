@@ -177,7 +177,7 @@ func providerErrorHint(code, provider string) string {
 		if !localProvider {
 			return "Check the compatible embedding endpoint capacity, raise EMBEDDING_TIMEOUT or lower ABRA_EMBEDDING_BATCH_MAX_ITEMS/ABRA_EMBEDDING_BATCH_MAX_TOKENS, then retry ingest."
 		}
-		return "Run `abra models status`; if the model is healthy, retry with a longer ABRA_CLI_TIMEOUT or lower ABRA_EMBEDDING_BATCH_MAX_ITEMS/ABRA_EMBEDDING_BATCH_MAX_TOKENS."
+		return "Run `abra model status`; if the model is healthy, retry with a longer ABRA_CLI_TIMEOUT or lower ABRA_EMBEDDING_BATCH_MAX_ITEMS/ABRA_EMBEDDING_BATCH_MAX_TOKENS."
 	case "auth_failed":
 		return "Check the embedding provider API key, base URL, and model config, then retry ingest."
 	default:

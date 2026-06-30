@@ -114,10 +114,11 @@ func (h *handler) mcpBrainMemoryEditProposal(w http.ResponseWriter, r *http.Requ
 	input.Scope = scope
 	proposal, created, err := h.createBrainMemoryEditProposal(r, args, input)
 	return map[string]any{
-		"proposal":        proposal,
-		"created":         created,
-		"truth_write":     false,
-		"review_required": true,
+		"learning_proposal": proposal,
+		"proposal":          proposal,
+		"created":           created,
+		"truth_write":       false,
+		"review_required":   true,
 	}, true, err
 }
 
