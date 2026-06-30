@@ -6,6 +6,26 @@ Abra uses semantic versioning for public releases. Before `v1.0.0`, minor
 versions may include breaking changes when they are documented in this file and
 in the release notes.
 
+## 0.5.1 - 2026-06-30
+
+### Changed
+
+- Improved local setup UX so generic compatible embedding providers no longer
+  inherit OpenAI defaults, while OpenAI remains an explicit provider choice.
+- Made `abra up --no-models` report that local embeddings are skipped and avoid
+  deep model readiness checks for API/MCP bootstrap-only runs.
+- Hid the removed browser UI invariant from normal `abra doctor` output so the
+  operator surface stays CLI-first.
+- Clarified installer provenance modes and added an npm publish guard because
+  Abra release artifacts are GitHub CLI archives and GHCR images, not npm
+  packages.
+
+### Security
+
+- MCP connector ingestion now rejects documents outside the configured source
+  scope by default; reviewed multi-scope exporters must opt in with
+  `allow_scope_expansion`.
+
 ## 0.5.0 - 2026-06-30
 
 ### Added

@@ -1,6 +1,6 @@
 {
   "name": "abra",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "private": true,
   "description": "Repository maintenance scripts for Abra. The production runtime, CLI, and release image are Go.",
   "type": "module",
