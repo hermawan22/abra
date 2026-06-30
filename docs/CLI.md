@@ -19,6 +19,11 @@ abra doctor
 embedding path is local-first; no hosted AI provider, npm package install, or
 cloud account is required.
 
+`abra up` starts the local embedding runner automatically when the provider is
+local. `abra up --no-models` is an operator escape hatch for API/MCP bootstrap
+only; it skips model startup and does not prove vector recall is ready. Run
+`abra model up` before ingesting or asking Abra to think.
+
 Release-installed CLIs use the published runtime bundle for the installed
 version. Source checkouts should run commands from the repo root so Abra uses
 local Compose files. Custom runtime archives require both `ABRA_SOURCE_URL` and
@@ -101,7 +106,9 @@ abra connect mcp https://mcp.example.com/mcp \
 ```
 
 Run the same command without `--dry-run` after the export returns normalized
-Abra documents.
+Abra documents. MCP exporters are scope-confined by default: returned documents
+must use the configured source scope. Add `--allow-scope-expansion` only for a
+reviewed exporter that intentionally emits multiple scopes.
 
 Refresh an existing source:
 
@@ -121,15 +128,27 @@ abra connect logs <source-config-id> --limit 20
 Bootstrap an agent:
 
 ```sh
-abra agent bootstrap --agent <agent>
+abra agent bootstrap --agent codex
 ```
 
-Manual steps:
+Codex is the only client with automatic MCP config install today. For other
+agents, bootstrap still writes repo guidance and verifies server memory, then
+you configure that client with Abra's MCP endpoint.
+
+Codex manual steps:
 
 ```sh
-abra agent install <agent>
+abra agent install codex
+abra agent init --agent codex
+abra agent verify . --scope <scope> --agent codex
+```
+
+Other MCP clients:
+
+```sh
+abra mcp > .tmp/abra.mcp.json
 abra agent init --agent <agent>
-abra agent verify . --scope <scope>
+abra agent verify . --scope <scope> --agent <agent>
 ```
 
 Use `agent verify` before assuming an AI client can see Abra. If the server is

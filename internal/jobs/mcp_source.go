@@ -191,7 +191,7 @@ func fetchMCPDocuments(ctx context.Context, source SourceConfig) ([]mcpDocument,
 	}
 	for index := range docs {
 		docs[index] = normalizeMCPDocument(docs[index], source)
-		if err := validateMCPDocument(docs[index], source.ID); err != nil {
+		if err := validateMCPDocument(docs[index], source); err != nil {
 			return nil, err
 		}
 	}
@@ -419,9 +419,16 @@ func normalizeMCPDocument(doc mcpDocument, source SourceConfig) mcpDocument {
 	return doc
 }
 
-func validateMCPDocument(doc mcpDocument, sourceID string) error {
+func validateMCPDocument(doc mcpDocument, source SourceConfig) error {
+	sourceID := source.ID
 	if doc.Scope == "" {
 		return fmt.Errorf("mcp source %q returned document without scope", sourceID)
+	}
+	if source.Scope != "" && doc.Scope != source.Scope {
+		spec, _ := source.MCPSourceSpec()
+		if !spec.AllowScopeExpansion {
+			return fmt.Errorf("mcp source %q returned document scope %q outside configured scope %q; set allow_scope_expansion only for reviewed multi-scope connectors", sourceID, doc.Scope, source.Scope)
+		}
 	}
 	if doc.SourceType == "" {
 		return fmt.Errorf("mcp source %q returned document without source_type", sourceID)

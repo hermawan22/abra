@@ -270,8 +270,15 @@ await test('fails closed when required attestation lacks gh', async () => {
   assertFailedClosed(result, /missing GitHub CLI/);
 });
 
-await test('fails closed when auto attestation fails with gh installed', async () => {
+await test('auto attestation warning continues after checksum when gh verification fails', async () => {
   const result = await runInstaller({ gh: 'fail', attestation: 'auto' });
+  await assertInstalled(result);
+  assert.match(result.stderr, /GitHub artifact attestation verification failed/);
+  assert.match(result.stderr, /Checksum verification passed; continuing because ABRA_VERIFY_ATTESTATION=auto/);
+});
+
+await test('required attestation fails closed when gh verification fails', async () => {
+  const result = await runInstaller({ gh: 'fail', attestation: '1' });
   assertFailedClosed(result, /GitHub artifact attestation verification failed/);
 });
 

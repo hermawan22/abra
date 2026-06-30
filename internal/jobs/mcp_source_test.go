@@ -202,7 +202,7 @@ func TestValidateMCPSourceReportReturnsWarnings(t *testing.T) {
 		SourceType:    ingest.SourceTypeMCP,
 		BaseURL:       server.URL,
 		ConnectorKind: "confluence",
-		Config:        map[string]any{"tool": "export_documents", "allow_private_network": true},
+		Config:        map[string]any{"tool": "export_documents", "allow_private_network": true, "allow_scope_expansion": true},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -221,6 +221,42 @@ func TestValidateMCPSourceReportReturnsWarnings(t *testing.T) {
 		if !found {
 			t.Fatalf("warnings missing %s: %#v", want, report.Warnings)
 		}
+	}
+}
+
+func TestValidateMCPSourceRejectsScopeMismatchByDefault(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		writeMCPTestJSON(t, w, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      body["id"],
+			"result": map[string]any{
+				"structuredContent": map[string]any{
+					"documents": []map[string]any{{
+						"scope":      "repo:other",
+						"source_url": "https://wiki.example/pages/123",
+						"title":      "Platform Decision",
+						"content":    "Use Abra for governed agent memory.",
+					}},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	_, err := ValidateMCPSourceReport(context.Background(), SourceConfig{
+		ID:            "mcp-confluence",
+		Scope:         "repo:abra",
+		SourceType:    ingest.SourceTypeMCP,
+		BaseURL:       server.URL,
+		ConnectorKind: "confluence",
+		Config:        map[string]any{"tool": "export_documents", "allow_private_network": true},
+	})
+	if err == nil || !strings.Contains(err.Error(), "outside configured scope") {
+		t.Fatalf("scope mismatch error = %v", err)
 	}
 }
 

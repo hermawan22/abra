@@ -280,6 +280,7 @@ func TestSourceMCPQueuesSourceConfig(t *testing.T) {
 		"--document-source-type", "confluence",
 		"--bearer-token-env", "CONFLUENCE_MCP_TOKEN",
 		"--header-env", "X-API-Key=CONFLUENCE_API_KEY,X-Team=TEAM_ENV",
+		"--allow-scope-expansion",
 		"--freshness-seconds", "600",
 		"--schedule", "@every 10m",
 		"--base-url", server.URL,
@@ -295,7 +296,7 @@ func TestSourceMCPQueuesSourceConfig(t *testing.T) {
 		t.Fatalf("base_url = %v", sourceRequest["base_url"])
 	}
 	config, _ := sourceRequest["config"].(map[string]any)
-	if config["tool"] != "export_documents" || config["document_source_type"] != "confluence" || config["bearer_token_env"] != "CONFLUENCE_MCP_TOKEN" {
+	if config["tool"] != "export_documents" || config["document_source_type"] != "confluence" || config["bearer_token_env"] != "CONFLUENCE_MCP_TOKEN" || config["allow_scope_expansion"] != true {
 		t.Fatalf("config = %#v", config)
 	}
 	headerEnv, _ := config["header_env"].(map[string]any)
@@ -709,6 +710,7 @@ func TestConnectorsMCPRegisterUsesManifestAndVerify(t *testing.T) {
   "status": "active",
   "schedule": "@every 10m",
   "verify_query": "Connector runbook",
+  "allow_scope_expansion": true,
   "metadata": {"owner": "platform"}
 }`)
 
@@ -730,7 +732,7 @@ func TestConnectorsMCPRegisterUsesManifestAndVerify(t *testing.T) {
 	config, _ := sourceRequest["config"].(map[string]any)
 	args, _ := config["arguments"].(map[string]any)
 	metadata, _ := sourceRequest["metadata"].(map[string]any)
-	if config["tool"] != "export_documents" || config["document_source_type"] != "confluence" || args["space"] != "ENG" || metadata["owner"] != "platform" {
+	if config["tool"] != "export_documents" || config["document_source_type"] != "confluence" || args["space"] != "ENG" || config["allow_scope_expansion"] != true || metadata["owner"] != "platform" {
 		t.Fatalf("source request = %#v", sourceRequest)
 	}
 	if recallRequest["query"] != "Connector runbook" || recallRequest["scope"] != "team:platform" {

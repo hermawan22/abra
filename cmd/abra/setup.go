@@ -399,8 +399,14 @@ func setupCompatibleEmbeddings(args cliArgs, reader *bufio.Reader, interactive b
 			return errors.New("setup --compatible requires --embedding-model in non-interactive mode; use --openai for OpenAI")
 		}
 	}
-	baseURL := setupEmbeddingBaseURL(args, "https://api.openai.com/v1")
-	model := setupEmbeddingModel(args, "text-embedding-3-small")
+	baseURLFallback := ""
+	modelFallback := ""
+	if boolFlag(args, "openai") {
+		baseURLFallback = "https://api.openai.com/v1"
+		modelFallback = "text-embedding-3-small"
+	}
+	baseURL := setupEmbeddingBaseURL(args, baseURLFallback)
+	model := setupEmbeddingModel(args, modelFallback)
 	dimensions := firstNonEmpty(flag(args, "dimensions", ""), inferEmbeddingDimensions(model))
 	apiKey := flag(args, "api-key", "")
 	if apiKey == "" && boolFlag(args, "api-key-stdin") {
@@ -425,11 +431,24 @@ func setupCompatibleEmbeddings(args cliArgs, reader *bufio.Reader, interactive b
 			return err
 		}
 		if strings.TrimSpace(apiKey) == "" {
-			apiKey, err = promptSecret("Embedding API key")
-			if err != nil {
-				return err
+			if boolFlag(args, "openai") {
+				apiKey, err = promptSecret("Embedding API key")
+				if err != nil {
+					return err
+				}
+			} else {
+				apiKey, err = promptDefault(reader, "Embedding API key (optional)", "")
+				if err != nil {
+					return err
+				}
 			}
 		}
+	}
+	if strings.TrimSpace(baseURL) == "" {
+		return errors.New("embedding base URL is required for compatible setup; pass --embedding-base-url or choose --openai")
+	}
+	if strings.TrimSpace(model) == "" {
+		return errors.New("embedding model is required for compatible setup; pass --embedding-model or choose --openai")
 	}
 	if strings.TrimSpace(dimensions) == "" {
 		return fmt.Errorf("embedding dimensions are required for compatible model %q; pass --dimensions <size> so Abra can validate vector storage correctly", strings.TrimSpace(model))

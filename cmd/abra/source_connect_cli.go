@@ -224,6 +224,9 @@ func mcpSourceIngestSpec(args cliArgs, config map[string]any) (sourceIngestSpec,
 	if boolFlag(args, "allow-private-network") {
 		config["allow_private_network"] = true
 	}
+	if boolFlag(args, "allow-scope-expansion") {
+		config["allow_scope_expansion"] = true
+	}
 	return sourceIngestSpec{SourceType: "mcp", SourceURL: sourceURL, ScopeHint: sourceURL, Config: config}, nil
 }
 

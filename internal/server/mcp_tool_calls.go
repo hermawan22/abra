@@ -691,6 +691,12 @@ func (h *handler) mcpUpsertSourceConfigToolCall(w http.ResponseWriter, r *http.R
 		}
 		sourceConfig.Config["allow_private_network"] = true
 	}
+	if boolArg(args, "allow_scope_expansion", false) {
+		if sourceConfig.Config == nil {
+			sourceConfig.Config = map[string]any{}
+		}
+		sourceConfig.Config["allow_scope_expansion"] = true
+	}
 	sourceConfig.Scope = strings.TrimSpace(sourceConfig.Scope)
 	sourceConfig.SourceType = strings.TrimSpace(sourceConfig.SourceType)
 	sourceConfig.Name = strings.TrimSpace(sourceConfig.Name)

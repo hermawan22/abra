@@ -245,7 +245,9 @@ func doctor(ctx context.Context, args cliArgs) error {
 		"auth_required":        result["auth_required"],
 	})
 	checks = append(checks, mcpCheck(ctx, args))
-	checks = append(checks, browserUICheck(ctx, args))
+	if boolFlag(args, "strict") || truthyEnv("ABRA_DOCTOR_INTERNAL_CHECKS") {
+		checks = append(checks, browserUICheck(ctx, args))
+	}
 	return printDoctor(args, checks)
 }
 
@@ -885,6 +887,9 @@ func readyFailureDetail(result map[string]any, err error) string {
 }
 
 func readyzPath(args cliArgs) string {
+	if boolFlag(args, "no-models") || boolFlag(args, "skip-models") {
+		return "/readyz"
+	}
 	values, err := readEnvValues(envPath(args))
 	if err == nil && isLocalProviderName(values["EMBEDDING_PROVIDER"]) {
 		return "/readyz?deep=1"
@@ -897,6 +902,9 @@ func printReady(args cliArgs) {
 	fmt.Println("Abra is ready")
 	fmt.Println("MCP:       " + strings.TrimRight(cfg(args).BaseURL, "/") + "/mcp")
 	fmt.Println("Token env: ABRA_API_TOKEN (configured; value not printed)")
+	if boolFlag(args, "no-models") || boolFlag(args, "skip-models") {
+		fmt.Println("Models:    skipped; run `abra model up` before ingest/think when using local embeddings")
+	}
 	fmt.Println("Next:      cd /path/to/project && abra agent bootstrap --agent <agent>")
 	fmt.Println("Restart:   fully restart the agent runtime after bootstrap")
 	fmt.Println("Then:      abra agent verify . --scope <scope> --agent <agent> --json")

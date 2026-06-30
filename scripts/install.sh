@@ -129,8 +129,9 @@ verify_attestation() {
   fi
   log "GitHub artifact attestation verification failed for $asset"
   if [ "$VERIFY_ATTESTATION" = "auto" ]; then
-    log "GitHub CLI is installed, so automatic provenance verification is enforced."
-    log "Set ABRA_VERIFY_ATTESTATION=0 only when you intentionally accept checksum-only installation."
+    log "Checksum verification passed; continuing because ABRA_VERIFY_ATTESTATION=auto."
+    log "For hardened installs, rerun with ABRA_VERIFY_ATTESTATION=1 after fixing GitHub CLI auth/attestation access."
+    return 0
   fi
   exit 1
 }

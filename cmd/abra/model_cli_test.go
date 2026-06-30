@@ -626,6 +626,31 @@ func TestSetupCompatibleNonInteractiveRequiresExplicitEndpointAndModel(t *testin
 	}
 }
 
+func TestSetupCompatibleDoesNotDefaultToOpenAI(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	t.Chdir(root)
+
+	err := run(context.Background(), []string{
+		"setup",
+		"--compatible",
+		"--embedding-base-url", "https://models.example/v1",
+		"--dimensions", "768",
+		"--no-start",
+	})
+	if err == nil || !strings.Contains(err.Error(), "embedding model is required for compatible setup") {
+		t.Fatalf("setup compatible error = %v", err)
+	}
+	values, readErr := readEnvValues(filepath.Join(home, "quickstart.env"))
+	if readErr != nil {
+		t.Fatalf("read env: %v", readErr)
+	}
+	if values["EMBEDDING_MODEL"] == "text-embedding-3-small" || values["EMBEDDING_BASE_URL"] == "https://api.openai.com/v1" {
+		t.Fatalf("compatible setup leaked OpenAI defaults: %#v", values)
+	}
+}
+
 func TestSetupRejectsCustomHTTPProviderSelector(t *testing.T) {
 	root := t.TempDir()
 	home := t.TempDir()

@@ -165,6 +165,9 @@ func TestSourceConfigLifecycleMCPToolsAreDiscoverable(t *testing.T) {
 	if allowPrivate, ok := validateProperties["allow_private_network"].(map[string]any); !ok || allowPrivate["type"] != "boolean" {
 		t.Fatalf("validate_mcp_source allow_private_network schema = %#v", validateProperties["allow_private_network"])
 	}
+	if allowExpansion, ok := validateProperties["allow_scope_expansion"].(map[string]any); !ok || allowExpansion["type"] != "boolean" {
+		t.Fatalf("validate_mcp_source allow_scope_expansion schema = %#v", validateProperties["allow_scope_expansion"])
+	}
 
 	getSchema := mcpToolSchema(t, "get_source_config")
 	getRequired := requiredSet(t, getSchema)

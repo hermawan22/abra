@@ -69,13 +69,17 @@ Each release should publish:
 
 The npm package metadata is private developer tooling only. Do not publish Abra
 to npm as a release artifact; the Go CLI archives and the GHCR image are the
-published runtime artifacts.
+published runtime artifacts. Keep `package.json` marked private with a hard
+`prepublishOnly` guard so npm publication fails before upload.
 
 Do not document a platform as supported until the release contains its archive,
 the archive is listed in `SHA256SUMS`, and both files have published
 attestations. The install script fails closed for missing platform assets,
-missing checksums, checksum mismatches, and invalid archives. Source builds are
-developer fallback installs only; they are not release artifacts.
+missing checksums, checksum mismatches, and invalid archives. The default
+one-line path may continue after checksum verification when GitHub attestation
+verification is unavailable; set `ABRA_VERIFY_ATTESTATION=1` for fail-closed
+provenance verification. Source builds are developer fallback installs only;
+they are not release artifacts.
 
 Do not document `abra up` from a release-installed CLI as production-hardened
 unless the release contains `abra_runtime_vX.Y.Z.tar.gz`, the runtime bundle is

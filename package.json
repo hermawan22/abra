@@ -1,6 +1,7 @@
 {
   "name": "abra",
   "version": "0.5.0",
+  "private": true,
   "description": "Repository maintenance scripts for Abra. The production runtime, CLI, and release image are Go.",
   "type": "module",
   "license": "Apache-2.0",
@@ -26,6 +27,7 @@
     "node": ">=24"
   },
   "scripts": {
+    "prepublishOnly": "node -e \"throw new Error('Abra is not published to npm; use GitHub releases')\"",
     "quickstart": "go run ./cmd/abra demo",
     "quickstart:down": "go run ./cmd/abra down",
     "check:scripts": "bash -n scripts/*.sh && node --check scripts/lib/eval-contracts.mjs && node --check scripts/lib/mcp.mjs && node --check scripts/lib/smoke-assertions.cjs && node --check scripts/lib/tier23-helpers.mjs && node --check scripts/abra-brain-benchmark.mjs && node --check scripts/abra-eval-contracts.mjs && node --check scripts/abra-install-test.mjs && node --check scripts/abra-oss-hygiene.mjs && node --check scripts/abra-maintainability-check.mjs && node --check scripts/abra-migration-check.mjs && node --check scripts/abra-npm-pack-check.mjs && node --check scripts/abra-tier1-eval.mjs && node --check scripts/abra-tier23-eval.mjs && node --check scripts/abra-golden-eval.mjs && node --check scripts/abra-provider-benchmark.mjs && node --check scripts/abra-perf-eval.mjs && node --check scripts/abra-dogfood-eval.mjs && node --check scripts/abra-queue-pressure-eval.mjs && node --check scripts/abra-release-gate.mjs",

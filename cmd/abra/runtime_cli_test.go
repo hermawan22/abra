@@ -694,6 +694,35 @@ func TestReadyzPathUsesDeepCheckForLocalAliases(t *testing.T) {
 	}
 }
 
+func TestReadyzPathUsesShallowCheckWhenLocalModelsAreSkipped(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ABRA_HOME", home)
+	mustWrite(t, filepath.Join(home, "quickstart.env"), "EMBEDDING_PROVIDER=local\n")
+
+	for _, args := range [][]string{
+		{"up", "--no-models"},
+		{"up", "--skip-models"},
+	} {
+		if got := readyzPath(parseArgs(args)); got != "/readyz" {
+			t.Fatalf("readyz path for %v = %q, want shallow /readyz", args, got)
+		}
+	}
+}
+
+func TestPrintReadyWarnsWhenModelsAreSkipped(t *testing.T) {
+	output := captureStdout(t, func() {
+		printReady(parseArgs([]string{"up", "--no-models", "--base-url", "http://127.0.0.1:18080"}))
+	})
+	for _, want := range []string{
+		"Abra is ready",
+		"Models:    skipped; run `abra model up` before ingest/think when using local embeddings",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("printReady output missing %q:\n%s", want, output)
+		}
+	}
+}
+
 func TestWaitReadyReturnsLastReadinessDetailOnCancel(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("ABRA_HOME", home)

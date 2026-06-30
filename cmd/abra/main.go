@@ -61,6 +61,7 @@ type connectorManifest struct {
 	Schedule            string            `json:"schedule"`
 	VerifyQuery         string            `json:"verify_query"`
 	AllowPrivateNetwork bool              `json:"allow_private_network,omitempty"`
+	AllowScopeExpansion bool              `json:"allow_scope_expansion,omitempty"`
 	Metadata            map[string]any    `json:"metadata"`
 }
 

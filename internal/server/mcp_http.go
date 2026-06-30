@@ -136,5 +136,8 @@ func mcpConnectorSourceConfigFromArgs(args map[string]any, requireTool bool) sto
 	if boolArg(args, "allow_private_network", false) {
 		sourceConfig.Config["allow_private_network"] = true
 	}
+	if boolArg(args, "allow_scope_expansion", false) {
+		sourceConfig.Config["allow_scope_expansion"] = true
+	}
 	return sourceConfig
 }

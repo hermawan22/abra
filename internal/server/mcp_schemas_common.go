@@ -19,6 +19,7 @@ func sourceConfigSchema() map[string]any {
 		"freshness_policy":      map[string]any{"type": "object"},
 		"schedule_cron":         stringSchema(),
 		"allow_private_network": map[string]any{"type": "boolean", "description": "For source_type=mcp, allow localhost, private IPs, or link-local connector URLs. Default false; use only for trusted local/dev connectors."},
+		"allow_scope_expansion": map[string]any{"type": "boolean", "description": "For source_type=mcp, allow connector-returned documents to use scopes outside the configured source scope. Default false; require review before enabling multi-scope connectors."},
 		"config":                map[string]any{"type": "object"},
 		"metadata":              map[string]any{"type": "object"},
 		"created_by":            stringSchema(),
@@ -43,6 +44,7 @@ func validateMCPSourceSchema() map[string]any {
 		"bearer_token_env":      stringSchema(),
 		"header_env":            map[string]any{"type": "object"},
 		"allow_private_network": map[string]any{"type": "boolean", "description": "Allow localhost, private IPs, or link-local MCP connector URLs. Default false; use only for trusted local/dev connectors."},
+		"allow_scope_expansion": map[string]any{"type": "boolean", "description": "Allow connector-returned documents to use scopes outside the configured source scope. Default false; require review before enabling multi-scope connectors."},
 		"config":                map[string]any{"type": "object"},
 		"metadata":              map[string]any{"type": "object"},
 		"approval_id":           stringSchema(),
@@ -61,6 +63,7 @@ func inspectConnectorSourceSchema() map[string]any {
 		"bearer_token_env":      stringSchema(),
 		"header_env":            map[string]any{"type": "object"},
 		"allow_private_network": map[string]any{"type": "boolean", "description": "Allow localhost, private IPs, or link-local MCP connector URLs. Default false; use only for trusted local/dev connectors."},
+		"allow_scope_expansion": map[string]any{"type": "boolean", "description": "Allow connector-returned documents to use scopes outside the configured source scope. Default false; require review before enabling multi-scope connectors."},
 		"config":                map[string]any{"type": "object"},
 		"metadata":              map[string]any{"type": "object"},
 	})

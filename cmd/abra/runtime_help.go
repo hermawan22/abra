@@ -26,6 +26,7 @@ System:
   abra govern status
   abra brain status
   abra plugin contract
+  abra up [--no-models]
   abra down [--reset] [--keep-models]
   abra upgrade [--version vX.Y.Z]
   abra uninstall --yes
@@ -45,6 +46,11 @@ First run:
   fully restart the agent runtime
   abra agent verify . --scope <scope-from-abra-scope> --json
   agents use MCP working_memory_compose / brain_think with the verified scope
+
+abra up starts the local embedding runner automatically when the configured
+provider is local. Use abra up --no-models only when you intentionally want
+API/MCP bootstrap without validating local vector recall; run abra model up
+before ingest or think.
 
 Abra is MCP-first for agents. CLI is for install, setup, source sync, operator
 inspection, maintenance, and eval. HTTP is internal service transport; no
@@ -319,7 +325,7 @@ onboarding, or abra up for non-interactive stack startup.
   abra watch local --scope repo:demo --path . [--include "**/*.md"] [--code] [--freshness-seconds 3600] [--schedule "@every 1h"] [--wait]
   abra watch git --scope repo:demo --git https://github.com/owner/repo.git [--ref main] [--freshness-seconds 3600] [--wait]
   abra source mcp --scope team:docs --mcp-url https://mcp.example.com/mcp --tool export_documents --dry-run
-  abra source mcp --scope team:docs --mcp-url https://mcp.example.com/mcp --tool export_documents [--arguments-json '{"collection":"docs"}'] [--document-source-type markdown] [--bearer-token-env TOKEN_ENV] [--header-env Header=ENV] [--allow-private-network] [--schedule "@every 10m"] [--wait]
+  abra source mcp --scope team:docs --mcp-url https://mcp.example.com/mcp --tool export_documents [--arguments-json '{"collection":"docs"}'] [--document-source-type markdown] [--bearer-token-env TOKEN_ENV] [--header-env Header=ENV] [--allow-private-network] [--allow-scope-expansion] [--schedule "@every 10m"] [--wait]
 
 This creates or updates a source config, then enqueues an ingestion job.
 The OSS worker supports markdown, local_repo, git_repo, and MCP HTTP sources
@@ -330,6 +336,9 @@ Use --dry-run or --validate with MCP sources to call the upstream MCP tool,
 validate its normalized documents, and exit without registering or queueing.
 Use --bearer-token-env and --header-env Header=ENV for MCP credentials.
 Use --allow-private-network only for trusted local/dev MCP connectors.
+Use --allow-scope-expansion only for reviewed MCP exporters that intentionally
+return documents for multiple scopes; by default MCP documents must stay inside
+the configured source scope.
 Use --freshness-seconds for max source age and --schedule for @hourly, @daily,
 or @every <N><s|m|h|d> worker refresh cadence. Manual sync still bypasses the
 due check.
@@ -339,11 +348,11 @@ Use --wait-timeout or ABRA_CLI_WAIT_TIMEOUT for slow local model or large repo r
 		return `Usage:
   abra connectors [--scope repo:demo] [--limit 50] [--json]
   abra connectors list [--scope repo:demo] [--limit 50] [--json]
-  abra connectors mcp inspect --scope team:docs --mcp-url https://mcp.example.com/mcp [--bearer-token-env TOKEN_ENV] [--header-env Header=ENV] [--allow-private-network]
+  abra connectors mcp inspect --scope team:docs --mcp-url https://mcp.example.com/mcp [--bearer-token-env TOKEN_ENV] [--header-env Header=ENV] [--allow-private-network] [--allow-scope-expansion]
   abra connectors mcp template --scope team:docs [--output knowledge-base.connector.json]
   abra connectors mcp add --scope team:docs --mcp-url https://mcp.example.com/mcp [--tool export_documents] [--manifest connector.json] [--wait] [--verify]
-  abra connectors mcp validate --scope team:docs --mcp-url https://mcp.example.com/mcp --tool export_documents [--manifest connector.json] [--arguments-json '{"collection":"docs"}'] [--document-source-type markdown] [--bearer-token-env TOKEN_ENV] [--header-env Header=ENV] [--allow-private-network]
-  abra connectors mcp register --scope team:docs --mcp-url https://mcp.example.com/mcp --tool export_documents [--manifest connector.json] [--arguments-json '{"collection":"docs"}'] [--document-source-type markdown] [--bearer-token-env TOKEN_ENV] [--header-env Header=ENV] [--allow-private-network] [--schedule "@every 10m"] [--wait] [--verify] [--verify-query "runbook"]
+  abra connectors mcp validate --scope team:docs --mcp-url https://mcp.example.com/mcp --tool export_documents [--manifest connector.json] [--arguments-json '{"collection":"docs"}'] [--document-source-type markdown] [--bearer-token-env TOKEN_ENV] [--header-env Header=ENV] [--allow-private-network] [--allow-scope-expansion]
+  abra connectors mcp register --scope team:docs --mcp-url https://mcp.example.com/mcp --tool export_documents [--manifest connector.json] [--arguments-json '{"collection":"docs"}'] [--document-source-type markdown] [--bearer-token-env TOKEN_ENV] [--header-env Header=ENV] [--allow-private-network] [--allow-scope-expansion] [--schedule "@every 10m"] [--wait] [--verify] [--verify-query "runbook"]
   abra connectors status <source-config-id> [--json]
   abra connectors logs <source-config-id> [--limit 20] [--json]
   abra connectors sync <source-config-id> [--wait] [--json]

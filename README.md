@@ -70,12 +70,21 @@ gh attestation verify --repo hermawan22/abra install.sh
 ABRA_VERSION=vX.Y.Z ABRA_VERIFY_ATTESTATION=1 sh install.sh
 ```
 
+The default installer always verifies archive checksums. GitHub artifact
+attestation is best-effort in the one-line install path and fail-closed when
+`ABRA_VERIFY_ATTESTATION=1` is set.
+
 Start the local stack:
 
 ```sh
 abra setup
 abra doctor
 ```
+
+`abra up` starts the local Qwen embedding runner automatically when local
+embeddings are configured. Use `abra up --no-models` only for API/MCP bootstrap
+or troubleshooting; it skips model startup and does not prove vector recall is
+ready. Run `abra model up` before `abra sync`, `abra ingest`, or `abra think`.
 
 For release-installed CLIs, `abra up` uses the published runtime bundle for the
 installed version. For development from a source checkout, run commands from the

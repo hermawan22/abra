@@ -59,6 +59,7 @@ type MCPSourceSpec struct {
 	HeaderEnv           map[string]string
 	SourceType          string
 	AllowPrivateNetwork bool
+	AllowScopeExpansion bool
 }
 
 func (s SourceConfig) MCPSourceSpec() (MCPSourceSpec, error) {
@@ -76,6 +77,7 @@ func (s SourceConfig) MCPSourceSpec() (MCPSourceSpec, error) {
 		HeaderEnv:           stringMapValue(s.Config["header_env"]),
 		SourceType:          firstString(s.Config, "document_source_type", "default_source_type"),
 		AllowPrivateNetwork: boolValue(s.Config["allow_private_network"]),
+		AllowScopeExpansion: boolValue(s.Config["allow_scope_expansion"]),
 	}
 	if spec.SourceType == "" {
 		spec.SourceType = strings.TrimSpace(s.ConnectorKind)
